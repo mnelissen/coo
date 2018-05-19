@@ -1,0 +1,28 @@
+struct foo {
+	int x;
+	char func();
+	float func1(void *p);
+	int *func2(char a, int b);
+	virtual void vfunc();
+	int *(*intfuncptr)(char c);
+	int *y;
+};
+
+char foo::func()
+{
+	printf("%d\n", x + *y);
+	x = *y;
+	*y = x;
+	y = &x;
+}
+
+double foo::func_new(int z)
+{
+	struct foo *x;
+	printf("%d\n", *y + z);
+	func1(z);
+	b = func1(z);
+	x->func();
+	x->func1(arg1);
+	((foo*)(x->get_foo()))->get_y();
+}

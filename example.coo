@@ -3,6 +3,7 @@ struct foo {
 	char func();
 	float func1(void *p);
 	int *func2(char a, int b);
+	void *get_foo(int a);
 	virtual void vfunc();
 	int *(*intfuncptr)(char c);
 	int *y;
@@ -18,11 +19,11 @@ char foo::func()
 
 double foo::func_new(int z)
 {
-	struct foo *x;
+	struct foo *x = get_x(), *x2;
 	printf("%d\n", *y + z);
 	func1(z);
 	b = func1(z);
 	x->func();
-	x->func1(arg1);
-	((foo*)(x->get_foo()))->get_y();
+	x2->func1(arg1);
+	((struct foo*)(3 + x->get_foo(x2->func1(z))) + 5)->func();
 }

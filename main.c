@@ -301,6 +301,7 @@ static struct member *addmember(struct class *class, char *rettype, char retsep,
 		char *declend, struct memberprops props)
 {
 	struct member *member;
+	char *vmt_insert;
 
 	if (grow_dynarr(&class->members) < 0)
 		return NULL;
@@ -315,11 +316,10 @@ static struct member *addmember(struct class *class, char *rettype, char retsep,
 	member->retsep = retsep;
 	member->params = params;
 	member->name = membername;
-	if (props.is_virtual)
-		member->insert = aprintf("%s_vmt_", class->name);
-	else if (props.is_function || props.is_static)
-		member->insert = aprintf("%s_", class->name);
-	else
+	if (props.is_function || props.is_static) {
+		vmt_insert = props.is_virtual ? "vmt_" : "";
+		member->insert = aprintf("%s_%s", class->name, vmt_insert);
+	} else
 		member->insert = NULL;
 
 	class->members.mem[class->members.num++] = member;
@@ -350,7 +350,6 @@ static struct variable *addvariable(struct parser *parser, unsigned blocklevel,
 	}
 
 	variable->name = stredupto(variable->name, membername, nameend);
-	printf("adding variable '%s' of class type '%s'\n", variable->name, class->name);
 	variable->class = class;
 	variable->blocklevel = blocklevel;
 	dynarr->sorted = 0;
@@ -358,20 +357,21 @@ static struct variable *addvariable(struct parser *parser, unsigned blocklevel,
 	return variable;
 }
 
-static struct insert *addinsert(struct parser *parser,
+static struct insert **addinsert(struct parser *parser, struct insert **after_pos,
 		char *flush_until, char *insert_text, char *continue_at)
 {
-	struct insert *insert;
+	struct insert *insert, **end_pos;
 
 	if (grow_dynarr(&parser->inserts) < 0)
 		return NULL;
 
-	insert = parser->inserts.mem[parser->inserts.num];
+	end_pos = (struct insert **)&parser->inserts.mem[parser->inserts.num];
+	insert = *end_pos;
 	if (!insert) {
 		insert = calloc(1, sizeof(*insert));
 		if (insert == NULL)
 			return NULL;
-		parser->inserts.mem[parser->inserts.num] = insert;
+		*end_pos = insert;
 	}
 
 	insert->flush_until = flush_until;
@@ -379,7 +379,22 @@ static struct insert *addinsert(struct parser *parser,
 	insert->continue_at = continue_at;
 	parser->inserts.sorted = 0;
 	parser->inserts.num++;
-	return insert;
+	if (!after_pos) {
+		/* check flush ordering to be incremental */
+		for (after_pos = end_pos - 1;; after_pos--) {
+			if ((void**)after_pos < parser->inserts.mem)
+				break;
+			if ((*after_pos)->flush_until < flush_until)
+				break;
+		}
+	}
+
+	after_pos++;
+	if (after_pos < end_pos) {
+		memmove(after_pos+1, after_pos, (char*)end_pos-(char*)after_pos);
+		*after_pos = insert;
+	}
+	return after_pos;
 }
 
 static void remove_locals(struct parser *parser, int blocklevel)
@@ -402,12 +417,6 @@ static int compare_names(const void *left, const void *right)
 	return strcmp(left_member->name, right_member->name);
 }
 
-static int compare_name_to(const void *key, const void *item)
-{
-	const struct member *member = item;
-	return strcmp(key, member->name);
-}
-
 static void sort_dynarr(struct dynarr *dynarr)
 {
 	if (dynarr->sorted)
@@ -417,15 +426,10 @@ static void sort_dynarr(struct dynarr *dynarr)
 	dynarr->sorted = 1;
 }
 
-static int compare_inserts_pos(const void *left, const void *right)
+static int compare_name_to(const void *key, const void *item)
 {
-	const struct insert *left_insert = left, *right_insert = right;
-	return right_insert->flush_until - left_insert->flush_until;
-}
-
-static void sort_inserts(struct dynarr *dynarr)
-{
-	qsort_dynarr(dynarr, compare_inserts_pos);
+	const struct member *member = item;
+	return strcmp(key, member->name);
 }
 
 static int find_dynarr(struct dynarr *dynarr, char *name, void **ret_pos)
@@ -508,6 +512,10 @@ static int find_local(struct parser *parser,
 
 static void flush_until(struct parser *parser, char *until)
 {
+	if (parser->writepos > until) {
+		fprintf(stderr, "internal error, flushing into past\n");
+		return;
+	}
 	fwrite(parser->writepos, 1, until - parser->writepos, parser->out);
 	/* update writepos done in caller, usually want to skip something anyway */
 }
@@ -658,7 +666,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		}
 		/* remember last word before '(' or ';' => member name */
 		if (isalpha(*next) || *next == '*')
-			next = nameend = skip_word(membername = next);
+			membername = next;
 		if (!(next = scan_token(next, "/{};( \r\n\t\v")))
 			return NULL;
 
@@ -691,15 +699,19 @@ static struct class *parse_struct(struct parser *parser, char *next)
 				props.is_function = 0;
 				/* find real params */
 				membername++;
-				nameend = skip_word(membername);
-				params = strchr(nameend, '(');
-				if (!params)
-					return NULL;
 				/* let loop skip '*' in front of function variable */
 				continue;
 			} else if (*membername != '*' && !isspace(*membername))
 				break;
 		}
+		/* find nameend and real params in case of function pointer variable  */
+		nameend = skip_word(membername);
+		if (params < nameend) {
+			params = scan_token(nameend, "/(;");
+			if (!params)
+				return NULL;
+		}
+
 		/* next is either '(' or ';', but declend must be at ';' */
 		if (*params == '(' && !(declend = scan_token(params, "/;")))
 			break;
@@ -764,46 +776,70 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	return class;
 }
 
-int parse_member(struct parser *parser, char *exprstart, struct class *class,
-		char *name, char *nameend, struct class **retclass)
+int parse_member(struct parser *parser, char *exprstart, char *exprend,
+	struct class *class, char *name, char *nameend, struct class **retclass)
 {
 	struct member *member;
-	char *thispos, *insert_text, *next;
+	struct insert **after_pos = NULL;
+	char *args, *flush_until, *insert_text, *continue_at;
+	int add_this;
 
 	if (class == NULL)
 		return -1;
 	if (find_member_e(class, name, nameend, &member))
 		return -1;
 
-	if (exprstart != name && member->props.is_static) {
+	if (exprstart && member->props.is_static) {
 		fprintf(stderr, "Cannot access static member\n");
 		return -1;
 	}
 
 	if (member->insert)
-		addinsert(parser, exprstart, member->insert, name);
+		after_pos = addinsert(parser, after_pos,
+			exprstart ?: name, member->insert, name);
 
-	/* if there was no expression, then accessing a member of 'this' class */
-	if (exprstart == name && !member->props.is_static) {
-		thispos = NULL;
-		if (member->props.is_function) {
-			next = strchr(nameend, '(');
-			if (next != NULL)
-				next = skip_whitespace(next+1);
-			if (next != NULL) {
-				thispos = next;
-				if (*next == ')')
+	continue_at = NULL;
+	add_this = !exprstart && !member->props.is_static;
+	if (member->props.is_function) {
+		args = scan_token(nameend, "/(;");
+		if (args != NULL && *args == ';')
+			args = NULL;
+		if (args != NULL)
+			args = skip_whitespace(args+1);
+		if (args != NULL) {
+			continue_at = args;
+			if (add_this) {
+				flush_until = args;
+				if (*args == ')')
 					insert_text = "this";
 				else
 					insert_text = "this, ";
+			} else {
+				if (exprstart) {
+					/* after other->function(), need to jump to
+					   'other' expression and back to arguments */
+					addinsert(parser, after_pos,
+						args, "", exprstart);
+					/* continue at end */
+					after_pos = (struct insert **)
+						&parser->inserts.mem[parser->inserts.num];
+					flush_until = exprend;
+				} else
+					flush_until = name;
+				if (*args == ')')
+					insert_text = "";
+				else
+					insert_text = ", ";
 			}
-		} else {
-			thispos = exprstart;
-			insert_text = "this->";
 		}
-		if (thispos)
-			addinsert(parser, thispos, insert_text, exprstart);
+	} else if (add_this) {
+		flush_until = name;
+		insert_text = "this->";
+		continue_at = name;
 	}
+
+	if (continue_at)
+		addinsert(parser, after_pos, flush_until, insert_text, continue_at);
 
 	*retclass = member->retclass;
 	return 0;
@@ -835,7 +871,6 @@ static void print_inserts(struct parser *parser)
 	if (parser->inserts.num == 0)
 		return;
 
-	sort_inserts(&parser->inserts);
 	for (i = 0; i < parser->inserts.num; i++) {
 		insert = parser->inserts.mem[i];
 		flush_until(parser, insert->flush_until);
@@ -850,8 +885,8 @@ static void parse_function(struct parser *parser, char *next)
 	struct class *class, **class_p, *exprclass[MAX_PAREN_LEVELS];
 	struct class *newclass, *declclass;
 	char *curr, *funcname, *classname, *name, *argsep, *dblcolonsep;
-	char *start, *exprstart[MAX_PAREN_LEVELS];
-	enum parse_state state, newstate;
+	char *start, *exprstart[MAX_PAREN_LEVELS], *exprend;
+	enum parse_state state;
 	struct classtype *classtype;
 	int blocklevel, parenlevel, seqparen;
 
@@ -897,7 +932,7 @@ static void parse_function(struct parser *parser, char *next)
 	parser->locals.num = 0;
 	parser->nested_locals.num = 0;
 	state = FINDVAR;
-	for (curr = start;;) {
+	for (next = start;;) {
 		curr = skip_whitespace(next);
 		if (curr[0] == 0)
 			return;
@@ -939,7 +974,8 @@ static void parse_function(struct parser *parser, char *next)
 		default:
 			if (find_classtype_e(parser, name, next, &classtype) == 0) {
 				declclass = classtype->class;
-				newstate = DECLVAR;
+				printf("class=%p %s\n", declclass, declclass->name);
+				state = DECLVAR;
 			}
 			break;
 		}
@@ -966,7 +1002,8 @@ static void parse_function(struct parser *parser, char *next)
 			next = curr + 1;
 			continue;
 		}
-		newstate = FINDVAR;
+		while (*curr == '*')  /* skip pointers, esp in declarations */
+			curr++;
 		if (isdigit(*curr))
 			curr = skip_word(curr);
 		else if (isalpha(*curr)) {
@@ -983,46 +1020,52 @@ static void parse_function(struct parser *parser, char *next)
 				next = skip_word(name);
 				if (state == DECLVAR || state == ACCESSMEMBER) {
 					/* grammar error, ignore */
-				} else if (find_class_e(parser, name, next, &newclass) >= 0) {
+					state = FINDVAR;
+				} else if (find_class_e(parser, name, next, &newclass) == 0) {
 					goto decl_or_cast;
 				}
-			} else {
-				name = curr;
-				next = skip_word(name);
-				switch (state) {
-				case DECLVAR:
-					addvariable(parser, blocklevel, declclass, name, next);
-					break;
-				case ACCESSMEMBER:
-					parse_member(parser, exprstart[parenlevel],
-						exprclass[parenlevel], name, next,
-						&exprclass[parenlevel]);
-					break;
-				default:
-					class_p = &exprclass[parenlevel];
-					if (find_local(parser, name, next, class_p)
-						&& parse_member(parser, exprstart[parenlevel],
-							class, name, next, class_p) < 0
-						&& find_global(parser, name, next, class_p)
-						&& find_classtype_e(parser,
-								name, next, &classtype) == 0) {
-						newclass = classtype->class;
-					  decl_or_cast:
-						if (state == STMTSTART) {
-							declclass = newclass;
-							newstate = DECLVAR;
-						} else if (seqparen >= 2
-								&& !exprclass[parenlevel-2]) {
-							/* this is a cast, like ((class_t*)x)->..
-							   remember first detected class */
-							exprclass[parenlevel-2] = newclass;
-						} else {
-							/* grammar error, ignore */
-						}
-					}
-					break;
-				}
+				continue;
 			}
+
+			name = curr;
+			next = skip_word(name);
+			switch (state) {
+			case DECLVAR:
+				addvariable(parser, blocklevel, declclass, name, next);
+				state = FINDVAR;
+				break;
+			case ACCESSMEMBER:
+				parse_member(parser, exprstart[parenlevel], exprend,
+					exprclass[parenlevel], name, next,
+					&exprclass[parenlevel]);
+				state = FINDVAR;
+				break;
+			default:
+				class_p = &exprclass[parenlevel];
+				if (find_local(parser, name, next, class_p)
+					&& parse_member(parser, NULL, NULL,
+						class, name, next, class_p) < 0
+					&& find_global(parser, name, next, class_p)
+					&& find_classtype_e(parser,
+							name, next, &classtype) == 0) {
+					newclass = classtype->class;
+				  decl_or_cast:
+					if (state == STMTSTART) {
+						declclass = newclass;
+						state = DECLVAR;
+					} else if (seqparen >= 2
+							&& !exprclass[parenlevel-2]) {
+						/* this is a cast, like ((class_t*)x)->..
+						   remember first detected class */
+						exprclass[parenlevel-2] = newclass;
+					} else {
+						/* grammar error, ignore */
+					}
+				}
+				break;
+			}
+
+			continue;
 		}
 
 		if (*curr != '.' && (*curr != '-' || curr[1] != '>'))
@@ -1032,19 +1075,21 @@ static void parse_function(struct parser *parser, char *next)
 			exprstart[parenlevel] = curr;
 			parenlevel++;
 			seqparen++;
+			exprstart[parenlevel] = NULL;
 		} else
 			seqparen = 0;
-		if (*curr == ')' && parenlevel) {
+		if (*curr == ')' && parenlevel)
 			parenlevel--;
-			exprstart[parenlevel] = NULL;
-		}
 		if (*curr == ',' && declclass && parenlevel == 0)
-			newstate = DECLVAR;
-		if (*curr == '.')
-			newstate = ACCESSMEMBER;
+			state = DECLVAR;
+		if (*curr == '.') {
+			state = ACCESSMEMBER;
+			exprend = curr;
+		}
 		if (*curr == '-' && curr[1] == '>') {
+			state = ACCESSMEMBER;
+			exprend = curr;
 			curr++;
-			newstate = ACCESSMEMBER;
 		}
 		if (*curr == ';') {
 			print_inserts(parser);
@@ -1056,8 +1101,9 @@ static void parse_function(struct parser *parser, char *next)
 		/* advance for most of the operator/separator cases */
 		if (next <= curr)
 			next = curr+1;
-		state = newstate;
 	}
+
+	parser->pos = curr + 1;
 }
 
 #define LEFT_PAREN  ((void*)(size_t)'(')

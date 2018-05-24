@@ -931,17 +931,21 @@ static void parse_function(struct parser *parser, char *next)
 	next++;  /* advance after '(' */
 	if (funcname) {
 		if (find_class(parser, classname, &class) == 0) {
-			/* replace :: with _ */
-			flush_until(parser, dblcolonsep);
-			fputc('_', parser->out);
-			parser->writepos = funcname;
-			flush_until(parser, next);
 			/* lookup method name */
 			if (find_member_e(class, funcname, skip_word(funcname),
 					&member) == 0) {
 				if (member->props.is_virtual)
 					class->num_vfuncs_seen++;
+			} else {
+				/* undeclared, so it's private, include static */
+				flush(parser);
+				fputs("static ", parser->out);
 			}
+			/* replace :: with _ */
+			flush_until(parser, dblcolonsep);
+			fputc('_', parser->out);
+			parser->writepos = funcname;
+			flush_until(parser, next);
 			/* check if there are parameters */
 			next = skip_whitespace(next);
 			argsep = "";  /* start assumption: no params */

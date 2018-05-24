@@ -31,12 +31,14 @@ struct memberprops {
 	unsigned char is_virtual;
 	unsigned char is_function;
 	unsigned char is_static;
+	unsigned char seen;
 };
 
 struct class {
 	char *name;
 	struct dynarr members;
-	unsigned has_vmt:1;
+	unsigned num_vfuncs;
+	unsigned num_vfuncs_seen;  /* to trigger generate virtual method table */
 };
 
 struct member {
@@ -432,7 +434,7 @@ static int compare_name_to(const void *key, const void *item)
 	return strcmp(key, member->name);
 }
 
-static int find_dynarr(struct dynarr *dynarr, char *name, void **ret_pos)
+static int find_dynarr(struct dynarr *dynarr, char *name, void **retitem)
 {
 	void **array_pos;
 	int ret;
@@ -440,50 +442,50 @@ static int find_dynarr(struct dynarr *dynarr, char *name, void **ret_pos)
 	sort_dynarr(dynarr);
 	ret = bin_search_dynarr(name, dynarr, compare_name_to, &array_pos);
 	if (array_pos)
-		*ret_pos = *array_pos;
+		*retitem = *array_pos;
 	else
-		*ret_pos = NULL;
+		*retitem = NULL;
 	return ret;
 }
 
-static int find_dynarr_e(struct dynarr *dynarr, char *name, char *nameend, void **ret_pos)
+static int find_dynarr_e(struct dynarr *dynarr, char *name, char *nameend, void **retitem)
 {
 	char oldch = *nameend;
 	int ret;
 
 	*nameend = 0;
-	ret = find_dynarr(dynarr, name, ret_pos);
+	ret = find_dynarr(dynarr, name, retitem);
 	*nameend = oldch;
 	return ret;
 }
 
-static int find_class(struct parser *parser, char *classname, struct class **class_pos)
+static int find_class(struct parser *parser, char *classname, struct class **retclass)
 {
-	return find_dynarr(&parser->classes, classname, (void**)class_pos);
+	return find_dynarr(&parser->classes, classname, (void**)retclass);
 }
 
 static int find_class_e(struct parser *parser,
-		char *classname, char *nameend, struct class **class_pos)
+		char *classname, char *nameend, struct class **retclass)
 {
-	return find_dynarr_e(&parser->classes, classname, nameend, (void**)class_pos);
+	return find_dynarr_e(&parser->classes, classname, nameend, (void**)retclass);
 }
 
 static int find_classtype_e(struct parser *parser,
-		char *typename, char *nameend, struct classtype **type_pos)
+		char *typename, char *nameend, struct classtype **rettype)
 {
-	return find_dynarr_e(&parser->classtypes, typename, nameend, (void**)type_pos);
+	return find_dynarr_e(&parser->classtypes, typename, nameend, (void**)rettype);
 }
 
 static int find_member_e(struct class *class,
-		char *membername, char *nameend, struct member **member_pos)
+		char *membername, char *nameend, struct member **retmember)
 {
-	return find_dynarr_e(&class->members, membername, nameend, (void**)member_pos);
+	return find_dynarr_e(&class->members, membername, nameend, (void**)retmember);
 }
 
 static int find_global(struct parser *parser,
-		char *name, char *nameend, struct class **class_pos)
+		char *name, char *nameend, struct class **retclass)
 {
-	return find_dynarr_e(&parser->locals, name, nameend, (void**)class_pos);
+	return find_dynarr_e(&parser->locals, name, nameend, (void**)retclass);
 }
 
 static int find_local(struct parser *parser,
@@ -553,7 +555,7 @@ static void print_vmt_type(struct parser *parser, struct class *class)
 	struct member *member;
 	int i;
 
-	if (!class->has_vmt)
+	if (class->num_vfuncs == 0)
 		return;
 
 	fprintf(parser->out, "extern struct %s_vmt {\n", class->name);
@@ -569,14 +571,65 @@ static void print_vmt_type(struct parser *parser, struct class *class)
 	fprintf(parser->out, "} %s_vmt;\n\n", class->name);
 }
 
+enum func_decltype {
+	MEMBER_FUNCTION,
+	VIRTUAL_WRAPPER,
+};
+
+static void print_func_decl(struct parser *parser, struct class *class,
+		struct member *member, enum func_decltype emittype)
+{
+	char *func_prefix, *name_insert, *func_body;
+	char *p, *first_param, *last_word, *last_end;
+	unsigned empty;
+
+	first_param = skip_whitespace(member->params);
+	empty = *first_param == ')';
+	if (emittype == VIRTUAL_WRAPPER) {
+		func_prefix = "coo_inline ";
+		name_insert = "vmt_";
+		func_body = "\n{";
+	} else {
+		func_prefix = name_insert = "";
+		func_body = ";";   /* no body */
+	}
+	fprintf(parser->out, "%s%s%c%s_%s%s(struct %s *this%s%s%s\n",
+		func_prefix, member->rettype, member->retsep,
+		class->name, name_insert, member->name, class->name,
+		empty ? "" : ", ", member->params, func_body);
+	if (emittype == VIRTUAL_WRAPPER) {
+		fprintf(parser->out, "\t((struct %s_vmt*)this->vmt)->%s(this",
+			class->name, member->name);
+		for (p = first_param; *p != ')'; p = skip_whitespace(p)) {
+			last_word = NULL;
+			/* search for last word, assume it is parameter name */
+			for (; *p != ',' && *p != ')';) {
+				if (*p == '/')
+					p = skip_comment(p);
+				else if (isalpha(*p)) {
+					last_word = p;
+					last_end = p = skip_word(p);
+				} else
+					p++;
+			}
+			if (last_word) {
+				*last_end = 0;
+				fprintf(parser->out, ", %s", last_word);
+			}
+			/* go to next argument */
+			if (*p != ')')
+				p++;
+		}
+		fprintf(parser->out, ");\n}\n\n");
+	}
+}
+
 static void print_member_decls(struct parser *parser, struct class *class)
 {
-	char *p, *first_param, *last_word, *last_end;
-	char *func_prefix, *name_insert, *func_body;
 	struct member *member;
-	unsigned i, empty;
+	unsigned i;
 
-	if (class->has_vmt && !parser->coo_inline_defined) {
+	if (class->num_vfuncs && !parser->coo_inline_defined) {
 		fputs(DEF_COO_INLINE, parser->out);
 		parser->coo_inline_defined = 1;
 	}
@@ -584,50 +637,23 @@ static void print_member_decls(struct parser *parser, struct class *class)
 	for (i = 0; i < class->members.num; i++) {
 		member = class->members.mem[i];
 		if (member->props.is_function) {
-			if (member->props.is_virtual) {
-				func_prefix = "coo_inline ";
-				name_insert = "vmt_";
-				func_body = "\n{";
-			} else {
-				func_prefix = name_insert = "";
-				func_body = ";";   /* no body */
-			}
-			first_param = skip_whitespace(member->params);
-			empty = *first_param == ')';
-			fprintf(parser->out, "%s%s%c%s_%s%s(struct %s *this%s%s%s\n",
-				func_prefix, member->rettype, member->retsep,
-				class->name, name_insert, member->name, class->name,
-				empty ? "" : ", ", member->params, func_body);
-			if (member->props.is_virtual) {
-				fprintf(parser->out, "\t((struct %s_vmt*)this->vmt)->%s(this",
-					class->name, member->name);
-				for (p = first_param; *p != ')'; p = skip_whitespace(p)) {
-					last_word = NULL;
-					/* search for last word, assume it is parameter name */
-					for (; *p != ',' && *p != ')';) {
-						if (*p == '/')
-							p = skip_comment(p);
-						else if (isalpha(*p)) {
-							last_word = p;
-							last_end = p = skip_word(p);
-						} else
-							p++;
-					}
-					if (last_word) {
-						*last_end = 0;
-						fprintf(parser->out, ", %s", last_word);
-					}
-					/* go to next argument */
-					if (*p != ')')
-						p++;
-				}
-				fprintf(parser->out, ");\n}\n\n");
-			}
+			print_func_decl(parser, class, member, MEMBER_FUNCTION);
 		} else if (member->props.is_static) {
 			fprintf(parser->out, "extern %s%c%s_%s;\n",
 				member->rettype, member->retsep,
 				class->name, member->name);
 		}
+	}
+
+	if (!class->num_vfuncs)
+		return;
+
+	/* now generate all the virtual method call wrappers */
+	fputs("\n", parser->out);
+	for (i = 0; i < class->members.num; i++) {
+		member = class->members.mem[i];
+		if (member->props.is_virtual)
+			print_func_decl(parser, class, member, VIRTUAL_WRAPPER);
 	}
 }
 
@@ -747,10 +773,12 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		   for function also skip lineending => go to nextdecl too
 		   except for first virtual function, then we print vmt variable */
 		parser->pos = parser->writepos = next = nextdecl;
-		if (props.is_virtual && !class->has_vmt) {
-			fputs("void *vmt;", parser->out);
-			class->has_vmt = 1;
-			parser->writepos = declend+1;
+		if (props.is_virtual) {
+			if (!class->num_vfuncs) {
+				fputs("void *vmt;", parser->out);
+				parser->writepos = declend+1;
+			}
+			class->num_vfuncs++;
 		}
 		/* small optimization to skip whitespace, already in nextdecl */
 		goto newdecl;
@@ -884,10 +912,11 @@ static void parse_function(struct parser *parser, char *next)
 {
 	struct class *class, **class_p, *exprclass[MAX_PAREN_LEVELS];
 	struct class *newclass, *declclass;
+	struct classtype *classtype;
+	struct member *member;
 	char *curr, *funcname, *classname, *name, *argsep, *dblcolonsep;
 	char *start, *exprstart[MAX_PAREN_LEVELS], *exprend;
 	enum parse_state state;
-	struct classtype *classtype;
 	int blocklevel, parenlevel, seqparen;
 
 	funcname = NULL, classname = next;
@@ -901,24 +930,37 @@ static void parse_function(struct parser *parser, char *next)
 
 	next++;  /* advance after '(' */
 	if (funcname) {
-		if (find_class(parser, classname, &class) >= 0) {
+		if (find_class(parser, classname, &class) == 0) {
 			/* replace :: with _ */
 			flush_until(parser, dblcolonsep);
 			fputc('_', parser->out);
 			parser->writepos = funcname;
 			flush_until(parser, next);
-			parser->writepos = next;
+			/* lookup method name */
+			if (find_member_e(class, funcname, skip_word(funcname),
+					&member) == 0) {
+				if (member->props.is_virtual)
+					class->num_vfuncs_seen++;
+			}
+			/* check if there are parameters */
 			next = skip_whitespace(next);
-			argsep = *next != ')' ? ", " : "";
+			argsep = "";  /* start assumption: no params */
+			if (*next != ')') {
+				if (strprefixcmp("void", next) && !isalpha(next[4]))
+					next += 4;  /* skip "void" if adding this param */
+				else
+					argsep = ", ";  /* separate this, rest params */
+			}
 			/* add this parameter */
 			fprintf(parser->out, "struct %s *this%s", classname, argsep);
+			parser->writepos = next;
 		} else {
 			fprintf(stderr, "class '%s' not declared\n", classname);
 			class = NULL;
 		}
 	}
 
-	next = strchr(start = next, ')');
+	next = scan_token(start = next, "/)");
 	if (next == NULL)
 		return;
 	next = skip_whitespace(next+1);
@@ -1106,6 +1148,29 @@ static void parse_function(struct parser *parser, char *next)
 	parser->pos = curr + 1;
 }
 
+static void print_vmts(struct parser *parser)
+{
+	struct class *class;
+	struct member *member;
+	unsigned i, j;
+
+	for (i = 0; i < parser->classes.num; i++) {
+		class = parser->classes.mem[i];
+		if (!class->num_vfuncs_seen)
+			continue;
+
+		fprintf(parser->out, "\nstruct %s_vmt %s_vmt {\n", class->name, class->name);
+		for (j = 0; j < class->members.num; j++) {
+			member = class->members.mem[j];
+			if (!member->props.is_virtual)
+				continue;
+
+			fprintf(parser->out, "\t%s_%s,\n", class->name, member->name);
+		}
+		fputs("};\n", parser->out);
+	}
+}
+
 #define LEFT_PAREN  ((void*)(size_t)'(')
 
 static void parse(char *filename, char *buffer)
@@ -1141,6 +1206,7 @@ static void parse(char *filename, char *buffer)
 	}
 
 	flush(parser);
+	print_vmts(parser);
 }
 
 int main(int argc, char **argv)

@@ -22,8 +22,12 @@ double foo::func_new(int z)
 	struct foo *x = get_x(), *x2;
 	printf("%d\n", *y + z);
 	func1(z);
-	b = func1(z);
 	x->func();
 	x2->func1(arg1);
 	((struct foo*)(3 + x->get_foo(x2->func1(z))) + 5)->func();
+}
+
+void foo::vfunc(void)
+{
+	int b = func1(z);
 }

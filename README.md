@@ -7,12 +7,14 @@ Object Oriented C to plain C compiler
 The language COO stands for 'C Object Oriented'. It adds object oriented
 features to C but keeps the emphasis on lightweight and simple. So why not use
 C++ then? Reasons to dislike C++:
-* C++ causes programmers to write (over?)complicated template-heavy code
-* C++ templates cause very slow compile times (just including the std lib!)
+* has many traps, e.g. around default-defined and explicit constructors
+* constructors cannot fail gracefully, have to throw exception
+* causes programmers to write (over?)complicated template-heavy code
+* templates cause very slow compile times (just including the std lib!)
 * template-heavy code tends to get bloated (although this also depends on how
   they are defined)
 * need to define all methods in the class header file, no 'static' as in C
-  * this in turn tends to cause (unnecessary) recompilations of source files
+  * tends to cause more (unnecessary) recompilations of source files
 * exceptions easily turn into a way of use: just throw them, never handled
 
 On the other hand, C++ also has many useful features. Some of those can be
@@ -57,11 +59,12 @@ acts from there.
 
 ## TODO
 
-* generate the VMT
 * initialize the "vmt" field to the VMT (add a constructor?)
 * support inheritance
 * recognize "#include" and parse header files
   * write processed header files to a different extension?
+* recognize global variables (searched, but never any added)
+* line number counting, and add it to error messages
 
 ## License
 

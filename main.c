@@ -1,9 +1,25 @@
 #include <stdio.h>
 #include <ctype.h>
+#include <limits.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+typedef uint32_t dev_t;
+typedef uint64_t ino_t;
+typedef uint32_t pid_t;
+#define getpid() GetProcessId()
+#else
+#include <unistd.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#endif
 
+#define NEWFN_MAX          8192            /* (stack)size for included dirs+filenames */
+#define OUTPR_MAX          256             /* maximum outprintf size we do */
 #define STDIN_BUFSIZE      (1024 * 1024)   /* size for inputbuffer when using stdin */
 #define MAX_PAREN_LEVELS   16
 #define DEF_COO_INLINE \
@@ -15,6 +31,12 @@
 		"__attribute__((always_inline)) __attribute__((gnu_inline))\n" \
 	"#endif\n" \
 	"#endif\n\n"
+
+struct file_id {
+	dev_t dev_id;
+	ino_t file_id;
+	uint64_t mtime;
+};
 
 enum parse_state {
 	FINDVAR, STMTSTART, DECLVAR, ACCESSMEMBER,
@@ -71,24 +93,54 @@ struct insert {   /* an insert, to insert some text in the output */
 	char *continue_at;   /* where to continue writing (perhaps skip something) */
 };
 
+struct parse_file {
+	FILE *out;                /* file writing to */
+	char *filename;           /* input filename */
+	char *buffer;             /* input buffer */
+	char *writepos;           /* input buffer written to output till here */
+	char *pos;                /* parsed input buffer till here */
+	char *outbuffer;          /* comparing output buffer */
+	char *outpos;             /* compared output until here, NULL if writing */
+	char *outfilename;        /* output filename */
+	char *outfilename_end;    /* pointer to null-character of output filename */
+	char *newfilename_path;   /* points to start of path (last in stack) */
+	char *newfilename_file;   /* points after parsing file dir in newfilename */
+	int coo_inline_defined;   /* defined the COO_INLINE macro yet? */
+	int outfailed;            /* prevent error spam if creating file failed */
+};
+
 struct parser {
-	FILE *out;
-	char *buffer;
-	char *writepos, *pos;
-	int coo_inline_defined;
+	struct parse_file pf;     /* parse state for currently parsing file */
+	char *include_ext_in;     /* parse only include files with this ext */
+	char *source_ext_out;     /* write source output files with this ext */
+	char *header_ext_out;     /* write header output files with this ext */
+	int include_ext_in_len;   /* length of include_ext_in, optimization */
 	struct dynarr classes;        /* struct class pointers */
 	struct dynarr classtypes;     /* struct classtype pointers */
 	struct dynarr globals;        /* struct variable pointers */
 	struct dynarr locals;         /* struct variable pointers */
 	struct dynarr nested_locals;  /* struct variable pointers */
 	struct dynarr inserts;        /* struct insert pointers */
+	struct dynarr includepaths;   /* char pointers */
+	struct dynarr file_stack;     /* struct parse_file pointers */
+	struct dynarr files_seen;     /* struct file_id pointers */
+	char printbuffer[OUTPR_MAX];  /* buffer for outprintf */
+	char newfilename[NEWFN_MAX];  /* (stacked) store curdir + new input filename */
+	char *newfilename_end;        /* pointer to end of new input filename */
 };
+
+pid_t g_pid;
 
 static char *strchrnul(const char *str, int ch)
 {
 	while (*str && *str != ch)
 		str++;
 	return (char*)str;
+}
+
+static int islinespace(int ch)
+{
+	return ch == ' ' || ch == '\t';
 }
 
 /* assumes pos[0] == '/' was matched, starting a possible comment */
@@ -135,15 +187,42 @@ static char *skip_word(char *p)
 	return p;
 }
 
-static char *strprefixcmp(const char *prefix, const char *str)
+char *strprefixcmp(const char *s1, const char *s2)
 {
-        for (;; prefix++, str++) {
-                if (*prefix == 0)
-                        return (char*)str;
-                if (*prefix != *str)
-                        return NULL;
-        }
+	for (;; s1++, s2++) {
+		if (*s1 == 0)
+			return (char*)s2;
+		if (*s1 != *s2)
+			return NULL;
+	}
 }
+
+static char *stmecpy(char *dest, char *end, const char *src, const char *src_end)
+{
+	size_t len, maxlen;
+
+	if (src == NULL) {
+		*dest = 0;
+		return dest;
+	}
+	len = src_end - src;
+	maxlen = end - dest - 1;
+	if (len > maxlen)
+		len = maxlen;
+	memcpy(dest, src, len);
+	dest[len] = 0;
+	return dest + len;
+}
+
+static char *stmcpy(char *dest, char *end, const char *src)
+{
+	return stmecpy(dest, end, src, src ? src + strlen(src) : NULL);
+}
+
+/* like strcpy, but return error if string full */
+#define stfcpy(d,s) ((stmcpy(d,&d[sizeof(d)],s) == &d[sizeof(d)-1]) ? -1 : 0)
+/* like stfcpy, but outputs pointer to end null-terminator in 'e' */
+#define stfcpy_e(d,s,e) ((*(e) = stmcpy(d,&d[sizeof(d)],s), *(e) == &d[sizeof(d)-1]) ? -1 : 0)
 
 static char *stredupto(char *dest, const char *src, const char *until)
 {
@@ -158,9 +237,39 @@ static char *stredupto(char *dest, const char *src, const char *until)
 	return newdest;
 }
 
+static char *strdupto(char *dest, const char *src)
+{
+	return stredupto(dest, src, src + strlen(src));
+}
+
 static char *stredup(const char *src, const char *until)
 {
 	return stredupto(NULL, src, until);
+}
+
+static char *replace_ext_temp(char *filename, char *strend, char *bufend, char *new_ext)
+{
+	char *ext, *pidend;
+
+	/* find last '.' */
+	for (ext = strend;;) {
+		/* if reached begin of string, paste extension to end of filename */
+		if (ext == filename) {
+			ext = strend;
+			break;
+		}
+		ext--;
+		if (*ext == '.')
+			break;
+	}
+	ext = stmcpy(ext, bufend, new_ext);
+	if (ext+1 == bufend)
+		return NULL;
+	/* prepare temporary filename already in this buffer */
+	pidend = ext + snprintf(ext, bufend-ext, ".%u", g_pid);
+	if (pidend >= bufend)
+		return NULL;
+	return ext;
 }
 
 /* scan for character set, ignoring comments, include '/' in set!
@@ -201,6 +310,74 @@ __attribute__((format(printf,1,2))) static char *aprintf(const char *format, ...
 	vsnprintf(buffer, size, format, va_args);
 	va_end(va_args);
 	return buffer;
+}
+
+#ifdef _WIN32
+
+int get_file_id(FILE *fp, struct file_id *out_id)
+{
+	BY_HANDLE_FILE_INFORMATION file_info;
+
+	if (!GetFileInformationByHandle(fileno(hFile), &file_info))
+		return -1;
+
+	out_id->dev_id = file_info.dwVolumeSerialNumber;
+	out_id->file_id = ((uint64_t)file_info.nFileIndexHigh << 32)
+			| ((uint64_t)file_info.nFileIndexLow);
+	out_id->mtime = ((uint64_t)file_info.ftLastWriteTime.dwHighDateTime << 32)
+			| ((uint64_t)file_info.ftLastWriteTime.dwLowDateTime);
+	return 0;
+}
+
+static size_t file_size(FILE *fp)
+{
+	uint32_t sizeHigh;
+
+	return GetFileSize(fileno(fp), &sizeHigh) | ((uint64_t)sizeHigh << 32);
+}
+
+#else
+
+int get_file_id(FILE *fp, struct file_id *out_id)
+{
+	struct stat stat;
+
+	if (fstat(fileno(fp), &stat) < 0)
+		return -1;
+
+	out_id->dev_id = stat.st_dev;
+	out_id->file_id = stat.st_ino;
+	out_id->mtime = stat.st_mtim.tv_sec * 1000000ull + stat.st_mtim.tv_nsec;
+	return 0;
+}
+
+static size_t file_size(FILE *fp)
+{
+	struct stat stat;
+
+	if (fstat(fileno(fp), &stat) < 0)
+		return 0;
+	return stat.st_size;
+}
+
+#endif
+
+static void *read_file_until(FILE *fp, char *buffer, size_t size)
+{
+	buffer = realloc(buffer, size);
+	if (buffer == NULL) {
+		fprintf(stderr, "No memory for file buffer\n");
+		return NULL;
+	}
+
+	size = fread(buffer, 1, size-1, fp);
+	buffer[size] = 0;
+	return buffer;
+}
+
+static void *read_file(FILE *fp, char *buffer)
+{
+	return read_file_until(fp, buffer, file_size(fp));
 }
 
 int grow_dynarr(struct dynarr *dynarr)
@@ -399,6 +576,58 @@ static struct insert **addinsert(struct parser *parser, struct insert **after_po
 	return after_pos;
 }
 
+static int addincludepath(struct parser *parser, char *path)
+{
+	if (grow_dynarr(&parser->includepaths) < 0)
+		return -1;
+
+	/* pointer to commandline so do not have to copy */
+	parser->includepaths.mem[parser->includepaths.num++] = path;
+	return 0;
+}
+
+static struct parse_file *addfilestack(struct parser *parser)
+{
+	struct dynarr *dynarr = &parser->file_stack;
+	struct parse_file *parse_file;
+
+	if (grow_dynarr(dynarr) < 0)
+		return NULL;
+
+	parse_file = dynarr->mem[dynarr->num];
+	if (!parse_file) {
+		parse_file = calloc(1, sizeof(*parse_file));
+		if (parse_file == NULL)
+			return NULL;
+		dynarr->mem[dynarr->num] = parse_file;
+	}
+
+	dynarr->sorted = 0;
+	dynarr->num++;
+	return parse_file;
+}
+
+static struct file_id *insert_file_id(struct parser *parser, void **before_pos,
+		struct file_id *file_id_src)
+{
+	struct file_id *file_id;
+	void **end_pos;
+
+	if (grow_dynarr(&parser->files_seen) < 0)
+		return NULL;
+
+	file_id = calloc(1, sizeof(*file_id));
+	if (!file_id)
+		return NULL;
+
+	memcpy(file_id, file_id_src, sizeof(*file_id));
+	end_pos = parser->files_seen.mem + parser->files_seen.num;
+	memmove(before_pos, before_pos+1, (char*)end_pos - (char*)before_pos);
+	*before_pos = file_id;
+	parser->files_seen.num++;
+	return file_id;
+}
+
 static void remove_locals(struct parser *parser, int blocklevel)
 {
 	struct variable *var;
@@ -512,20 +741,99 @@ static int find_local(struct parser *parser,
 	return 0;
 }
 
+static int compare_file_id_to(const void *key, const void *item)
+{
+	const struct file_id *key_id = key, *item_id = item;
+	if (key_id->file_id > item_id->file_id)
+		return 1;
+	if (key_id->file_id < item_id->file_id)
+		return -1;
+	if (key_id->dev_id > item_id->dev_id)
+		return 1;
+	if (key_id->dev_id < item_id->dev_id)
+		return -1;
+	return 0;
+}
+
+static int find_file_id(struct dynarr *dynarr, struct file_id *file_id, void ***id_pos)
+{
+	return bin_search_dynarr(file_id, dynarr, compare_file_id_to, id_pos);
+}
+
+static int prepare_output_file(struct parser *parser)
+{
+	/* outfilename already has the temporary extension in buffer, but has
+	 * null character in place of '.<pid>' to read output filename first */
+	*parser->pf.outfilename_end = '.';
+	parser->pf.out = fopen(parser->pf.outfilename, "wb");
+	if (parser->pf.out == NULL) {
+		fprintf(stderr, "%s: could not create\n", parser->pf.outfilename);
+		parser->pf.outfailed = 1;
+		return -1;
+	}
+
+	/* write everything that already did compare OK */
+	fwrite(parser->pf.outbuffer, 1, parser->pf.outpos - parser->pf.outbuffer, parser->pf.out);
+	return 0;
+}
+
+static void outwrite(struct parser *parser, const void *buffer, size_t size)
+{
+	/* if in comparing mode, compare instead of write */
+	if (parser->pf.out == NULL) {
+		/* do not keep complaining */
+		if (parser->pf.outfailed)
+			return;
+		if (memcmp(parser->pf.outpos, buffer, size) == 0) {
+			parser->pf.outpos += size;
+			return;
+		}
+		/* input changed compared to output, start writing */
+		if (prepare_output_file(parser) < 0)
+			return;
+	}
+
+	fwrite(buffer, 1, size, parser->pf.out);
+}
+
+static void outputs(struct parser *parser, const char *src)
+{
+	return outwrite(parser, src, strlen(src));
+}
+
+static void outprintf(struct parser *parser, const char *format, ...)
+{
+	va_list va_args;
+	unsigned size;
+
+	va_start(va_args, format);
+	size = vsnprintf(parser->printbuffer, sizeof(parser->printbuffer), format, va_args);
+	va_end(va_args);
+	if (size >= sizeof(parser->printbuffer)) {
+		fprintf(stderr, "error: printbuffer too small\n");
+		size = sizeof(parser->printbuffer)-1;
+	}
+
+	outwrite(parser, parser->printbuffer, size);
+}
+
 static void flush_until(struct parser *parser, char *until)
 {
-	if (parser->writepos > until) {
+	size_t size = until - parser->pf.writepos;
+
+	if (parser->pf.writepos > until) {
 		fprintf(stderr, "internal error, flushing into past\n");
 		return;
 	}
-	fwrite(parser->writepos, 1, until - parser->writepos, parser->out);
+
+	return outwrite(parser, parser->pf.writepos, size);
 	/* update writepos done in caller, usually want to skip something anyway */
 }
 
 static void flush(struct parser *parser)
 {
-	flush_until(parser, parser->pos);
-	parser->writepos = parser->pos;
+	flush_until(parser, parser->pf.pos);
+	parser->pf.writepos = parser->pf.pos;
 }
 
 struct class *parse_type(struct parser *parser, char *pos, char **ret_next)
@@ -540,7 +848,7 @@ struct class *parse_type(struct parser *parser, char *pos, char **ret_next)
 		if (find_class_e(parser, pos, next, &class))
 			return NULL;
 	} else {
-		next = skip_word(parser->pos);
+		next = skip_word(parser->pf.pos);
 		if (find_classtype_e(parser, pos, next, &classtype))
 			return NULL;
 		class = classtype->class;
@@ -558,17 +866,17 @@ static void print_vmt_type(struct parser *parser, struct class *class)
 	if (class->num_vfuncs == 0)
 		return;
 
-	fprintf(parser->out, "extern struct %s_vmt {\n", class->name);
+	outprintf(parser, "extern struct %s_vmt {\n", class->name);
 	for (i = 0; i < class->members.num; i++) {
 		member = class->members.mem[i];
 		if (!member->props.is_virtual)
 			continue;
 
-		fprintf(parser->out, "\t%s%c(*%s)(%s;\n",
+		outprintf(parser, "\t%s%c(*%s)(%s;\n",
 			member->rettype, member->retsep,
 			member->name, member->params);
 	}
-	fprintf(parser->out, "} %s_vmt;\n\n", class->name);
+	outprintf(parser, "} %s_vmt;\n\n", class->name);
 }
 
 enum func_decltype {
@@ -593,12 +901,12 @@ static void print_func_decl(struct parser *parser, struct class *class,
 		func_prefix = name_insert = "";
 		func_body = ";";   /* no body */
 	}
-	fprintf(parser->out, "%s%s%c%s_%s%s(struct %s *this%s%s%s\n",
+	outprintf(parser, "%s%s%c%s_%s%s(struct %s *this%s%s%s\n",
 		func_prefix, member->rettype, member->retsep,
 		class->name, name_insert, member->name, class->name,
 		empty ? "" : ", ", member->params, func_body);
 	if (emittype == VIRTUAL_WRAPPER) {
-		fprintf(parser->out, "\t((struct %s_vmt*)this->vmt)->%s(this",
+		outprintf(parser, "\t((struct %s_vmt*)this->vmt)->%s(this",
 			class->name, member->name);
 		for (p = first_param; *p != ')'; p = skip_whitespace(p)) {
 			last_word = NULL;
@@ -614,13 +922,13 @@ static void print_func_decl(struct parser *parser, struct class *class,
 			}
 			if (last_word) {
 				*last_end = 0;
-				fprintf(parser->out, ", %s", last_word);
+				outprintf(parser, ", %s", last_word);
 			}
 			/* go to next argument */
 			if (*p != ')')
 				p++;
 		}
-		fprintf(parser->out, ");\n}\n\n");
+		outprintf(parser, ");\n}\n\n");
 	}
 }
 
@@ -629,9 +937,9 @@ static void print_member_decls(struct parser *parser, struct class *class)
 	struct member *member;
 	unsigned i;
 
-	if (class->num_vfuncs && !parser->coo_inline_defined) {
-		fputs(DEF_COO_INLINE, parser->out);
-		parser->coo_inline_defined = 1;
+	if (class->num_vfuncs && !parser->pf.coo_inline_defined) {
+		outputs(parser, DEF_COO_INLINE);
+		parser->pf.coo_inline_defined = 1;
 	}
 
 	for (i = 0; i < class->members.num; i++) {
@@ -639,7 +947,7 @@ static void print_member_decls(struct parser *parser, struct class *class)
 		if (member->props.is_function) {
 			print_func_decl(parser, class, member, MEMBER_FUNCTION);
 		} else if (member->props.is_static) {
-			fprintf(parser->out, "extern %s%c%s_%s;\n",
+			outprintf(parser, "extern %s%c%s_%s;\n",
 				member->rettype, member->retsep,
 				class->name, member->name);
 		}
@@ -649,7 +957,7 @@ static void print_member_decls(struct parser *parser, struct class *class)
 		return;
 
 	/* now generate all the virtual method call wrappers */
-	fputs("\n", parser->out);
+	outwrite(parser, "\n", 1);
 	for (i = 0; i < class->members.num; i++) {
 		member = class->members.mem[i];
 		if (member->props.is_virtual)
@@ -665,9 +973,9 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	char *classname, *retnext;
 	int level, is_typedef;
 
-	is_typedef = *parser->pos == 't';
+	is_typedef = *parser->pf.pos == 't';
 	/* skip 'typedef struct ' or just 'struct ' */
-	classname = skip_whitespace(parser->pos + (is_typedef ? 15 : 7));
+	classname = skip_whitespace(parser->pf.pos + (is_typedef ? 15 : 7));
 	declend = skip_word(classname);
 	if (declend != classname) {
 		class = addclass(parser, classname, declend);
@@ -772,11 +1080,11 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		/* if variable then flushed until nextdecl,
 		   for function also skip lineending => go to nextdecl too
 		   except for first virtual function, then we print vmt variable */
-		parser->pos = parser->writepos = next = nextdecl;
+		parser->pf.pos = parser->pf.writepos = next = nextdecl;
 		if (props.is_virtual) {
 			if (!class->num_vfuncs) {
-				fputs("void *vmt;", parser->out);
-				parser->writepos = declend+1;
+				outputs(parser, "void *vmt;");
+				parser->pf.writepos = declend+1;
 			}
 			class->num_vfuncs++;
 		}
@@ -797,7 +1105,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 			/* TODO: addglobal() */
 		}
 	}
-	parser->pos = skip_whitespace(declend + 1);
+	parser->pf.pos = skip_whitespace(declend + 1);
 	flush(parser);
 	print_vmt_type(parser, class);
 	print_member_decls(parser, class);
@@ -879,16 +1187,16 @@ static void parse_typedef(struct parser *parser, char *declend)
 	char *next;
 
 	/* check if a class is aliased to a new name */
-	class = parse_type(parser, parser->pos, &next);
+	class = parse_type(parser, parser->pf.pos, &next);
 	if (class == NULL)
 		return;
 
 	/* note: after next cannot be '{', as in 'typedef struct X {'
 	   it is handled by calling parse_struct in caller */
-	parser->pos = skip_whitespace(next);
-	next = skip_word(parser->pos);
-	addclasstype(parser, parser->pos, next, class);
-	parser->pos = declend + 1;
+	parser->pf.pos = skip_whitespace(next);
+	next = skip_word(parser->pf.pos);
+	addclasstype(parser, parser->pf.pos, next, class);
+	parser->pf.pos = declend + 1;
 }
 
 static void print_inserts(struct parser *parser)
@@ -902,8 +1210,8 @@ static void print_inserts(struct parser *parser)
 	for (i = 0; i < parser->inserts.num; i++) {
 		insert = parser->inserts.mem[i];
 		flush_until(parser, insert->flush_until);
-		fputs(insert->insert_text, parser->out);
-		parser->writepos = insert->continue_at;
+		outputs(parser, insert->insert_text);
+		parser->pf.writepos = insert->continue_at;
 	}
 	parser->inserts.num = 0;
 }
@@ -920,7 +1228,7 @@ static void parse_function(struct parser *parser, char *next)
 	int blocklevel, parenlevel, seqparen;
 
 	funcname = NULL, classname = next;
-	for (; classname > parser->pos && !isspace(*(classname-1)); classname--) {
+	for (; classname > parser->pf.pos && !isspace(*(classname-1)); classname--) {
 		if (classname[0] == ':' && classname[1] == ':') {
 			dblcolonsep = classname;
 			classname[0] = 0;
@@ -939,12 +1247,12 @@ static void parse_function(struct parser *parser, char *next)
 			} else {
 				/* undeclared, so it's private, include static */
 				flush(parser);
-				fputs("static ", parser->out);
+				outputs(parser, "static ");
 			}
 			/* replace :: with _ */
 			flush_until(parser, dblcolonsep);
-			fputc('_', parser->out);
-			parser->writepos = funcname;
+			outwrite(parser, "_", 1);
+			parser->pf.writepos = funcname;
 			flush_until(parser, next);
 			/* check if there are parameters */
 			next = skip_whitespace(next);
@@ -956,8 +1264,8 @@ static void parse_function(struct parser *parser, char *next)
 					argsep = ", ";  /* separate this, rest params */
 			}
 			/* add this parameter */
-			fprintf(parser->out, "struct %s *this%s", classname, argsep);
-			parser->writepos = next;
+			outprintf(parser, "struct %s *this%s", classname, argsep);
+			parser->pf.writepos = next;
 		} else {
 			fprintf(stderr, "class '%s' not declared\n", classname);
 			class = NULL;
@@ -970,7 +1278,7 @@ static void parse_function(struct parser *parser, char *next)
 	next = skip_whitespace(next+1);
 	if (*next == ';') {
 		/* function prototype */
-		parser->pos = next + 1;
+		parser->pf.pos = next + 1;
 		return;
 	}
 
@@ -1149,7 +1457,7 @@ static void parse_function(struct parser *parser, char *next)
 			next = curr+1;
 	}
 
-	parser->pos = curr + 1;
+	parser->pf.pos = curr + 1;
 }
 
 static void print_vmts(struct parser *parser)
@@ -1163,90 +1471,389 @@ static void print_vmts(struct parser *parser)
 		if (!class->num_vfuncs_seen)
 			continue;
 
-		fprintf(parser->out, "\nstruct %s_vmt %s_vmt {\n", class->name, class->name);
+		outprintf(parser, "\nstruct %s_vmt %s_vmt {\n", class->name, class->name);
 		for (j = 0; j < class->members.num; j++) {
 			member = class->members.mem[j];
 			if (!member->props.is_virtual)
 				continue;
 
-			fprintf(parser->out, "\t%s_%s,\n", class->name, member->name);
+			outprintf(parser, "\t%s_%s,\n", class->name, member->name);
 		}
-		fputs("};\n", parser->out);
+		outputs(parser, "};\n");
 	}
 }
 
-#define LEFT_PAREN  ((void*)(size_t)'(')
+enum include_location {
+	SEARCH_CURRENT_DIR,
+	SEARCH_ONLY_PATHS,
+};
 
-static void parse(char *filename, char *buffer)
+static FILE *locate_include_file(struct parser *parser, char *dir, char *nameend,
+		char *fullname, char **ret_newfilename_file)
 {
-	struct parser parser_s, *parser = &parser_s;
+	char *p, *bufend = &parser->newfilename[sizeof(parser->newfilename)];
+	struct file_id file_id;
+	void **file_id_pos;
+	FILE *fp_inc;
+	int ret;
+
+	p = stmcpy(parser->pf.newfilename_file, bufend, dir);
+	if (dir[0] != 0 && *(p-1) != '\\')
+		*p++ = '\\';
+	*ret_newfilename_file = p;  /* remember filename start in case we parse it */
+	p = stmecpy(p, bufend, parser->pf.pos, nameend);
+	if (p+1 == bufend)  /* nul-character before end, at end is overflow! */
+		return NULL;
+
+	fp_inc = fopen(fullname, "rb");
+	if (fp_inc == NULL)
+		return NULL;
+
+	/* check if we have already seen/parsed this file */
+	if (get_file_id(fp_inc, &file_id) < 0)
+		goto err_fp;
+	ret = find_file_id(&parser->files_seen, &file_id, &file_id_pos);
+	if (ret == 0)
+		goto err_fp;
+	if (ret < 0)
+		file_id_pos++;
+	insert_file_id(parser, file_id_pos, &file_id);
+	parser->newfilename_end = p;
+	return fp_inc;
+err_fp:
+	fclose(fp_inc);
+	return NULL;
+}
+
+static int parse_source(struct parser *parser, char *filename, FILE *in, char *ext_out);
+
+static int try_include_file(struct parser *parser, char *dir, char *nameend)
+{
+	FILE *fp_inc;
+	char *buffer, *outbuffer, *fullname, *filename, *outfilename, *new_newfilename_file;
+	struct parse_file *parse_file;
+
+	/* if directory specified, use from there, otherwise including current dir */
+	if (dir[0] != 0)
+		fullname = parser->pf.newfilename_file;
+	else
+		fullname = parser->pf.newfilename_path;
+	fp_inc = locate_include_file(parser, dir, nameend, fullname, &new_newfilename_file);
+	if (fp_inc == NULL)
+		return -1;
+
+	/* allocate temporary to store current state */
+	parse_file = addfilestack(parser);
+	if (parse_file == NULL)
+		goto err_add;
+
+	/* make copy before overwriting parse_file, newfilename is reused later */
+	filename = strdupto(parse_file->filename, fullname);
+	/* reuse old buffers, if any */
+	buffer = parse_file->buffer;
+	outbuffer = parse_file->outbuffer;
+	outfilename = parse_file->outfilename;
+	/* save current parsing state */
+	memcpy(parse_file, &parser->pf, sizeof(*parse_file));
+	/* parser->filename assigned in parse_source */
+	parser->pf.out = NULL;
+	parser->pf.buffer = buffer;
+	parser->pf.outbuffer = outbuffer;
+	parser->pf.outfilename = outfilename;
+	parser->pf.coo_inline_defined = 0;
+	parser->pf.outfailed = 0;
+	/* if path given then put it on stack */
+	if (dir[0] != 0)
+		parser->pf.newfilename_path = parser->pf.newfilename_file;
+	parser->pf.newfilename_file = new_newfilename_file;
+	/* recursively parse! */
+	parse_source(parser, filename, fp_inc, parser->header_ext_out);
+	/* restore parser state, swap the buffers back, we can reuse them later */
+	buffer = parser->pf.buffer;
+	filename = parser->pf.filename;
+	outbuffer = parser->pf.outbuffer;
+	outfilename = parser->pf.outfilename;
+	memcpy(&parser->pf, parse_file, sizeof(parser->pf));
+	parse_file->buffer = buffer;
+	parse_file->filename = filename;
+	parse_file->outbuffer = outbuffer;
+	parse_file->outfilename = outfilename;
+	parser->file_stack.num--;
+	/* fp_inc was closed by parse_source */
+	return 0;
+err_add:
+	fclose(fp_inc);
+	return -1;
+}
+
+static void try_include(struct parser *parser, char *nameend, enum include_location loc)
+{
+	char *ext;
+	unsigned i;
+
+	parser->pf.pos++;
+	/* check user enabled include extension matching */
+	if (parser->include_ext_in_len) {
+		/* check if name is too short to match extension at all */
+		ext = nameend - parser->include_ext_in_len;
+		if (ext < parser->pf.pos)
+			return;
+		if (strprefixcmp(parser->include_ext_in, ext) == NULL)
+			return;
+	}
+
+	if (loc == SEARCH_CURRENT_DIR)
+		if (try_include_file(parser, "", nameend) == 0)
+			return;
+	for (i = 0; i < parser->includepaths.num; i++)
+		if (try_include_file(parser, parser->includepaths.mem[i], nameend) == 0)
+			return;
+
+	if (parser->include_ext_in_len) {
+		char *tempname = stredup(parser->pf.pos, nameend);
+		fprintf(stderr, "%s: file not found\n", tempname);
+		free(tempname);
+	} else {
+		/* not found... assume it's a system header or so */
+	}
+}
+
+static void parse_include(struct parser *parser)
+{
 	char *next;
 
-	memset(&parser_s, 0, sizeof(parser_s));
-	parser->writepos = parser->pos = buffer;
-	parser->out = stdout;
+	while (islinespace(*parser->pf.pos))
+		parser->pf.pos++;
+	next = scan_token(parser->pf.pos + 1, "/\">\r\n");
+	if (*parser->pf.pos == '"' && *next == '"')
+		try_include(parser, next, SEARCH_CURRENT_DIR);
+	else if (*parser->pf.pos == '<' && *next == '>')
+		try_include(parser, next, SEARCH_ONLY_PATHS);
+	else
+		fprintf(stderr, "unknown character after #include, ignored\n");
+
+	parser->pf.pos = next + 1;
+}
+
+static void parse(struct parser *parser)
+{
+	char *next;
+
 	/* search for start of struct or function */
 	for (;;) {
-		parser->pos = skip_whitespace(parser->pos);
-		next = scan_token(parser->pos, "/({;");
+		parser->pf.pos = skip_whitespace(parser->pf.pos);
+		if (*parser->pf.pos == '#') {
+			parser->pf.pos++;
+			if (strprefixcmp("include ", parser->pf.pos)) {
+				parser->pf.pos += 8;  /* "include " */
+				parse_include(parser);
+			}
+
+			next = strchr(parser->pf.pos, '\n');
+			if (next == NULL)
+				break;
+
+			parser->pf.pos = next + 1;
+			continue;
+		}
+		if (*parser->pf.pos == '"') {
+			for (next = parser->pf.pos + 1;;) {
+				next = strchr(next, '"');
+				if (next == NULL)
+					break;
+				if (*(next-1) != '\\')
+					break;
+			}
+
+			parser->pf.pos = next + 1;
+			continue;
+		}
+
+		next = scan_token(parser->pf.pos, "/({;");
 		if (next == NULL)
 			break;
 
-		if (*next == '{' && strprefixcmp("struct ", parser->pos) != NULL) {
+		if (*next == '{' && strprefixcmp("struct ", parser->pf.pos)) {
 			parse_struct(parser, next);
-		}
-		if (*next == '{' && strprefixcmp("typedef struct ", parser->pos) != NULL) {
+		} else if (*next == '{' && strprefixcmp("typedef struct ", parser->pf.pos)) {
 			parse_struct(parser, next);
-		}
-		if (*next == ';' && strprefixcmp("typedef ", parser->pos) != NULL) {
-			parser->pos += 8;  /* "typedef " */
+		} else if (*next == ';' && strprefixcmp("typedef ", parser->pf.pos)) {
+			parser->pf.pos += 8;  /* "typedef " */
 			parse_typedef(parser, next);
-		}
-		if (*next == '(') {
+		} else if (*next == '(') {
 			parse_function(parser, next);
 		}
-		if (parser->pos <= next)
-			parser->pos = next + 1;
+		if (parser->pf.pos <= next)
+			parser->pf.pos = next + 1;
 	}
 
 	flush(parser);
+}
+
+/* parser->pf.out == NULL => parser->newfilename contains input filename, transform
+ * this filename to output filename and read it into outbuffer
+ * parser->pf.out != NULL => do not scan output file, output immediately */
+static int parse_source_size(struct parser *parser, char *filename,
+		FILE *in, size_t size, char *ext_out)
+{
+	char *buffer, *outfilename, *p;
+	size_t outnamelen;
+	FILE *fp_dest;
+
+	/* read entire input file in one go to make scanning easier */
+	parser->pf.filename = filename;
+	buffer = read_file_until(in, parser->pf.buffer, size);
+	if (buffer == NULL)
+		return -1;
+
+	/* prepare input buffer pointers for scanning */
+	fclose(in);
+	parser->pf.buffer = parser->pf.writepos = parser->pf.pos = buffer;
+	/* make sure filename_file points to filename (after last /) */
+	for (p = parser->pf.newfilename_file; *p; p++)
+		if (*p == '/')
+			parser->pf.newfilename_file = p+1;
+
+	/* scan (previously generated) output file for comparison, if applicable */
+	if (parser->pf.out == NULL) {
+		/* input filename was written into newfilename, just need to
+		 * replace extension to generate output filename */
+		char *bufend = &parser->newfilename[sizeof(parser->newfilename)];
+		parser->newfilename_end = replace_ext_temp(parser->newfilename,
+			parser->newfilename_end, bufend, ext_out);
+		if (parser->newfilename_end == NULL)
+			return -1;
+
+		outfilename = strdupto(parser->pf.outfilename, parser->pf.newfilename_path);
+		/* newfilename includes temporary (pid) extension, remove it to get outfilename */
+		parser->pf.outfilename = outfilename;
+		parser->pf.outfilename_end = outfilename
+			+ (parser->newfilename_end - parser->pf.newfilename_path);
+		*parser->pf.outfilename_end = 0;
+		/* open read-only, because if we want to modify, write temporary file later */
+		fp_dest = fopen(outfilename, "rb");
+		if (fp_dest) {
+			parser->pf.outbuffer = read_file(fp_dest, parser->pf.outbuffer);
+			parser->pf.outpos = parser->pf.outbuffer;
+			fclose(fp_dest);
+			if (parser->pf.outbuffer == NULL)
+				return -1;
+		} else {
+			parser->pf.outpos = NULL;
+			prepare_output_file(parser);
+		}
+	}
+
+	/* start parsing! */
+	parse(parser);
 	print_vmts(parser);
+	if (parser->pf.out) {
+		fclose(parser->pf.out);
+		parser->pf.out = NULL;
+		/* rename temporary output filename to final filename
+		 * might not be present in case of stdout output */
+		if (parser->pf.outfilename) {
+			outnamelen = parser->pf.outfilename_end - parser->pf.outfilename;
+			memcpy(parser->pf.newfilename_file, parser->pf.outfilename, outnamelen);
+			parser->pf.newfilename_file[outnamelen] = 0;
+			rename(parser->pf.outfilename, parser->pf.newfilename_file);
+		}
+	}
+
+	return 0;
+}
+
+static int parse_source(struct parser *parser, char *filename, FILE *in, char *ext_out)
+{
+	return parse_source_size(parser, filename, in, file_size(in), ext_out);
+}
+
+static void parse_from_file(struct parser *parser, char *filename, char *ext_out)
+{
+	FILE *in;
+	char *strend;
+
+	in = fopen(filename, "rb");
+	if (!in) {
+		fprintf(stderr, "Cannot open file '%s'\n", filename);
+		return;
+	}
+
+	if (stfcpy_e(parser->newfilename, filename, &strend) < 0) {
+		fprintf(stderr, "input filename too long\n");
+		return;
+	}
+
+	parser->newfilename_end = strend;
+	parse_source(parser, filename, in, ext_out);
+}
+
+static int parse_stdin(struct parser *parser)
+{
+	parser->pf.out = stdout;
+	return parse_source_size(parser,
+		"<stdin>", stdin, STDIN_BUFSIZE, parser->source_ext_out);
+}
+
+static void usage(void)
+{
+	fprintf(stderr, "coo: an Object Oriented C to plain C compiler\n"
+		"usage: coo [option] [FILE] ...\n"
+		"\twith no FILE, read from stdin\n"
+		"options:\n"
+		"\t-Ipath: search path for include files\n"
+		"\t-ofile: set output filename\n"
+		"\t-xsext: output source to filename with extension replaced with ext\n"
+		"\t-xhext: output headers to filename with extension replaced with ext\n"
+		"\t-xiext: only find includes with extension ext; error if not found\n");
+}
+
+int parseextoption(struct parser *parser, char *option)
+{
+	switch (*option) {
+	case 'i':
+		parser->include_ext_in = option+1;
+		parser->include_ext_in_len = strlen(parser->include_ext_in);
+		return 0;
+	case 's': parser->source_ext_out = option+1; return 0;
+	case 'h': parser->header_ext_out = option+1; return 0;
+	default: usage(); return -1;
+	}
 }
 
 int main(int argc, char **argv)
 {
-	FILE *in;
-	char *filename, *inbuffer;
-	size_t size;
+	struct parser parser_s, *parser = &parser_s;
 
-	if (argc >= 2) {
-		filename = argv[1];
-		in = fopen(argv[1], "r");
-		if (!in) {
-			fprintf(stderr, "Cannot open file '%s'\n", filename);
-			return 1;
-		}
-
-		fseek(in, 0, SEEK_END);
-		size = ftell(in) + 1;
-		fseek(in, 0, SEEK_SET);
-	} else {
-		filename = "<stdin>";
-		size = STDIN_BUFSIZE;
-		in = stdin;
+	memset(&parser_s, 0, sizeof(parser_s));
+	parser->pf.newfilename_path = parser->pf.newfilename_file =
+		parser->newfilename_end = parser->newfilename;
+	parser->source_ext_out = ".coo.c";
+	parser->header_ext_out = ".coo.h";
+	g_pid = getpid();
+	argc--; argv++; /* skip our name */
+	/* parse options */
+	for (; argc; argc--, argv++) {
+		if ((*argv)[0] == '-') {
+			switch ((*argv)[1]) {
+			case 'I':
+				if (addincludepath(parser, *argv + 2) < 0)
+					return 2;
+				break;
+			case 'o': /* output filename? TODO */
+			case 'x':
+				if (parseextoption(parser, *argv + 1) < 0)
+					return 2;
+				break;
+			default: usage(); return 1;
+			}
+		} else
+			parse_from_file(parser, *argv, parser->source_ext_out);
 	}
 
-	inbuffer = malloc(size);
-	if (inbuffer == NULL) {
-		fprintf(stderr, "No memory for input buffer\n");
-		return 2;
-	}
-
-	size = fread(inbuffer, 1, size, in);
-	inbuffer[size] = 0;
-	fclose(in);
-
-	parse(filename, inbuffer);
+	/* if no file given on commandline, then parse stdin */
+	if (parser->pf.filename == NULL)
+		parse_stdin(parser);
 
 	return 0;
 }

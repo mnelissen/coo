@@ -74,6 +74,7 @@ struct member {
 	     for member, no change */
 	struct memberprops props;
 	char retsep;   /* separator between rettype and name, may be '*' */
+	char duplicate_pr;  /* to prevent spam, already printed duplicated message */
 };
 
 struct variable {
@@ -364,13 +365,13 @@ static size_t file_size(FILE *fp)
 
 static void *read_file_until(FILE *fp, char *buffer, size_t size)
 {
-	buffer = realloc(buffer, size);
+	buffer = realloc(buffer, size+1);
 	if (buffer == NULL) {
 		fprintf(stderr, "No memory for file buffer\n");
 		return NULL;
 	}
 
-	size = fread(buffer, 1, size-1, fp);
+	size = fread(buffer, 1, size, fp);
 	buffer[size] = 0;
 	return buffer;
 }
@@ -650,10 +651,23 @@ static int compare_names(const void *left, const void *right)
 
 static void sort_dynarr(struct dynarr *dynarr)
 {
+	struct member **item, **cmp_last;
+
 	if (dynarr->sorted)
 		return;
 
-	qsort_dynarr(dynarr, compare_names);
+	if (dynarr->mem) {
+		qsort_dynarr(dynarr, compare_names);
+		cmp_last = (struct member**)(dynarr->mem + dynarr->num - 1);
+		for (item = (struct member**)dynarr->mem; item < cmp_last; item++) {
+			if (item[0]->duplicate_pr)
+				continue;
+			if (strcmp(item[0]->name, item[1]->name) == 0) {
+				fprintf(stderr, "duplicate '%s' found\n", item[0]->name);
+				item[0]->duplicate_pr = item[1]->duplicate_pr = 1;
+			}
+		}
+	}
 	dynarr->sorted = 1;
 }
 

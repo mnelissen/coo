@@ -1,13 +1,4 @@
-struct foo {
-	int x;
-	char func();
-	float func1(void *p);
-	int *func2(char a, int b);
-	void *get_foo(int a);
-	virtual void vfunc();
-	int *(*intfuncptr)(char c);
-	int *y;
-};
+#include <foo.hoo>
 
 char foo::func()
 {

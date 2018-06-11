@@ -1,0 +1,6 @@
+struct bar {
+	int a, b;
+	int *barf(char a, int b);
+	void *get_bar(int a);
+	virtual void vbarf();
+};

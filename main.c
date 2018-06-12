@@ -32,7 +32,7 @@ typedef uint32_t pid_t;
 	"#define coo_inline extern inline " \
 		"__attribute__((always_inline)) __attribute__((gnu_inline))\n" \
 	"#endif\n" \
-	"#endif\n\n"
+	"#endif\n"
 
 struct file_id {
 	dev_t dev_id;
@@ -180,6 +180,25 @@ static char *skip_whitespace(char *p)
 		else
 			break;
 	}
+	return p;
+}
+
+/* skip whitespace and comments for this line only */
+static char *skip_whiteline(char *p)
+{
+	for (;;) {
+		if (islinespace(*p))
+			p++;
+		else if (*p == '/')
+			p = skip_comment(p);
+		else
+			break;
+	}
+	/* skip one line ending, not all */
+	if (*p == '\r')
+		p++;
+	if (*p == '\n')
+		p++;
 	return p;
 }
 
@@ -879,7 +898,7 @@ static void print_vmt_type(struct parser *parser, struct class *class)
 	if (class->num_vfuncs == 0)
 		return;
 
-	outprintf(parser, "extern struct %s_vmt {\n", class->name);
+	outprintf(parser, "\nextern struct %s_vmt {\n", class->name);
 	for (i = 0; i < class->members.num; i++) {
 		member = class->members.mem[i];
 		if (!member->props.is_virtual)
@@ -889,7 +908,7 @@ static void print_vmt_type(struct parser *parser, struct class *class)
 			member->rettype, member->retsep,
 			member->name, member->params);
 	}
-	outprintf(parser, "} %s_vmt;\n\n", class->name);
+	outprintf(parser, "} %s_vmt;\n", class->name);
 }
 
 enum func_decltype {
@@ -914,17 +933,17 @@ static void print_func_decl(struct parser *parser, struct class *class,
 		func_prefix = name_insert = "";
 		func_body = ";";   /* no body */
 	}
-	outprintf(parser, "%s%s%c%s_%s%s(struct %s *this%s%s%s\n",
+	outprintf(parser, "\n%s%s%c%s_%s%s(struct %s *this%s%s%s",
 		func_prefix, member->rettype, member->retsep,
 		class->name, name_insert, member->name, class->name,
 		empty ? "" : ", ", member->params, func_body);
 	if (emittype == VIRTUAL_WRAPPER) {
-		outprintf(parser, "\t((struct %s_vmt*)this->vmt)->%s(this",
+		outprintf(parser, "\n\t((struct %s_vmt*)this->vmt)->%s(this",
 			class->name, member->name);
-		for (p = first_param; *p != ')'; p = skip_whitespace(p)) {
+		for (p = first_param;;) {
 			last_word = NULL;
 			/* search for last word, assume it is parameter name */
-			for (; *p != ',' && *p != ')';) {
+			while (*p != ')' && *p != ',') {
 				if (*p == '/')
 					p = skip_comment(p);
 				else if (isalpha(*p)) {
@@ -934,14 +953,15 @@ static void print_func_decl(struct parser *parser, struct class *class,
 					p++;
 			}
 			if (last_word) {
-				*last_end = 0;
-				outprintf(parser, ", %s", last_word);
+				outwrite(parser, ", ", 2);
+				outwrite(parser, last_word, last_end - last_word);
 			}
+			if (*p == ')')
+				break;
 			/* go to next argument */
-			if (*p != ')')
-				p++;
+			p = skip_whitespace(p+1);
 		}
-		outprintf(parser, ");\n}\n\n");
+		outprintf(parser, ");\n}\n");
 	}
 }
 
@@ -951,7 +971,7 @@ static void print_member_decls(struct parser *parser, struct class *class)
 	unsigned i;
 
 	if (class->num_vfuncs && !parser->pf.coo_inline_defined) {
-		outputs(parser, DEF_COO_INLINE);
+		outputs(parser, "\n"DEF_COO_INLINE);
 		parser->pf.coo_inline_defined = 1;
 	}
 
@@ -960,7 +980,7 @@ static void print_member_decls(struct parser *parser, struct class *class)
 		if (member->props.is_function) {
 			print_func_decl(parser, class, member, MEMBER_FUNCTION);
 		} else if (member->props.is_static) {
-			outprintf(parser, "extern %s%c%s_%s;\n",
+			outprintf(parser, "\nextern %s%c%s_%s;",
 				member->rettype, member->retsep,
 				class->name, member->name);
 		}
@@ -970,7 +990,6 @@ static void print_member_decls(struct parser *parser, struct class *class)
 		return;
 
 	/* now generate all the virtual method call wrappers */
-	outwrite(parser, "\n", 1);
 	for (i = 0; i < class->members.num; i++) {
 		member = class->members.mem[i];
 		if (member->props.is_virtual)
@@ -1118,7 +1137,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 			/* TODO: addglobal() */
 		}
 	}
-	parser->pf.pos = skip_whitespace(declend + 1);
+	parser->pf.pos = skip_whiteline(declend + 1);
 	flush(parser);
 	print_vmt_type(parser, class);
 	print_member_decls(parser, class);

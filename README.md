@@ -56,19 +56,35 @@ acts from there.
   * recognize member functions, replace with class function call with this
 * recognize declarations of variables of struct (classes)
   * recognize member functions, replace with class function call with that var
+* recognize #include statements and recursively parse those header files
+
+## include files
+
+Files in #include lines are looked up same as C. With '<...>' searches provided
+paths on the commandline only, '"..."' also searches the current directory of
+the file that has the #include line.
+
+Note that if included files are not found, no error is printed. Typically coo
+there is no need for coo to parse system headers for example anyway. For
+diagnostic purpose though, a commandline option '-xi' is available to filter
+what files (the ones with given extension) should be processed. If in this case
+an include file is not found, then an error _is_ printed.
 
 ## TODO
 
 * initialize the "vmt" field to the VMT (add a constructor?)
 * support inheritance
-* recognize "#include" and parse header files
-  * write processed header files to a different extension?
 * recognize global variables (searched, but never any added)
 * line number counting, and add it to error messages
+* do not write include processed file if not necessary (if same as original)
 
 ## License
 
-This program is licensed under GPLv3 or later.
+This program is licensed under GPLv3 or later. Processed output of this program,
+in particular macro defines that are part of the program source code are licensed
+under BSD-3-clause.
+
+Copyright 2018 Micha Nelissen
 
 ## Disclaimer
 

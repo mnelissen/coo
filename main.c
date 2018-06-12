@@ -1503,7 +1503,7 @@ static void print_vmts(struct parser *parser)
 		if (!class->num_vfuncs_seen)
 			continue;
 
-		outprintf(parser, "\nstruct %s_vmt %s_vmt {\n", class->name, class->name);
+		outprintf(parser, "\nstruct %s_vmt {\n", class->name);
 		for (j = 0; j < class->members.num; j++) {
 			member = class->members.mem[j];
 			if (!member->props.is_virtual)
@@ -1511,7 +1511,7 @@ static void print_vmts(struct parser *parser)
 
 			outprintf(parser, "\t%s_%s,\n", class->name, member->name);
 		}
-		outputs(parser, "};\n");
+		outprintf(parser, "} %s_vmt;\n", class->name);
 	}
 }
 

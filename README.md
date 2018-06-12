@@ -76,7 +76,6 @@ an include file is not found, then an error _is_ printed.
 * support inheritance
 * recognize global variables (searched, but never any added)
 * line number counting, and add it to error messages
-* do not write include processed file if not necessary (if same as original)
 
 ## License
 

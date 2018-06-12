@@ -353,9 +353,13 @@ int get_file_id(FILE *fp, struct file_id *out_id)
 
 static size_t file_size(FILE *fp)
 {
-	uint32_t sizeHigh;
+	uint32_t sizeLow, sizeHigh;
 
-	return GetFileSize(fileno(fp), &sizeHigh) | ((uint64_t)sizeHigh << 32);
+	/* might fail on e.g. pipe, then use default buffer size */
+	sizeLow = GetFileSize(fileno(fp), &sizeHigh);
+	if (sizeLow == INVALID_FILE_SIZE && GetLastError() != NO_ERROR)
+		return STDIN_BUFSIZE;
+	return sizeLow | ((uint64_t)sizeHigh << 32);
 }
 
 #else
@@ -377,8 +381,9 @@ static size_t file_size(FILE *fp)
 {
 	struct stat stat;
 
-	if (fstat(fileno(fp), &stat) < 0)
-		return 0;
+	/* size unknown on e.g. pipe, then use default buffer size */
+	if (fstat(fileno(fp), &stat) < 0 || !S_ISREG(stat.st_mode))
+		return STDIN_BUFSIZE;
 	return stat.st_size;
 }
 

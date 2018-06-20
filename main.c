@@ -19,6 +19,7 @@ typedef uint32_t pid_t;
 #include <sys/types.h>
 #define DIRSEP '/'
 #endif
+#include "hash.h"
 
 #define NEWFN_MAX          8192            /* (stack)size for included dirs+filenames */
 #define OUTPR_MAX          256             /* maximum outprintf size we do */
@@ -34,10 +35,19 @@ typedef uint32_t pid_t;
 	"#endif\n" \
 	"#endif\n"
 
+#define DEFINE_HASHITEM(itemtype) \
+	static int compare_##itemtype(void *a, void *b) \
+	{ return strcmp(((struct itemtype*)a)->name, ((struct itemtype*)b)->name); }
+#define hashstr_init(h, tblsize, itemtype) \
+	hash_init(h, compare_##itemtype, tblsize, offsetof(struct itemtype, node))
+#define hashstr_insert(h, item) \
+	hash_insert(h, &(item)->node, strhash((item)->name))
+
 struct file_id {
 	dev_t dev_id;
 	ino_t file_id;
 	uint64_t mtime;
+	struct hash_entry node;
 };
 
 enum parse_state {
@@ -59,14 +69,18 @@ struct memberprops {
 };
 
 struct class {
-	char *name;
-	struct dynarr members;
+	struct hash members;
+	struct dynarr members_arr;
+	unsigned is_interface;
 	unsigned num_vfuncs;
 	unsigned num_vfuncs_seen;  /* to trigger generate virtual method table */
+	struct hash_entry node;    /* must be in front of name */
+	char name[];
 };
 
+DEFINE_HASHITEM(class)
+
 struct member {
-	char *name;
 	char *rettype;
 	struct class *retclass;
 	char *params;
@@ -77,18 +91,28 @@ struct member {
 	struct memberprops props;
 	char retsep;   /* separator between rettype and name, may be '*' */
 	char duplicate_pr;  /* to prevent spam, already printed duplicated message */
+	struct hash_entry node;    /* must be in front of name */
+	char name[];
 };
+
+DEFINE_HASHITEM(member)
 
 struct variable {
-	char *name;
 	struct class *class;
 	unsigned blocklevel;
+	struct hash_entry node;    /* must be in front of name */
+	char name[];
 };
 
+DEFINE_HASHITEM(variable)
+
 struct classtype {
-	char *name;
 	struct class *class;
+	struct hash_entry node;    /* must be in front of name */
+	char name[];
 };
+
+DEFINE_HASHITEM(classtype)
 
 struct insert {   /* an insert, to insert some text in the output */
 	char *flush_until;   /* flush output until here (expression start) */
@@ -118,15 +142,15 @@ struct parser {
 	char *source_ext_out;     /* write source output files with this ext */
 	char *header_ext_out;     /* write header output files with this ext */
 	int include_ext_in_len;   /* length of include_ext_in, optimization */
-	struct dynarr classes;        /* struct class pointers */
-	struct dynarr classtypes;     /* struct classtype pointers */
-	struct dynarr globals;        /* struct variable pointers */
-	struct dynarr locals;         /* struct variable pointers */
+	struct hash classes;          /* struct class pointers */
+	struct hash classtypes;       /* struct classtype pointers */
+	struct hash globals;          /* struct variable pointers */
+	struct hash locals;           /* struct variable pointers */
 	struct dynarr nested_locals;  /* struct variable pointers */
 	struct dynarr inserts;        /* struct insert pointers */
 	struct dynarr includepaths;   /* char pointers */
 	struct dynarr file_stack;     /* struct parse_file pointers */
-	struct dynarr files_seen;     /* struct file_id pointers */
+	struct hash files_seen;       /* struct file_id pointers */
 	char printbuffer[OUTPR_MAX];  /* buffer for outprintf */
 	char newfilename[NEWFN_MAX];  /* (stacked) store curdir + new input filename */
 	char *newfilename_end;        /* pointer to end of new input filename */
@@ -389,6 +413,13 @@ static size_t file_size(FILE *fp)
 
 #endif
 
+int compare_file_ids(void *a, void *b)
+{
+	struct file_id *file_id_a = a, *file_id_b = b;
+	return file_id_a->dev_id != file_id_b->dev_id
+		|| file_id_a->file_id != file_id_b->file_id;
+}
+
 static void *read_file_until(FILE *fp, char *buffer, size_t size)
 {
 	buffer = realloc(buffer, size+1);
@@ -406,6 +437,8 @@ static void *read_file(FILE *fp, char *buffer)
 {
 	return read_file_until(fp, buffer, file_size(fp));
 }
+
+/*** dynamic array ***/
 
 int grow_dynarr(struct dynarr *dynarr)
 {
@@ -464,21 +497,43 @@ void qsort_dynarr(struct dynarr *dynarr, compare_cb cmp)
 	qsort(dynarr->mem, dynarr->num, sizeof(*dynarr->mem), cmp);
 }
 
+/*** parser helpers ***/
+
+static void *realloc_namestruct(void *ptr, size_t structsize, char *name, char *nameend)
+{
+	size_t len = nameend-name, allocsize = structsize + len + 1;
+	char *ret, *dest;
+
+	/* if never allocated yet, zero-initialize */
+	if (ptr)
+		ret = realloc(ptr, allocsize);
+	else
+		ret = calloc(1, allocsize);
+	if (ret == NULL)
+		return NULL;
+
+	dest = ret + structsize;
+	memcpy(dest, name, len);
+	dest[len] = 0;
+	return ret;
+}
+
+#define alloc_namestruct(sz,n,e) realloc_namestruct(NULL, sz, n, e)
+
 static struct class *addclass(struct parser *parser, char *classname, char *nameend)
 {
 	struct class *class;
 
-	/* make sure class_pos will point somewhere valid */
-	if (grow_dynarr(&parser->classes) < 0)
-		return NULL;
-
-	class = calloc(1, sizeof(*class));
+	class = alloc_namestruct(sizeof(*class), classname, nameend);
 	if (class == NULL)
 		return NULL;
 
-	class->name = stredup(classname, nameend);
-	parser->classes.mem[parser->classes.num++] = class;
-	parser->classes.sorted = 0;
+	hashstr_init(&class->members, 16, member);
+	if (hash_insert(&parser->classes, &class->node, strhash(class->name)) < 0) {
+		/* already exists */
+		free(class);
+		class = NULL;
+	}
 	return class;
 }
 
@@ -487,75 +542,75 @@ static struct classtype *addclasstype(struct parser *parser,
 {
 	struct classtype *type;
 
-	/* make sure type_pos will point somewhere valid */
-	if (grow_dynarr(&parser->classtypes) < 0)
-		return NULL;
-
-	type = calloc(1, sizeof(*type));
+	type = alloc_namestruct(sizeof(*type), typename, nameend);
 	if (type == NULL)
 		return NULL;
 
-	type->name = stredup(typename, nameend);
 	type->class = class;
-	parser->classtypes.mem[parser->classtypes.num++] = type;
-	parser->classtypes.sorted = 0;
+	if (hashstr_insert(&parser->classtypes, type) < 0) {
+		/* already exists */
+		free(type);
+		type = NULL;
+	}
 	return type;
 }
 
 static struct member *addmember(struct class *class, char *rettype, char retsep,
-		struct class *retclass, char *membername, char *params,
-		char *declend, struct memberprops props)
+		struct class *retclass, char *membername, char *nameend,
+		char *params, char *declend, struct memberprops props)
 {
 	struct member *member;
 	char *vmt_insert;
 
-	if (grow_dynarr(&class->members) < 0)
+	if (grow_dynarr(&class->members_arr) < 0)
 		return NULL;
-
-	member = calloc(1, sizeof(*member));
+	member = alloc_namestruct(sizeof(*member), membername, nameend);
 	if (member == NULL)
 		return NULL;
+
+	/* check already exists */
+	if (hashstr_insert(&class->members, member) < 0)
+		goto err;
 
 	member->props = props;
 	member->retclass = retclass;
 	member->rettype = rettype;
 	member->retsep = retsep;
 	member->params = params;
-	member->name = membername;
 	if (props.is_function || props.is_static) {
 		vmt_insert = props.is_virtual ? "vmt_" : "";
 		member->insert = aprintf("%s_%s", class->name, vmt_insert);
 	} else
 		member->insert = NULL;
 
-	class->members.mem[class->members.num++] = member;
-	class->members.sorted = 0;
+	class->members_arr.mem[class->members_arr.num] = member;
+	class->members_arr.num++;
 	return member;
+err:
+	free(member);
+	return NULL;
 }
 
 static struct variable *addvariable(struct parser *parser, unsigned blocklevel,
 		struct class *class, char *membername, char *nameend)
 {
-	struct dynarr *dynarr;
+	struct dynarr *dynarr = &parser->nested_locals;
 	struct variable *variable;
-
-	if (!parser->locals.sorted && blocklevel == 0)
-		dynarr = &parser->locals;
-	else
-		dynarr = &parser->nested_locals;
 
 	if (grow_dynarr(dynarr) < 0)
 		return NULL;
 
-	variable = dynarr->mem[dynarr->num];
-	if (!variable) {
-		variable = calloc(1, sizeof(*variable));
-		if (variable == NULL)
-			return NULL;
-		dynarr->mem[dynarr->num] = variable;
+	variable = realloc_namestruct(dynarr->mem[dynarr->num],
+		sizeof(*variable), membername, nameend);
+	if (variable == NULL)
+		return NULL;
+
+	dynarr->mem[dynarr->num] = variable;
+	if (hashstr_insert(&parser->locals, variable) < 0) {
+		/* no need to free variable, ref stored in dynarr */
+		return NULL;
 	}
 
-	variable->name = stredupto(variable->name, membername, nameend);
 	variable->class = class;
 	variable->blocklevel = blocklevel;
 	dynarr->sorted = 0;
@@ -634,24 +689,6 @@ static struct parse_file *addfilestack(struct parser *parser)
 	return parse_file;
 }
 
-static struct file_id *insert_file_id(struct parser *parser, void **before_pos,
-		struct file_id *file_id_src)
-{
-	struct file_id *file_id;
-	void **end_pos;
-
-	file_id = calloc(1, sizeof(*file_id));
-	if (!file_id)
-		return NULL;
-
-	memcpy(file_id, file_id_src, sizeof(*file_id));
-	end_pos = parser->files_seen.mem + parser->files_seen.num;
-	memmove(before_pos+1, before_pos, (char*)end_pos - (char*)before_pos);
-	*before_pos = file_id;
-	parser->files_seen.num++;
-	return file_id;
-}
-
 static void remove_locals(struct parser *parser, int blocklevel)
 {
 	struct variable *var;
@@ -666,135 +703,41 @@ static void remove_locals(struct parser *parser, int blocklevel)
 	parser->nested_locals.num = i;
 }
 
-static int compare_names(const void *left, const void *right)
+#define DEFINE_HASHSTR_FIND(p1, h, nm, itemtype) \
+	static int compare_find_##itemtype(void *a, void *b) \
+	{ return strcmp(a, ((struct itemtype*)b)->name); } \
+	static struct class *find_##nm(p1, char *name) \
+	{ return hash_find_custom(h, strhash(name), compare_find_##itemtype, name); }
+#define DEFINE_HASHSTR_FIND_E(p1, h, nm, itemtype) \
+	static int compare_prefix_##itemtype(void *a, void *b) \
+	{ return strprefixcmp(((struct itemtype*)a)->name, b) == NULL; } \
+	DEFINE_HASHSTR_FIND_E_DUP(p1, h, nm, itemtype)
+#define DEFINE_HASHSTR_FIND_E_DUP(p1, h, nm, itemtype) \
+	static struct itemtype *find_##nm##_e(p1, char *name, char *end) \
+	{ return hash_find_custom(h, memhash(name, end-name), \
+		compare_prefix_##itemtype, name); }
+
+DEFINE_HASHSTR_FIND(struct parser *parser, &parser->classes, class, class)
+DEFINE_HASHSTR_FIND_E(struct parser *parser, &parser->classes, class, class)
+DEFINE_HASHSTR_FIND_E(struct parser *parser, &parser->classtypes, classtype, classtype)
+DEFINE_HASHSTR_FIND_E(struct class *class, &class->members, member, member)
+DEFINE_HASHSTR_FIND_E(struct parser *parser, &parser->globals, global, variable)
+DEFINE_HASHSTR_FIND_E_DUP(struct parser *parser, &parser->locals, local, variable)
+
+static struct class *find_global_e_class(struct parser *parser, char *name, char *nameend)
 {
-	const struct member *left_member = *(void**)left, *right_member = *(void**)right;
-	return strcmp(left_member->name, right_member->name);
+	struct variable *var = find_global_e(parser, name, nameend);
+	if (var == NULL)
+		return NULL;
+	return var->class;
 }
 
-static void sort_dynarr(struct dynarr *dynarr)
+static struct class *find_local_e_class(struct parser *parser, char *name, char *nameend)
 {
-	struct member **item, **cmp_last;
-
-	if (dynarr->sorted)
-		return;
-
-	if (dynarr->mem) {
-		qsort_dynarr(dynarr, compare_names);
-		cmp_last = (struct member**)(dynarr->mem + dynarr->num - 1);
-		for (item = (struct member**)dynarr->mem; item < cmp_last; item++) {
-			if (item[0]->duplicate_pr)
-				continue;
-			if (strcmp(item[0]->name, item[1]->name) == 0) {
-				fprintf(stderr, "duplicate '%s' found\n", item[0]->name);
-				item[0]->duplicate_pr = item[1]->duplicate_pr = 1;
-			}
-		}
-	}
-	dynarr->sorted = 1;
-}
-
-static int compare_name_to(const void *key, const void *item)
-{
-	const struct member *member = item;
-	return strcmp(key, member->name);
-}
-
-static int find_dynarr(struct dynarr *dynarr, char *name, void **retitem)
-{
-	void **array_pos;
-	int ret;
-
-	sort_dynarr(dynarr);
-	ret = bin_search_dynarr(name, dynarr, compare_name_to, &array_pos);
-	if (array_pos)
-		*retitem = *array_pos;
-	else
-		*retitem = NULL;
-	return ret;
-}
-
-static int find_dynarr_e(struct dynarr *dynarr, char *name, char *nameend, void **retitem)
-{
-	char oldch = *nameend;
-	int ret;
-
-	*nameend = 0;
-	ret = find_dynarr(dynarr, name, retitem);
-	*nameend = oldch;
-	return ret;
-}
-
-static int find_class(struct parser *parser, char *classname, struct class **retclass)
-{
-	return find_dynarr(&parser->classes, classname, (void**)retclass);
-}
-
-static int find_class_e(struct parser *parser,
-		char *classname, char *nameend, struct class **retclass)
-{
-	return find_dynarr_e(&parser->classes, classname, nameend, (void**)retclass);
-}
-
-static int find_classtype_e(struct parser *parser,
-		char *typename, char *nameend, struct classtype **rettype)
-{
-	return find_dynarr_e(&parser->classtypes, typename, nameend, (void**)rettype);
-}
-
-static int find_member_e(struct class *class,
-		char *membername, char *nameend, struct member **retmember)
-{
-	return find_dynarr_e(&class->members, membername, nameend, (void**)retmember);
-}
-
-static int find_global(struct parser *parser,
-		char *name, char *nameend, struct class **retclass)
-{
-	return find_dynarr_e(&parser->locals, name, nameend, (void**)retclass);
-}
-
-static int find_local(struct parser *parser,
-		char *name, char *nameend, struct class **retclass)
-{
-	unsigned i;
-	struct variable **vars, *var;
-	int ret;
-
-	/* search backwards, hoping deeper nested is more often used */
-	vars = (struct variable **)parser->nested_locals.mem;
-	for (i = parser->nested_locals.num; i-- > 0;) {
-		if (strprefixcmp(vars[i]->name, name) == nameend) {
-			*retclass = vars[i]->class;
-			return 0;
-		}
-	}
-
-	ret = find_dynarr_e(&parser->locals, name, nameend, (void**)&var);
-	if (ret)
-		return ret;
-
-	*retclass = var->class;
-	return 0;
-}
-
-static int compare_file_id_to(const void *key, const void *item)
-{
-	const struct file_id *key_id = key, *item_id = item;
-	if (key_id->file_id > item_id->file_id)
-		return 1;
-	if (key_id->file_id < item_id->file_id)
-		return -1;
-	if (key_id->dev_id > item_id->dev_id)
-		return 1;
-	if (key_id->dev_id < item_id->dev_id)
-		return -1;
-	return 0;
-}
-
-static int find_file_id(struct dynarr *dynarr, struct file_id *file_id, void ***id_pos)
-{
-	return bin_search_dynarr(file_id, dynarr, compare_file_id_to, id_pos);
+	struct variable *var = find_local_e(parser, name, nameend);
+	if (var == NULL)
+		return NULL;
+	return var->class;
 }
 
 static int prepare_output_file(struct parser *parser)
@@ -882,11 +825,11 @@ struct class *parse_type(struct parser *parser, char *pos, char **ret_next)
 	if (strprefixcmp("struct ", pos)) {
 		name = skip_whitespace(pos + 7);  /* "struct " */
 		next = skip_word(name);
-		if (find_class_e(parser, pos, next, &class))
+		if ((class = find_class_e(parser, pos, next)) == NULL)
 			return NULL;
 	} else {
-		next = skip_word(parser->pf.pos);
-		if (find_classtype_e(parser, pos, next, &classtype))
+		next = skip_word(pos);
+		if ((classtype = find_classtype_e(parser, pos, next)) == NULL)
 			return NULL;
 		class = classtype->class;
 	}
@@ -904,8 +847,8 @@ static void print_vmt_type(struct parser *parser, struct class *class)
 		return;
 
 	outprintf(parser, "\nextern struct %s_vmt {\n", class->name);
-	for (i = 0; i < class->members.num; i++) {
-		member = class->members.mem[i];
+	for (i = 0; i < class->members_arr.num; i++) {
+		member = class->members_arr.mem[i];
 		if (!member->props.is_virtual)
 			continue;
 
@@ -980,8 +923,8 @@ static void print_member_decls(struct parser *parser, struct class *class)
 		parser->pf.coo_inline_defined = 1;
 	}
 
-	for (i = 0; i < class->members.num; i++) {
-		member = class->members.mem[i];
+	for (i = 0; i < class->members_arr.num; i++) {
+		member = class->members_arr.mem[i];
 		if (member->props.is_function) {
 			print_func_decl(parser, class, member, MEMBER_FUNCTION);
 		} else if (member->props.is_static) {
@@ -995,8 +938,8 @@ static void print_member_decls(struct parser *parser, struct class *class)
 		return;
 
 	/* now generate all the virtual method call wrappers */
-	for (i = 0; i < class->members.num; i++) {
-		member = class->members.mem[i];
+	for (i = 0; i < class->members_arr.num; i++) {
+		member = class->members_arr.mem[i];
 		if (member->props.is_virtual)
 			print_func_decl(parser, class, member, VIRTUAL_WRAPPER);
 	}
@@ -1023,10 +966,18 @@ static struct class *parse_struct(struct parser *parser, char *next)
 
 	declend = skip_whitespace(declend);
 	if (*declend == ':') {
-		/* TODO: handle inheritance */
+		for (classname = declend;;) {
+			classname = skip_whitespace(classname + 1);
+			if (strprefixcmp("public ", classname)) {
+				classname += 6;  /* "public" */
+				continue;
+			}
+
+		}
 	}
 
 	level = 1;  /* next is at opening brace '{' */
+	class->is_interface = 1;  /* start assumption, mark later if not */
 	declbegin = NULL;
 	for (;;) {
 		/* search (sub)struct or end of variable or function prototype */
@@ -1113,7 +1064,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 
 		retclass = parse_type(parser, declbegin, &retnext);
 		addmember(class, declbegin, retsep, retclass,
-			membername, params+1, declend, props);
+			membername, nameend, params+1, declend, props);
 		/* if variable then flushed until nextdecl,
 		   for function also skip lineending => go to nextdecl too
 		   except for first virtual function, then we print vmt variable */
@@ -1125,6 +1076,8 @@ static struct class *parse_struct(struct parser *parser, char *next)
 			}
 			class->num_vfuncs++;
 		}
+		if (!props.is_function)
+			class->is_interface = 0;
 		/* small optimization to skip whitespace, already in nextdecl */
 		goto newdecl;
 	}
@@ -1159,7 +1112,7 @@ int parse_member(struct parser *parser, char *exprstart, char *exprend,
 
 	if (class == NULL)
 		return -1;
-	if (find_member_e(class, name, nameend, &member))
+	if ((member = find_member_e(class, name, nameend)) == NULL)
 		return -1;
 
 	if (exprstart && member->props.is_static) {
@@ -1275,10 +1228,10 @@ static void parse_function(struct parser *parser, char *next)
 
 	next++;  /* advance after '(' */
 	if (funcname) {
-		if (find_class(parser, classname, &class) == 0) {
+		if ((class = find_class(parser, classname)) != NULL) {
 			/* lookup method name */
-			if (find_member_e(class, funcname, skip_word(funcname),
-					&member) == 0) {
+			member = find_member_e(class, funcname, skip_word(funcname));
+			if (member != NULL) {
 				if (member->props.is_virtual)
 					class->num_vfuncs_seen++;
 			} else {
@@ -1320,7 +1273,7 @@ static void parse_function(struct parser *parser, char *next)
 	}
 
 	/* store parameters as variables */
-	parser->locals.num = 0;
+	hash_clear(&parser->locals);
 	parser->nested_locals.num = 0;
 	state = FINDVAR;
 	for (next = start;;) {
@@ -1336,7 +1289,7 @@ static void parse_function(struct parser *parser, char *next)
 			if (state == DECLVAR) {
 				/* grammar error, ignore */
 				state = FINDVAR;
-			} else if (find_class_e(parser, name, next, &declclass) >= 0) {
+			} else if ((declclass = find_class_e(parser, name, next)) != NULL) {
 				state = DECLVAR;
 			}
 			continue;
@@ -1363,7 +1316,7 @@ static void parse_function(struct parser *parser, char *next)
 			state = FINDVAR;
 			break;
 		default:
-			if (find_classtype_e(parser, name, next, &classtype) == 0) {
+			if ((classtype = find_classtype_e(parser, name, next)) != NULL) {
 				declclass = classtype->class;
 				printf("class=%p %s\n", declclass, declclass->name);
 				state = DECLVAR;
@@ -1412,7 +1365,7 @@ static void parse_function(struct parser *parser, char *next)
 				if (state == DECLVAR || state == ACCESSMEMBER) {
 					/* grammar error, ignore */
 					state = FINDVAR;
-				} else if (find_class_e(parser, name, next, &newclass) == 0) {
+				} else if ((newclass = find_class_e(parser, name, next)) != NULL) {
 					goto decl_or_cast;
 				}
 				continue;
@@ -1433,12 +1386,13 @@ static void parse_function(struct parser *parser, char *next)
 				break;
 			default:
 				class_p = &exprclass[parenlevel];
-				if (find_local(parser, name, next, class_p)
+				if ((*class_p = find_local_e_class(parser, name, next)) == NULL
 					&& parse_member(parser, NULL, NULL,
 						class, name, next, class_p) < 0
-					&& find_global(parser, name, next, class_p)
-					&& find_classtype_e(parser,
-							name, next, &classtype) == 0) {
+					&& (*class_p = find_global_e_class(
+						parser, name, next)) == NULL
+					&& (classtype = find_classtype_e(
+						parser, name, next)) != NULL) {
 					newclass = classtype->class;
 				  decl_or_cast:
 					if (state == STMTSTART) {
@@ -1501,10 +1455,9 @@ static void print_vmts(struct parser *parser)
 {
 	struct class *class;
 	struct member *member;
-	unsigned i, j;
+	unsigned j;
 
-	for (i = 0; i < parser->classes.num; i++) {
-		class = parser->classes.mem[i];
+	hash_foreach(class, &parser->classes) {
 		if (!class->num_vfuncs_seen)
 			continue;
 
@@ -1512,8 +1465,8 @@ static void print_vmts(struct parser *parser)
 		if (parser->pf.writepos != parser->pf.pos)
 			flush(parser);
 		outprintf(parser, "\nstruct %s_vmt {\n", class->name);
-		for (j = 0; j < class->members.num; j++) {
-			member = class->members.mem[j];
+		for (j = 0; j < class->members_arr.num; j++) {
+			member = class->members_arr.mem[j];
 			if (!member->props.is_virtual)
 				continue;
 
@@ -1532,10 +1485,8 @@ static FILE *locate_include_file(struct parser *parser, char *dir, char *nameend
 		char *fullname, char **ret_newfilename_file)
 {
 	char *p, *bufend = &parser->newfilename[sizeof(parser->newfilename)];
-	struct file_id file_id;
-	void **file_id_pos;
+	struct file_id *file_id;
 	FILE *fp_inc;
-	int ret;
 
 	p = stmcpy(parser->pf.newfilename_file, bufend, dir);
 	if (dir[0] != 0 && *(p-1) != DIRSEP)
@@ -1550,18 +1501,18 @@ static FILE *locate_include_file(struct parser *parser, char *dir, char *nameend
 		return NULL;
 
 	/* check if we have already seen/parsed this file */
-	if (get_file_id(fp_inc, &file_id) < 0)
+	file_id = calloc(1, sizeof(*file_id));
+	if (file_id == NULL)
 		goto err_fp;
-	if (grow_dynarr(&parser->files_seen) < 0)
+	if (get_file_id(fp_inc, file_id) < 0)
 		goto err_fp;
-	ret = find_file_id(&parser->files_seen, &file_id, &file_id_pos);
-	if (ret == 0)
-		goto err_fp;
-	if (ret < 0)
-		file_id_pos++;
-	insert_file_id(parser, file_id_pos, &file_id);
+	if (hash_insert(&parser->files_seen, &file_id->node,
+			uint64hash(file_id->file_id)) < 0)
+		goto err_hash;
 	parser->newfilename_end = p;
 	return fp_inc;
+err_hash:
+	free(file_id);
 err_fp:
 	fclose(fp_inc);
 	return NULL;
@@ -1882,7 +1833,7 @@ static void usage(void)
 		"\t-xiext: only find includes with extension ext; error if not found\n");
 }
 
-int parseextoption(struct parser *parser, char *option)
+static int parseextoption(struct parser *parser, char *option)
 {
 	switch (*option) {
 	case 'i':
@@ -1895,15 +1846,30 @@ int parseextoption(struct parser *parser, char *option)
 	}
 }
 
-int main(int argc, char **argv)
+static int initparser(struct parser *parser)
 {
-	struct parser parser_s, *parser = &parser_s;
-
-	memset(&parser_s, 0, sizeof(parser_s));
+	memset(parser, 0, sizeof(*parser));
 	parser->pf.newfilename_path = parser->pf.newfilename_file =
 		parser->newfilename_end = parser->newfilename;
 	parser->source_ext_out = ".coo.c";
 	parser->header_ext_out = ".coo.h";
+	return hashstr_init(&parser->classes, 64, class) < 0 ||
+		hashstr_init(&parser->classtypes, 64, classtype) < 0 ||
+		hashstr_init(&parser->globals, 64, variable) < 0 ||
+		hashstr_init(&parser->locals, 16, variable) < 0 ||
+		hash_init(&parser->files_seen, compare_file_ids,
+			64, offsetof(struct file_id, node) < 0);
+}
+
+int main(int argc, char **argv)
+{
+	struct parser parser_s, *parser = &parser_s;
+
+	if (initparser(parser)) {
+		fprintf(stderr, "Out of memory allocating parser\n");
+		return 1;
+	}
+
 	g_pid = getpid();
 	argc--; argv++; /* skip our name */
 	/* parse options */

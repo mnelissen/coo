@@ -1,5 +1,32 @@
 #include <foo.hoo>
 
+struct A {
+	int a1;
+};
+
+struct B : A {
+	int b1;
+};
+
+struct C : virtual A {
+	int c1;
+};
+
+struct D : B, C {
+	int d1;
+};
+
+void C::test_c(void)
+{
+	printf("%d %d\n", a1, c1);
+}
+
+void D::test(void)
+{
+	test_c();
+	printf("%d %d %d %d\n", a1, b1, c1, d1);
+}
+
 char foo::func()
 {
 	printf("%d\n", x + *y);

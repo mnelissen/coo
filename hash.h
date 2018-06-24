@@ -27,7 +27,9 @@ size_t memhash(const void *mem, size_t size);
 
 int hash_init(hash_t *table, hash_cmp_cb compare, unsigned size, int offset);
 void hash_clear(struct hash *table);
+/* find user entry with provided dummy hash_entry as key, return NULL if not found */
 void *hash_find(struct hash *table, size_t hash, struct hash_entry *key);
+/* custom compare callback called like compare(user, key) */
 void *hash_find_custom(struct hash *table, size_t hash, hash_cmp_cb compare, void *key);
 int hash_insert(struct hash *table, struct hash_entry *entry, size_t hash);
 void *hash_next(struct hash *table, void *user);

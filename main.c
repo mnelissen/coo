@@ -62,35 +62,52 @@ struct dynarr {
 };
 
 struct memberprops {
-	unsigned char is_virtual;
-	unsigned char is_function;
-	unsigned char is_static;
-	unsigned char seen;
+	unsigned char is_virtual:1;
+	unsigned char is_override:1;
+	unsigned char is_function:1;
+	unsigned char is_static:1;
+	unsigned char from_primary:1;  /* inherited from primary base class? */
+	unsigned char from_virtual:1;  /* a virtual inheritance in chain? */
+	unsigned char seen:1;          /* seen implementation? */
 };
 
 struct class {
 	struct hash members;
 	struct dynarr members_arr;
-	unsigned is_interface;
-	unsigned num_vfuncs;
-	unsigned num_vfuncs_seen;  /* to trigger generate virtual method table */
-	struct hash_entry node;    /* must be in front of name */
+	struct dynarr parents;       /* struct parent *, classes inherited from */
+	struct dynarr descendants;   /* struct parent *, inheriting from this class */ 
+	unsigned char is_interface;
+	unsigned char has_vmt;       /* this or any parent class has a vmt */
+	unsigned char write_vmt;     /* have seen virtual func implementation */
+	struct hash_entry node;      /* must be in front of name */
 	char name[];
 };
 
 DEFINE_HASHITEM(class)
 
+struct parent {
+	struct class *class;       /* parent class */
+	struct class *child;       /* inheriting class */
+	unsigned char is_primary;
+	unsigned char is_virtual;
+};
+
 struct member {
 	char *rettype;
 	struct class *retclass;
+	struct class *origin;     /* origin class where member was defined */
 	char *params;
-	char *insert;   /* insert this string in front of identifier */
-	  /* for virtual function: func() ==> vt->func()
-	     for inherited member: field1 ==> parent.field1
-	     for member, no change */
+	char *funcinsert;   /* insert this string in front of function call */
+	  /* for normal function:  func() ==> class_func()
+	     for virtual function: func() ==> class_vmt_func() */
+	char *parentname;   /* insert after function first argument expression */
+	  /* for a function: x->func() ==> x_func(&x.parent) */
+	char *nameinsert;   /* this member is inherited, insert this in front */
+	  /* for this class: NULL or empty string
+	     for inherited: field1 ==> parent.field1 */
 	struct memberprops props;
-	char retsep;   /* separator between rettype and name, may be '*' */
 	char duplicate_pr;  /* to prevent spam, already printed duplicated message */
+	char parent_virtual;  /* member inherited from a virtual base class */
 	struct hash_entry node;    /* must be in front of name */
 	char name[];
 };
@@ -163,6 +180,11 @@ static char *strchrnul(const char *str, int ch)
 	while (*str && *str != ch)
 		str++;
 	return (char*)str;
+}
+
+static char *strend(const char *str)
+{
+	return (char *)str + strlen(str);
 }
 
 static int islinespace(int ch)
@@ -555,12 +577,9 @@ static struct classtype *addclasstype(struct parser *parser,
 	return type;
 }
 
-static struct member *addmember(struct class *class, char *rettype, char retsep,
-		struct class *retclass, char *membername, char *nameend,
-		char *params, char *declend, struct memberprops props)
+static struct member *allocmember_e(struct class *class, char *membername, char *nameend)
 {
 	struct member *member;
-	char *vmt_insert;
 
 	if (grow_dynarr(&class->members_arr) < 0)
 		return NULL;
@@ -572,23 +591,46 @@ static struct member *addmember(struct class *class, char *rettype, char retsep,
 	if (hashstr_insert(&class->members, member) < 0)
 		goto err;
 
-	member->props = props;
-	member->retclass = retclass;
-	member->rettype = rettype;
-	member->retsep = retsep;
-	member->params = params;
-	if (props.is_function || props.is_static) {
-		vmt_insert = props.is_virtual ? "vmt_" : "";
-		member->insert = aprintf("%s_%s", class->name, vmt_insert);
-	} else
-		member->insert = NULL;
-
 	class->members_arr.mem[class->members_arr.num] = member;
 	class->members_arr.num++;
 	return member;
 err:
 	free(member);
 	return NULL;
+}
+
+static struct member *allocmember(struct class *class, char *membername)
+{
+	return allocmember_e(class, membername, strend(membername));
+}
+
+static void inheritrecursive(struct class *class, struct member *member);
+
+static struct member *addmember(struct class *class, struct class *retclass,
+		char *rettype, char *retend, char *membername, char *nameend,
+		char *params, char *paramend, struct memberprops props)
+{
+	struct member *member;
+	char *vmt_insert;
+
+	member = allocmember_e(class, membername, nameend);
+	if (member == NULL)
+		return NULL;
+
+	member->origin = class;
+	member->props = props;
+	member->retclass = retclass;
+	member->rettype = stredup(rettype, retend);
+	member->params = paramend >= params ? stredup(params, paramend) : NULL;
+	if (props.is_function || props.is_static) {
+		vmt_insert = props.is_virtual ? "vmt_" : "";
+		member->funcinsert = aprintf("%s_%s", class->name, vmt_insert);
+	}
+
+	/* in case of defining functions on the fly,
+	   insert into classes inheriting from this class as well */
+	inheritrecursive(class, member);
+	return member;
 }
 
 static struct variable *addvariable(struct parser *parser, unsigned blocklevel,
@@ -704,13 +746,13 @@ static void remove_locals(struct parser *parser, int blocklevel)
 }
 
 #define DEFINE_HASHSTR_FIND(p1, h, nm, itemtype) \
-	static int compare_find_##itemtype(void *a, void *b) \
-	{ return strcmp(a, ((struct itemtype*)b)->name); } \
+	static int compare_find_##itemtype(void *user, void *key) \
+	{ return strcmp(((struct itemtype*)user)->name, key); } \
 	static struct class *find_##nm(p1, char *name) \
 	{ return hash_find_custom(h, strhash(name), compare_find_##itemtype, name); }
 #define DEFINE_HASHSTR_FIND_E(p1, h, nm, itemtype) \
-	static int compare_prefix_##itemtype(void *a, void *b) \
-	{ return strprefixcmp(((struct itemtype*)a)->name, b) == NULL; } \
+	static int compare_prefix_##itemtype(void *user, void *key) \
+	{ return strprefixcmp(((struct itemtype*)user)->name, key) == NULL; } \
 	DEFINE_HASHSTR_FIND_E_DUP(p1, h, nm, itemtype)
 #define DEFINE_HASHSTR_FIND_E_DUP(p1, h, nm, itemtype) \
 	static struct itemtype *find_##nm##_e(p1, char *name, char *end) \
@@ -825,17 +867,164 @@ struct class *parse_type(struct parser *parser, char *pos, char **ret_next)
 	if (strprefixcmp("struct ", pos)) {
 		name = skip_whitespace(pos + 7);  /* "struct " */
 		next = skip_word(name);
-		if ((class = find_class_e(parser, pos, next)) == NULL)
-			return NULL;
+		class = find_class_e(parser, pos, next);
 	} else {
 		next = skip_word(pos);
-		if ((classtype = find_classtype_e(parser, pos, next)) == NULL)
-			return NULL;
-		class = classtype->class;
+		if ((classtype = find_classtype_e(parser, pos, next)) != NULL)
+			class = classtype->class;
+		else
+			class = NULL;
 	}
 
 	*ret_next = next;
 	return class;
+}
+
+static struct member *inheritmember(struct class *class,
+		struct parent *parent, struct member *parentmember)
+{
+	struct member *member;
+
+	member = allocmember(class, parentmember->name);
+	if (member == NULL)
+		return NULL;
+
+	member->origin = parentmember->origin;
+	member->props = parentmember->props;
+	member->retclass = parentmember->retclass;
+	member->rettype = parentmember->rettype;
+	member->params = parentmember->params;
+	member->funcinsert = parentmember->funcinsert;
+	/* only primary if this and inherited are all primary */
+	member->props.from_primary &= parent->is_primary;
+	member->props.from_virtual |= parent->is_virtual;
+	if (parentmember->parentname) {
+		member->parentname = aprintf("%s%s%s", parent->class->name,
+			parent->is_virtual ? "->" : ".",
+			parentmember->parentname);
+		member->parent_virtual = parentmember->parent_virtual;
+	} else {
+		member->parentname = parent->class->name;
+		member->parent_virtual = parent->is_virtual;
+	}
+	member->nameinsert = aprintf("%s%s", member->parentname,
+				member->parent_virtual ? "->" : ".");
+	/* in case of defining functions on the fly,
+	   insert into classes inheriting from this class as well */
+	inheritrecursive(class, member);
+	return member;
+}
+
+static void inheritrecursive(struct class *class, struct member *member)
+{
+	struct parent *parent;
+	int i;
+	
+	for (i = 0; i < class->descendants.num; i++) {
+		parent = class->descendants.mem[i];
+		inheritmember(parent->child, parent, member);
+	}
+}
+
+/* is origin a virtual base of provided class?
+   -1: not a base of class
+    0: is a base of class, but not virtual
+    1: is a virtual base of class */
+static int is_virtual_base(struct class *origin, struct class *class)
+{
+	struct dynarr *parents = &class->parents;
+	struct parent *parent;
+	int i, ret;
+
+	for (i = 0; i < parents->num; i++) {
+		parent = parents->mem[i];
+		if (parent->class == origin)
+			return parent->is_virtual;
+		ret = is_virtual_base(origin, parent->class);
+		if (ret >= 0)
+			return ret;
+	}
+
+	return -1;
+}
+
+static void import_parent(struct class *class, struct parent *parent)
+{
+	struct member *parentmember, *member;
+	struct dynarr *parentmembers;
+	struct class *origin, *currorigin, *ignoreorigin;
+	struct class *parentclass = parent->class;
+	int i, ret;
+
+	if (grow_dynarr(&class->parents) < 0)
+		return;
+	if (grow_dynarr(&parentclass->descendants) < 0)
+		return;
+
+	parentmembers = &parentclass->members_arr;
+	currorigin = ignoreorigin = NULL;
+	for (i = 0; i < parentmembers->num; i++) {
+		parentmember = parentmembers->mem[i];
+		origin = parentmember->origin;
+		if (origin == ignoreorigin)
+			continue;
+		if (origin != currorigin) {
+			currorigin = origin;
+			/* if we already imported this class virtual, or
+			   this import is virtual, then don't inherit
+			   the members again (prevent duplicates) */
+			ret = is_virtual_base(origin, class);
+			if (ret == 1 || (ret == 0 && parentmember->props.from_virtual))
+				continue;
+			/* on the other hand, might both be non-virtual */
+			if (ret == 0 && !parentmember->props.from_virtual) {
+				fprintf(stderr, "inherit duplicate class %s\n", origin->name);
+				ignoreorigin = origin;
+			}
+		}
+
+		member = inheritmember(class, parent, parentmember);
+		if (member == NULL) {
+			fprintf(stderr, "duplicate member %s from parent "
+				"classes\n", parentmember->name);
+			continue;
+		}
+
+		/* write to output later, when opening brace '{' parsed */
+	}
+
+	/* only add class after origin checks */
+	class->parents.mem[class->parents.num++] = parent;
+	parentclass->descendants.mem[parentclass->descendants.num++] = parent;
+
+	/* do not reuse virtual base class' vmt, is inefficient */
+	if (!parent->is_virtual)
+		class->has_vmt |= parentclass->has_vmt;
+}
+
+static struct member *implmember(struct class *class, struct class *retclass,
+		char *rettype, char *membername, char *nameend,
+		char *params, struct memberprops props)
+{
+	struct member *member;
+
+	member = find_member_e(class, membername, nameend);
+	if (member == NULL) {
+		fprintf(stderr, "cannot find member to override\n");
+		return NULL;
+	} 
+
+	if (!member->props.is_virtual) {
+		fprintf(stderr, "inherited member is not virtual\n");
+		return NULL;
+	}
+	if (member->retclass != retclass || strprefixcmp(member->rettype, rettype) == NULL
+			|| strprefixcmp(member->params, params) == NULL) {
+		fprintf(stderr, "function signature has to be exact match\n");
+		return NULL;
+	}
+
+	return member;
 }
 
 static void print_vmt_type(struct parser *parser, struct class *class)
@@ -843,7 +1032,7 @@ static void print_vmt_type(struct parser *parser, struct class *class)
 	struct member *member;
 	int i;
 
-	if (class->num_vfuncs == 0)
+	if (!class->has_vmt)
 		return;
 
 	outprintf(parser, "\nextern struct %s_vmt {\n", class->name);
@@ -852,9 +1041,8 @@ static void print_vmt_type(struct parser *parser, struct class *class)
 		if (!member->props.is_virtual)
 			continue;
 
-		outprintf(parser, "\t%s%c(*%s)(%s;\n",
-			member->rettype, member->retsep,
-			member->name, member->params);
+		outprintf(parser, "\t%s(*%s)(%s;\n",
+			member->rettype, member->name, member->params);
 	}
 	outprintf(parser, "} %s_vmt;\n", class->name);
 }
@@ -881,10 +1069,9 @@ static void print_func_decl(struct parser *parser, struct class *class,
 		func_prefix = name_insert = "";
 		func_body = ";";   /* no body */
 	}
-	outprintf(parser, "\n%s%s%c%s_%s%s(struct %s *this%s%s%s",
-		func_prefix, member->rettype, member->retsep,
-		class->name, name_insert, member->name, class->name,
-		empty ? "" : ", ", member->params, func_body);
+	outprintf(parser, "\n%s%s%s_%s%s(struct %s *this%s%s%s", func_prefix,
+		member->rettype, class->name, name_insert, member->name,
+		class->name, empty ? "" : ", ", member->params, func_body);
 	if (emittype == VIRTUAL_WRAPPER) {
 		outprintf(parser, "\n\t((struct %s_vmt*)this->vmt)->%s(this",
 			class->name, member->name);
@@ -918,28 +1105,33 @@ static void print_member_decls(struct parser *parser, struct class *class)
 	struct member *member;
 	unsigned i;
 
-	if (class->num_vfuncs && !parser->pf.coo_inline_defined) {
+	if (class->has_vmt && !parser->pf.coo_inline_defined) {
 		outputs(parser, "\n"DEF_COO_INLINE);
 		parser->pf.coo_inline_defined = 1;
 	}
 
 	for (i = 0; i < class->members_arr.num; i++) {
 		member = class->members_arr.mem[i];
+		/* don't inherited members */
+		if (member->origin != class)
+			continue;
 		if (member->props.is_function) {
 			print_func_decl(parser, class, member, MEMBER_FUNCTION);
 		} else if (member->props.is_static) {
-			outprintf(parser, "\nextern %s%c%s_%s;",
-				member->rettype, member->retsep,
-				class->name, member->name);
+			outprintf(parser, "\nextern %s%s_%s;",
+				member->rettype, class->name, member->name);
 		}
 	}
 
-	if (!class->num_vfuncs)
+	if (!class->has_vmt)
 		return;
 
 	/* now generate all the virtual method call wrappers */
 	for (i = 0; i < class->members_arr.num; i++) {
 		member = class->members_arr.mem[i];
+		/* don't inherited members */
+		if (member->origin != class)
+			continue;
 		if (member->props.is_virtual)
 			print_func_decl(parser, class, member, VIRTUAL_WRAPPER);
 	}
@@ -947,11 +1139,14 @@ static void print_member_decls(struct parser *parser, struct class *class)
 
 static struct class *parse_struct(struct parser *parser, char *next)
 {
-	struct class *class, *retclass;
-	struct memberprops props;
-	char *declbegin, retsep, *membername, *nameend, *params, *declend, *nextdecl;
-	char *classname, *retnext;
-	int level, is_typedef;
+	struct class *class, *retclass, *parentclass;
+	struct memberprops memberprops;
+	char *declbegin, *membername, *nameend, *params, *declend, *nextdecl;
+	char *classname, *retnext, *retend;
+	int level, is_typedef, parent_primary, parent_virtual;
+	int first_virtual_warn, first_vmt_warn;
+	struct classtype *parentclasstype;
+	struct parent *parent, *firstparent;
 
 	is_typedef = *parser->pf.pos == 't';
 	/* skip 'typedef struct ' or just 'struct ' */
@@ -961,19 +1156,82 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		class = addclass(parser, classname, declend);
 		if (!class)
 			return NULL;
+		/* mimic C++, class names are also types */
+		addclasstype(parser, classname, declend, class);
 	} else
 		class = NULL;
 
-	declend = skip_whitespace(declend);
-	if (*declend == ':') {
-		for (classname = declend;;) {
+	nextdecl = skip_whitespace(declend);
+	if (*nextdecl == ':') {
+		flush_until(parser, nextdecl);
+		parent_primary = 1;
+		parent_virtual = 0;
+		first_virtual_warn = 0;
+		first_vmt_warn = 0;
+		outwrite(parser, "{\n", 2);
+		for (classname = nextdecl;;) {
 			classname = skip_whitespace(classname + 1);
 			if (strprefixcmp("public ", classname)) {
 				classname += 6;  /* "public" */
 				continue;
 			}
+			if (strprefixcmp("virtual ", classname)) {
+				classname += 7;  /* "virtual" */
+				parent_virtual = 1;
+				continue;
+			}
 
+			nameend = skip_word(classname);
+			parentclasstype = find_classtype_e(parser, classname, nameend);
+			if (parentclasstype == NULL) {
+				fprintf(stderr, "cannot find parent class\n");
+				break;
+			}
+
+			parent = calloc(1, sizeof(*parent));
+			if (parent == NULL)
+				break;
+
+			parentclass = parentclasstype->class;
+			parent->class = parentclass;
+			parent->child = class;
+			parent->is_primary = parent_primary;
+			parent->is_virtual = parent_virtual;
+			if (class->parents.num) {
+				if (!parent_virtual && firstparent->is_virtual
+						&& !first_virtual_warn) {
+					fprintf(stderr, "put non-virtual base class "
+						"first for efficiency\n");
+					first_virtual_warn = 1;
+				}
+				if (parentclass->has_vmt && !firstparent->class->has_vmt
+						&& !parent_virtual && !first_vmt_warn) {
+					fprintf(stderr, "put virtual function class "
+						"first for efficiency\n");
+					first_vmt_warn = 1;
+				}
+			} else {
+				/* remember first parent for checks later (above) */
+				firstparent = parent;
+			}
+
+			import_parent(class, parent);
+			outprintf(parser, "\tstruct %s %s%s;\n", parent->class->name,
+				parent_virtual ? "*" : "", parent->class->name);
+
+			nextdecl = skip_whitespace(nameend);
+			if (*nextdecl == '{')
+				break;
+			if (*nextdecl != ',') {
+				fprintf(stderr, "expected comma after parent class\n");
+				break;
+			}
+			parent_primary = parent_virtual = 0;
+			classname = nextdecl;
 		}
+
+		/* already printed '{', so start at word after '{', or next line */
+		parser->pf.writepos = skip_whiteline(nextdecl+1);
 	}
 
 	level = 1;  /* next is at opening brace '{' */
@@ -1010,15 +1268,17 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		if (isspace(*next))
 			continue;
 
+		retend = membername;
 		declend = params = next;
-		props.is_function = *params == '(';
-		props.is_static = strprefixcmp("static ", declbegin) != NULL;
+		memberprops.is_function = *params == '(';
+		memberprops.is_static = strprefixcmp("static ", declbegin) != NULL;
 
 		/* skip pointers in membername */
 		for (;; membername++) {
 			/* is it a pointer to function variable? */
 			if (*membername == '(') {
-				props.is_function = 0;
+				retend = membername;
+				memberprops.is_function = 0;
 				/* find real params */
 				membername++;
 				/* let loop skip '*' in front of function variable */
@@ -1026,7 +1286,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 			} else if (*membername != '*' && !isspace(*membername))
 				break;
 		}
-		/* find nameend and real params in case of function pointer variable  */
+		/* find nameend and real params in case of function pointer variable */
 		nameend = skip_word(membername);
 		if (params < nameend) {
 			params = scan_token(nameend, "/(;");
@@ -1038,8 +1298,10 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		if (*params == '(' && !(declend = scan_token(params, "/;")))
 			break;
 
-		props.is_virtual = strprefixcmp("virtual ", declbegin) != NULL;
-		if (props.is_virtual && !props.is_function) {
+		memberprops.is_virtual = strprefixcmp("virtual ", declbegin) != NULL;
+		memberprops.is_override = strprefixcmp("override ", declbegin) != NULL;
+		memberprops.is_virtual |= memberprops.is_override;
+		if (memberprops.is_virtual && !memberprops.is_function) {
 			fprintf(stderr, "Member variable cannot be virtual\n");
 			continue;
 		}
@@ -1047,36 +1309,39 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		/* do not print functions or static variables inside the struct
 		   for consistency, flush always to start of declaration */
 		nextdecl = skip_whitespace(declend+1);
-		if (props.is_function || props.is_static)
+		if (memberprops.is_function || memberprops.is_static)
 			flush_until(parser, declbegin);
 		else
 			flush_until(parser, nextdecl);
 
-		/* cut in pieces to store membername, and print modified later */
-		retsep = *(membername-1);
-		*(membername-1) = *nameend = *declend = 0;
-
 		/* no need to check virtual and static because cannot both at declbegin */
-		if (props.is_virtual)
+		if (memberprops.is_virtual)
 			declbegin += 8;  /* skip "virtual " */
-		if (props.is_static)
+		if (memberprops.is_override)
+			declbegin++;     /* skip "override " (diff with "virtual ") */
+		if (memberprops.is_static)
 			declbegin += 7;  /* skip "static " */
 
 		retclass = parse_type(parser, declbegin, &retnext);
-		addmember(class, declbegin, retsep, retclass,
-			membername, nameend, params+1, declend, props);
+		if (memberprops.is_override) {
+			/* cannot add member, should have inherited already from parent */
+			implmember(class, retclass, declbegin,
+				membername, nameend, params+1, memberprops);
+		} else
+			addmember(class, retclass, declbegin, retend,
+				membername, nameend, params+1, declend, memberprops);
 		/* if variable then flushed until nextdecl,
 		   for function also skip lineending => go to nextdecl too
 		   except for first virtual function, then we print vmt variable */
 		parser->pf.pos = parser->pf.writepos = next = nextdecl;
-		if (props.is_virtual) {
-			if (!class->num_vfuncs) {
+		if (memberprops.is_virtual) {
+			if (!class->has_vmt) {
 				outputs(parser, "void *vmt;");
 				parser->pf.writepos = declend+1;
 			}
-			class->num_vfuncs++;
+			class->has_vmt = 1;
 		}
-		if (!props.is_function)
+		if (!memberprops.is_function)
 			class->is_interface = 0;
 		/* small optimization to skip whitespace, already in nextdecl */
 		goto newdecl;
@@ -1120,9 +1385,9 @@ int parse_member(struct parser *parser, char *exprstart, char *exprend,
 		return -1;
 	}
 
-	if (member->insert)
+	if (member->funcinsert)
 		after_pos = addinsert(parser, after_pos,
-			exprstart ?: name, member->insert, name);
+			exprstart ?: name, member->funcinsert, name);
 
 	continue_at = NULL;
 	add_this = !exprstart && !member->props.is_static;
@@ -1132,41 +1397,69 @@ int parse_member(struct parser *parser, char *exprstart, char *exprend,
 			args = NULL;
 		if (args != NULL)
 			args = skip_whitespace(args+1);
-		if (args != NULL) {
-			continue_at = args;
-			if (add_this) {
-				flush_until = args;
+		if (args == NULL)
+			goto out;   /* end of file? escape */
+
+		continue_at = args;
+		if (add_this) {
+			flush_until = args;
+			if (member->parentname) {
+				after_pos = addinsert(parser, after_pos,
+					args, "&this->", args);
+				if (*args != ')') {
+					after_pos = addinsert(parser, after_pos,
+						args, member->parentname, args);
+					insert_text = ", ";
+				} else
+					insert_text = member->parentname;
+			} else {
 				if (*args == ')')
 					insert_text = "this";
 				else
 					insert_text = "this, ";
-			} else {
-				if (exprstart) {
-					/* after other->function(), need to jump to
-					   'other' expression and back to arguments */
-					addinsert(parser, after_pos,
-						args, "", exprstart);
-					/* continue at end */
-					after_pos = (struct insert **)
-						&parser->inserts.mem[parser->inserts.num];
-					flush_until = exprend;
-				} else
-					flush_until = name;
-				if (*args == ')')
-					insert_text = "";
-				else
-					insert_text = ", ";
 			}
+		} else {
+			if (*args == ')')
+				insert_text = "";
+			else
+				insert_text = ", ";
+			if (exprstart) {
+				/* after other->function(, need to jump to
+				   'other' expression and back to arguments */
+				addinsert(parser, after_pos, args,
+					member->parentname ? "&" : "", exprstart);
+				/* continue at end */
+				after_pos = (struct insert **)
+					&parser->inserts.mem[parser->inserts.num];
+				if (member->parentname) {
+					after_pos = addinsert(parser, after_pos,
+						exprend, "->", args);
+					/* reuse empty insert_text if possible */
+					if (insert_text[0] != 0)
+						after_pos = addinsert(parser, after_pos,
+							args, member->parentname, args);
+					else
+						insert_text = member->parentname;
+					flush_until = args;
+				} else
+					flush_until = exprend;
+			} else
+				flush_until = name;
 		}
 	} else if (add_this) {
 		flush_until = name;
-		insert_text = "this->";
 		continue_at = name;
+		insert_text = "this->";
+		if (member->nameinsert) {
+			after_pos = addinsert(parser, after_pos, name, insert_text, name);
+			insert_text = member->nameinsert;
+		}
 	}
 
 	if (continue_at)
 		addinsert(parser, after_pos, flush_until, insert_text, continue_at);
 
+out:
 	*retclass = member->retclass;
 	return 0;
 }
@@ -1206,14 +1499,36 @@ static void print_inserts(struct parser *parser)
 	parser->inserts.num = 0;
 }
 
+static struct class *parse_retclass(struct parser *parser,
+		struct class *class, char *pos, char *retend)
+{
+	struct class *retclass;
+
+	for (;; pos = skip_whitespace(pos)) {
+		if (pos >= retend)
+			return NULL;
+		if (strprefixcmp("static ", pos) != NULL) {
+			pos += 7;
+			continue;
+		}
+		if (strprefixcmp("const ", pos) != NULL) {
+			pos += 6;
+			continue;
+		}
+		retclass = parse_type(parser, pos, &pos);
+		if (retclass != NULL)
+			return retclass;
+	}
+}
+
 static void parse_function(struct parser *parser, char *next)
 {
 	struct class *class, **class_p, *exprclass[MAX_PAREN_LEVELS];
-	struct class *newclass, *declclass;
+	struct class *newclass, *declclass, *retclass;
 	struct classtype *classtype;
 	struct member *member;
-	char *curr, *funcname, *classname, *name, *argsep, *dblcolonsep;
-	char *start, *exprstart[MAX_PAREN_LEVELS], *exprend;
+	char *curr, *funcname, *funcnameend, *classname, *name, *argsep, *dblcolonsep;
+	char *exprstart[MAX_PAREN_LEVELS], *exprend, *params, *paramend;
 	enum parse_state state;
 	int blocklevel, parenlevel, seqparen;
 
@@ -1226,18 +1541,30 @@ static void parse_function(struct parser *parser, char *next)
 		}
 	}
 
-	next++;  /* advance after '(' */
+	params = ++next;  /* advance after '(' */
+	paramend = scan_token(params, "/)");
+	if (paramend == NULL)
+		return;
 	if (funcname) {
 		if ((class = find_class(parser, classname)) != NULL) {
 			/* lookup method name */
-			member = find_member_e(class, funcname, skip_word(funcname));
+			funcnameend = skip_word(funcname);
+			member = find_member_e(class, funcname, funcnameend);
 			if (member != NULL) {
 				if (member->props.is_virtual)
-					class->num_vfuncs_seen++;
+					class->write_vmt = 1;
 			} else {
+				struct memberprops props = {0,};
 				/* undeclared, so it's private, include static */
 				flush(parser);
 				outputs(parser, "static ");
+				/* add as member so others can call from further down */
+				retclass = parse_retclass(parser, class,
+					parser->pf.pos, classname);
+				props.is_function = 1;
+				props.seen = 1;
+				addmember(class, retclass, parser->pf.pos, classname,
+					funcname, funcnameend, params, paramend, props);
 			}
 			/* replace :: with _ */
 			flush_until(parser, dblcolonsep);
@@ -1262,10 +1589,7 @@ static void parse_function(struct parser *parser, char *next)
 		}
 	}
 
-	next = scan_token(start = next, "/)");
-	if (next == NULL)
-		return;
-	next = skip_whitespace(next+1);
+	next = skip_whitespace(paramend+1);
 	if (*next == ';') {
 		/* function prototype */
 		parser->pf.pos = next + 1;
@@ -1276,7 +1600,7 @@ static void parse_function(struct parser *parser, char *next)
 	hash_clear(&parser->locals);
 	parser->nested_locals.num = 0;
 	state = FINDVAR;
-	for (next = start;;) {
+	for (next = params;;) {
 		curr = skip_whitespace(next);
 		if (curr[0] == 0)
 			return;
@@ -1318,7 +1642,6 @@ static void parse_function(struct parser *parser, char *next)
 		default:
 			if ((classtype = find_classtype_e(parser, name, next)) != NULL) {
 				declclass = classtype->class;
-				printf("class=%p %s\n", declclass, declclass->name);
 				state = DECLVAR;
 			}
 			break;
@@ -1458,7 +1781,7 @@ static void print_vmts(struct parser *parser)
 	unsigned j;
 
 	hash_foreach(class, &parser->classes) {
-		if (!class->num_vfuncs_seen)
+		if (!class->write_vmt)
 			continue;
 
 		/* flush if not already done so */

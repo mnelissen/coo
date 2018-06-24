@@ -151,7 +151,7 @@ void *hash_find_custom(struct hash *table, size_t hash, hash_cmp_cb compare, voi
 	for (; entry; entry = entry->next) {
 		/* hash is equal, check if really equal, that is a fail */
 		user = to_user(table, entry);
-		if (entry->hash == hash && compare(key, user) == 0)
+		if (entry->hash == hash && compare(user, key) == 0)
 			return user;
 	}
 

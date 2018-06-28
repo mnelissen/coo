@@ -16,7 +16,8 @@ typedef struct hash {
         hash_cmp_cb compare;
 	unsigned mask;
 	int num_entries;
-        int offset;       /* offset from userdata to struct hash_entry */
+        int cmp_offset;   /* offset from struct hash_entry to compare data */
+        int user_offset;  /* offset from userdata to struct hash_entry */
 } hash_t;
 
 uint32_t uint32hash(uint32_t key);
@@ -25,7 +26,9 @@ size_t ptrhash(void *ptr);
 size_t strhash(const char *str);
 size_t memhash(const void *mem, size_t size);
 
-int hash_init(hash_t *table, hash_cmp_cb compare, unsigned size, int offset);
+/* pass offset from userdata to compare data in user_cmp_offset */
+int hash_init(hash_t *table, hash_cmp_cb compare, unsigned size,
+        int user_entry_offset, int user_cmp_offset);
 void hash_clear(struct hash *table);
 /* find user entry with provided dummy hash_entry as key, return NULL if not found */
 void *hash_find(struct hash *table, size_t hash, struct hash_entry *key);

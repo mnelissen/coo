@@ -2,18 +2,33 @@
 
 struct A {
 	int a1;
+	virtual void vfunc_a(int a2);
 };
 
 struct B : A {
 	int b1;
+	virtual void vfunc_a(void);
+	virtual void vfunc_b(int b2);
 };
 
 struct C : virtual A {
 	int c1;
+	void vfunc_a(void);
+	virtual void vfunc_c(int c2);
 };
 
 struct D : B, C {
 	int d1;
+	void vfunc_a(int a2);
+	void vfunc_b(int b3);
+	void vfunc_c(int c2);
+	void vfunc_d(int d2, int d3);
+};
+
+struct E : D {
+	int e1;
+	void vfunc_b(int b3);
+	void vfunc_d(int d2);
 };
 
 void C::test_c(void)
@@ -41,11 +56,11 @@ double foo::func_new(int z)
 	printf("%d\n", *y + z);
 	func1(z);
 	x->func();
-	x2->func1(arg1);
+	x2->func1(z);
 	((struct foo*)(3 + x->get_foo(x2->func1(z))) + 5)->func();
 }
 
-void foo::vfunc(void)
+void foo::vfunc(int arg1, int arg2)
 {
-	int b = func1(z);
+	int b = func1(arg1);
 }

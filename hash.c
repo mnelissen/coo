@@ -76,15 +76,21 @@ size_t strhash(const char *str)
 
 static struct hash_entry *to_entry(struct hash *table, void *user)
 {
-	return (struct hash_entry *)((char*)user + table->offset);
+	return (struct hash_entry *)((char*)user + table->user_offset);
+}
+
+static void *to_cmp(struct hash *table, struct hash_entry *entry)
+{
+	return (char*)entry + table->cmp_offset;
 }
 
 static void *to_user(struct hash *table, struct hash_entry *entry)
 {
-	return (char*)entry - table->offset;
+	return (char*)entry - table->user_offset;
 }
 
-int hash_init(hash_t *table, hash_cmp_cb compare, unsigned size, int offset)
+int hash_init(hash_t *table, hash_cmp_cb compare, unsigned size,
+		int user_entry_offset, int user_cmp_offset)
 {
 	if (size <= 1 || (size & (size - 1)) != 0)
 		return -1;
@@ -96,7 +102,9 @@ int hash_init(hash_t *table, hash_cmp_cb compare, unsigned size, int offset)
 	table->compare = compare;
 	table->num_entries = 0;
 	table->mask = size - 1;
-	table->offset = offset;
+	/* from entry to compare: entry back to user, forward to compare */
+	table->cmp_offset = user_cmp_offset - user_entry_offset;
+	table->user_offset = user_entry_offset;
 	return 0;
 }
 
@@ -144,15 +152,13 @@ void *hash_find_custom(struct hash *table, size_t hash, hash_cmp_cb compare, voi
 {
 	struct hash_entry *entry;
 	size_t table_index;
-	void *user;
 
 	table_index = hash & table->mask;
 	entry = table->entries[table_index];
 	for (; entry; entry = entry->next) {
 		/* hash is equal, check if really equal, that is a fail */
-		user = to_user(table, entry);
-		if (entry->hash == hash && compare(user, key) == 0)
-			return user;
+		if (entry->hash == hash && compare(to_cmp(table, entry), key) == 0)
+			return to_user(table, entry);
 	}
 
 	return NULL;

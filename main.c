@@ -253,7 +253,17 @@ static char *skip_whitespace(char *p)
 			p++;
 		else if (*p == '/')
 			p = skip_comment(p);
-		else
+		else if (*p == '"') {
+			for (;;) {
+				p = strchrnul(p + 1, '"');
+				if (*p == 0)
+					return p;
+				if (*(p-1) != '\\')
+					break;
+			}
+
+			p++;
+		} else
 			break;
 	}
 	return p;
@@ -2044,18 +2054,6 @@ static void parse(struct parser *parser)
 			next = strchr(parser->pf.pos, '\n');
 			if (next == NULL)
 				break;
-
-			parser->pf.pos = next + 1;
-			continue;
-		}
-		if (*parser->pf.pos == '"') {
-			for (next = parser->pf.pos + 1;;) {
-				next = strchr(next, '"');
-				if (next == NULL)
-					break;
-				if (*(next-1) != '\\')
-					break;
-			}
 
 			parser->pf.pos = next + 1;
 			continue;

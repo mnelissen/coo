@@ -263,6 +263,13 @@ static char *skip_whitespace(char *p)
 			}
 
 			p++;
+		} else if (*p == '\'') {
+			p++;
+			if (*p == '\\')
+				p++;
+			p++;
+			if (*p == '\'')
+				p++;
 		} else
 			break;
 	}

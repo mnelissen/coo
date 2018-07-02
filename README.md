@@ -57,6 +57,10 @@ acts from there.
 * recognize declarations of variables of struct (classes)
   * recognize member functions, replace with class function call with that var
 * recognize #include statements and recursively parse those header files
+* recognize inheritance, add ':' after 'struct name' with names of classes
+  to be inherited.
+  * multiple inheritance is allowed, but not duplicated
+  * recognize 'virtual parentname' to declare virtual inheritance (like C++)
 
 ## include files
 
@@ -73,7 +77,6 @@ an include file is not found, then an error _is_ printed.
 ## TODO
 
 * initialize the "vmt" field to the VMT (add a constructor?)
-* support inheritance
 * recognize global variables (searched, but never any added)
 * line number counting, and add it to error messages
 

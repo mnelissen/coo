@@ -20,6 +20,7 @@ typedef uint32_t pid_t;
 #define DIRSEP '/'
 #endif
 #include "hash.h"
+#include "hasho.h"
 
 #define NEWFN_MAX          8192            /* (stack)size for included dirs+filenames */
 #define OUTPR_MAX          256             /* maximum outprintf size we do */
@@ -36,11 +37,10 @@ typedef uint32_t pid_t;
 	"#endif\n"
 
 static int compare_prefix_strhash(void *user, void *key);
-static int compare_ptrs(void *a, void *b);
 
 #define DEFINE_PTRHASH(c, h, nm, itemtype) \
-	static struct itemtype *find_##nm(struct c *c, void *ptr) \
-	{ return hash_find_custom(&c->h, ptrhash(ptr), compare_ptrs, ptr); } \
+	static struct itemtype *find_##nm(struct c *c, struct c *ptr) \
+	{ return hash_find(&c->h, ptrhash(ptr), &ptr); } \
 	static int init_##nm##_hash(struct c *c, unsigned tblsize) \
 	{ return hash_init(&c->h, compare_ptrs, tblsize, \
 		offsetof(struct itemtype, node), offsetof(struct itemtype, c)); } \
@@ -75,7 +75,6 @@ struct dynarr {
 	void **mem;
 	unsigned num;
 	unsigned max;
-	unsigned sorted;
 };
 
 struct memberprops {
@@ -93,9 +92,9 @@ struct vmt;
 struct class {
 	struct hash members;
 	struct dynarr members_arr;
-	struct hash parents;         /* struct parent *, all classes inherited from */
+	struct hasho parents;        /* class => parent, all classes inherited from */
 	struct dynarr vmts;          /* struct vmt *, all applicable vmts */
-	struct dynarr descendants;   /* struct parent *, inheriting from this class */ 
+	struct dynarr descendants;   /* struct parent *, inheriting from this class */
 	struct vmt *vmt;             /* from primary parent (or new here)  */
 	unsigned is_interface:1;
 	unsigned write_vmt:1;        /* have seen virtual func implementation */
@@ -106,19 +105,17 @@ struct class {
 struct parent {
 	struct class *class;       /* parent class */
 	struct class *child;       /* inheriting class */
-	struct hash_entry node;    /* entry in class->parents */
 	unsigned char is_primary;
 	unsigned char is_virtual;
 	unsigned char need_vmt;    /* has own vmt or overrides parent's vmt */
 	char path[];               /* full path to this parent */
 };
 
-DEFINE_PTRHASH(class, parents, parent, parent)
-
 struct vmt {
-	struct class *origin;      /* class where vmt originates */
-	unsigned modified:1;       /* any method overriden by class */
-	char name[];               /* vmt struct type and variable name */
+	struct class *origin;        /* where this vmt is first defined */
+	unsigned char modified:1;    /* any method overriden by class */
+	unsigned char is_primary:1;  /* is this the primary vmt for this class? */
+	char name[];                 /* vmt struct type and variable name */
 };
 
 struct member {
@@ -303,11 +300,6 @@ static int compare_prefix_strhash(void *user, void *key)
 	return strprefixcmp(user, key) == NULL;
 }
 
-static int compare_ptrs(void *a, void *b)
-{
-	return a != b;
-}
-
 static char *stmecpy(char *dest, char *end, const char *src, const char *src_end)
 {
 	size_t len, maxlen;
@@ -425,7 +417,7 @@ __attribute__((format(printf,1,2))) static char *aprintf(const char *format, ...
 
 #ifdef _WIN32
 
-int get_file_id(FILE *fp, struct file_id *out_id)
+static int get_file_id(FILE *fp, struct file_id *out_id)
 {
 	BY_HANDLE_FILE_INFORMATION file_info;
 
@@ -453,7 +445,7 @@ static size_t file_size(FILE *fp)
 
 #else
 
-int get_file_id(FILE *fp, struct file_id *out_id)
+static int get_file_id(FILE *fp, struct file_id *out_id)
 {
 	struct stat stat;
 
@@ -478,7 +470,7 @@ static size_t file_size(FILE *fp)
 
 #endif
 
-int compare_file_ids(void *a, void *b)
+static int compare_file_ids(void *a, void *b)
 {
 	struct file_id *file_id_a = a, *file_id_b = b;
 	return file_id_a->dev_id != file_id_b->dev_id
@@ -505,7 +497,7 @@ static void *read_file(FILE *fp, char *buffer)
 
 /*** dynamic array ***/
 
-int grow_dynarr(struct dynarr *dynarr)
+static int grow_dynarr(struct dynarr *dynarr)
 {
 	if (dynarr->num == dynarr->max) {
 		unsigned newmax = dynarr->max ? dynarr->max * 2 : 16;
@@ -520,47 +512,7 @@ int grow_dynarr(struct dynarr *dynarr)
 	return 0;
 }
 
-int insert_dynarr(struct dynarr *dynarr, void **pos)
-{
-	memmove(pos, pos+1, (char*)(dynarr->mem + dynarr->num) - (char*)pos);
-	dynarr->num++;
-	return 0;
-}
-
 typedef int (*compare_cb)(const void *key, const void *item);
-
-int bin_search_dynarr(const void *key, struct dynarr *dynarr, compare_cb cmp, void ***ret)
-{
-	void **try, **base = dynarr->mem;
-	unsigned count = dynarr->num;
-	int sign;
-
-	if (count == 0) {
-		*ret = base;
-		return 1;
-	}
-
-	for (;;) {
-		try = base + count/2;
-		sign = cmp(key, *try);
-		if (!sign || count == 1)
-			break;
-		if (sign < 0) {
-			count /= 2;
-		} else {
-			base = try;
-			count -= count/2;
-		}
-	}
-
-	*ret = try;
-	return sign;
-}
-
-void qsort_dynarr(struct dynarr *dynarr, compare_cb cmp)
-{
-	qsort(dynarr->mem, dynarr->num, sizeof(*dynarr->mem), cmp);
-}
 
 /*** parser helpers ***/
 
@@ -583,18 +535,18 @@ static void *realloc_namestruct(void *ptr, size_t structsize, char *name, char *
 	return ret;
 }
 
-#define alloc_namestruct(sz,n,e) realloc_namestruct(NULL, sz, n, e)
+#define alloc_namestruct(s,n,e) realloc_namestruct(NULL, offsetof(s, name), n, e)
 
 static struct class *addclass(struct parser *parser, char *classname, char *nameend)
 {
 	struct class *class;
 
-	class = alloc_namestruct(sizeof(*class), classname, nameend);
+	class = alloc_namestruct(struct class, classname, nameend);
 	if (class == NULL)
 		return NULL;
 
 	strhash_init(&class->members, 8, member);
-	init_parent_hash(class, 8);
+	hasho_init(&class->parents, 8);
 	if (hash_insert(&parser->classes, &class->node, strhash(class->name)) < 0) {
 		/* already exists */
 		free(class);
@@ -608,7 +560,7 @@ static struct classtype *addclasstype(struct parser *parser,
 {
 	struct classtype *type;
 
-	type = alloc_namestruct(sizeof(*type), typename, nameend);
+	type = alloc_namestruct(struct classtype, typename, nameend);
 	if (type == NULL)
 		return NULL;
 
@@ -627,7 +579,7 @@ static struct member *allocmember_e(struct class *class, char *membername, char 
 
 	if (grow_dynarr(&class->members_arr) < 0)
 		return NULL;
-	member = alloc_namestruct(sizeof(*member), membername, nameend);
+	member = alloc_namestruct(struct member, membername, nameend);
 	if (member == NULL)
 		return NULL;
 
@@ -658,8 +610,11 @@ static struct member *addmember(struct class *class, struct class *retclass,
 	char *vmt_insert;
 
 	member = allocmember_e(class, membername, nameend);
-	if (member == NULL)
+	if (member == NULL) {
+		*nameend = 0;
+		fprintf(stderr, "duplicate member %s, did you mean override?\n", membername);
 		return NULL;
+	}
 
 	member->origin = class;
 	member->definition = class;
@@ -671,8 +626,10 @@ static struct member *addmember(struct class *class, struct class *retclass,
 		vmt_insert = props.is_virtual ? "vmt_" : "";
 		member->funcinsert = aprintf("%s_%s", class->name, vmt_insert);
 	}
-	if (props.is_virtual)
+	if (props.is_virtual) {
 		member->vmt = class->vmt;
+		class->vmt->modified = 1;
+	}
 
 	/* in case of defining functions on the fly,
 	   insert into classes inheriting from this class as well */
@@ -690,7 +647,7 @@ static struct variable *addvariable(struct parser *parser, unsigned blocklevel,
 		return NULL;
 
 	variable = realloc_namestruct(dynarr->mem[dynarr->num],
-		sizeof(*variable), membername, nameend);
+		offsetof(struct variable, name), membername, nameend);
 	if (variable == NULL)
 		return NULL;
 
@@ -702,7 +659,6 @@ static struct variable *addvariable(struct parser *parser, unsigned blocklevel,
 
 	variable->class = class;
 	variable->blocklevel = blocklevel;
-	dynarr->sorted = 0;
 	dynarr->num++;
 	return variable;
 }
@@ -727,7 +683,6 @@ static struct insert **addinsert(struct parser *parser, struct insert **after_po
 	insert->flush_until = flush_until;
 	insert->insert_text = insert_text;
 	insert->continue_at = continue_at;
-	parser->inserts.sorted = 0;
 	parser->inserts.num++;
 	if (!after_pos) {
 		/* check flush ordering to be incremental */
@@ -773,7 +728,6 @@ static struct parse_file *addfilestack(struct parser *parser)
 		dynarr->mem[dynarr->num] = parse_file;
 	}
 
-	dynarr->sorted = 0;
 	dynarr->num++;
 	return parse_file;
 }
@@ -954,10 +908,10 @@ static struct member *inheritmember(struct class *class,
 static void addmember_to_children(struct class *class, struct member *member)
 {
 	struct parent *parent;
-	int j;
+	int i;
 
-	for (j = 0; j < class->descendants.num; j++) {
-		parent = class->descendants.mem[j];
+	for (i = 0; i < class->descendants.num; i++) {
+		parent = class->descendants.mem[i];
 		inheritmember(parent->child, parent, member);
 	}
 }
@@ -970,7 +924,7 @@ static int is_virtual_base(struct class *origin, struct class *class)
 {
 	struct parent *parent;
 
-	parent = find_parent(class, origin);
+	parent = hasho_find(&class->parents, origin);
 	if (parent == NULL)
 		return -1;
 	return parent->is_virtual;
@@ -978,11 +932,40 @@ static int is_virtual_base(struct class *origin, struct class *class)
 
 static void add_parents_recursive(struct class *class, struct parent *parent)
 {
-	struct parent *gparent;
+	struct class *parentclass = parent->class;
+	struct hasho_entry *gparent_entry;
 
-	insert_parent(class, parent);
-	hash_foreach(gparent, &parent->class->parents)
-		add_parents_recursive(class, gparent);
+	hasho_insert(&class->parents, parentclass, parent);
+	hasho_foreach(gparent_entry, &parentclass->parents)
+		add_parents_recursive(class, gparent_entry->value);
+}
+
+enum primary_vmt { SECONDARY_VMT, PRIMARY_VMT };  /* boolean compatible */
+
+static void addvmt(struct class *class, struct class *origin, enum primary_vmt primary_vmt)
+{
+	struct vmt *vmt;
+	char *vmt_sec_name, *vmt_sec_sep;
+
+	if (grow_dynarr(&class->vmts) < 0)
+		return;
+
+	/* secondary vmt? append origin class name to distiniguish from primary */
+	if (primary_vmt != PRIMARY_VMT) {
+		vmt_sec_name = origin->name;
+		vmt_sec_sep = "_";
+	} else
+		vmt_sec_name = vmt_sec_sep = "";
+	/* trick: use padded string to allocate struct part */
+	vmt = (void*)aprintf("%*s%s%s%s_vmt", (int)offsetof(struct vmt, name), "",
+			class->name, vmt_sec_sep, vmt_sec_name);
+	/* no need to zero vmt struct, assign all members initial value */
+	vmt->origin = origin;
+	vmt->modified = class == origin;
+	vmt->is_primary = primary_vmt == PRIMARY_VMT;
+	class->vmts.mem[class->vmts.num++] = vmt;
+	if (primary_vmt == PRIMARY_VMT)
+		class->vmt = vmt;
 }
 
 static void import_parent(struct class *class, struct parent *parent)
@@ -991,12 +974,13 @@ static void import_parent(struct class *class, struct parent *parent)
 	struct dynarr *parentmembers;
 	struct class *origin, *currorigin, *ignoreorigin;
 	struct class *parentclass = parent->class;
-	int j, ret;
+	struct vmt *vmt;
+	int i, ret;
 
 	parentmembers = &parentclass->members_arr;
 	currorigin = ignoreorigin = NULL;
-	for (j = 0; j < parentmembers->num; j++) {
-		parentmember = parentmembers->mem[j];
+	for (i = 0; i < parentmembers->num; i++) {
+		parentmember = parentmembers->mem[i];
 		origin = parentmember->origin;
 		if (origin == ignoreorigin)
 			continue;
@@ -1006,8 +990,10 @@ static void import_parent(struct class *class, struct parent *parent)
 			   this import is virtual, then don't inherit
 			   the members again (prevent duplicates) */
 			ret = is_virtual_base(origin, class);
-			if (ret == 1 || (ret == 0 && parentmember->props.from_virtual))
+			if (ret == 1 || (ret == 0 && parentmember->props.from_virtual)) {
+				ignoreorigin = origin;
 				continue;
+			}
 			/* on the other hand, might both be non-virtual */
 			if (ret == 0 && !parentmember->props.from_virtual) {
 				fprintf(stderr, "inherit duplicate class %s\n", origin->name);
@@ -1025,23 +1011,33 @@ static void import_parent(struct class *class, struct parent *parent)
 		/* write to output later, when opening brace '{' parsed */
 	}
 
+	/* only add class after origin checks */
 	if (grow_dynarr(&parentclass->descendants) < 0)
 		return;
 
-	/* only add class after origin checks */
+	/* inherit vmts */
+	for (i = 0; i < parentclass->vmts.num; i++) {
+		vmt = parentclass->vmts.mem[i];
+		/* if we already have this origin, then also its vmt: skip it */
+		if (hasho_find(&class->parents, vmt->origin) != NULL)
+			continue;
+
+		/* do not reuse virtual base class' vmt, is inefficient */
+		addvmt(class, vmt->origin,
+			class->vmt == NULL && vmt->is_primary && !parent->is_virtual);
+	}
+
+	/* add parents after vmt duplication check */
 	add_parents_recursive(class, parent);
 	parentclass->descendants.mem[parentclass->descendants.num++] = parent;
-
-	/* do not reuse virtual base class' vmt, is inefficient */
-	if (parent->is_primary && !parent->is_virtual)
-		class->vmt = parentclass->vmt;
 }
 
-static struct member *implmember(struct class *class, struct class *retclass,
-		char *rettype, char *membername, char *nameend,
-		char *params, struct memberprops props)
+static struct member *implmember(struct class *class, char *membername, char *nameend)
 {
+	struct class *vmt_origin;
 	struct member *member;
+	struct vmt *vmt;
+	unsigned i;
 
 	member = find_member_e(class, membername, nameend);
 	if (member == NULL) {
@@ -1055,33 +1051,41 @@ static struct member *implmember(struct class *class, struct class *retclass,
 	}
 
 	member->definition = class;
-	member->vmt->modified = 1;
+	vmt_origin = member->vmt->origin;
+	/* find same vmt in this class (same origin) */
+	for (i = 0;; i++) {
+		if (i == class->vmts.num) {
+			fprintf(stderr, "internal error, vmt for %s not found\n", member->name);
+			break;
+		}
+		vmt = class->vmts.mem[i];
+		if (vmt->origin == vmt_origin) {
+			member->vmt = vmt;
+			vmt->modified = 1;
+			break;
+		}
+	}
+
 	return member;
 }
 
 static void print_vmt_type(struct parser *parser, struct class *class)
 {
-	char *sec_vmt_sep, *sec_vmt_origin;
 	struct member *member;
 	struct vmt *vmt;
-	int j, j;
+	int i, j;
 
-	for (j = 0; j < class->vmts.num; j++) {
-		vmt = class->vmts.mem[j];
+	for (i = 0; i < class->vmts.num; i++) {
+		vmt = class->vmts.mem[i];
 		if (!vmt->modified)
 			continue;
 
-		if (j > 0) {
-			sec_vmt_sep = "_";
-			sec_vmt_origin = vmt->origin->name;
-		} else {
-			sec_vmt_sep = sec_vmt_origin = "";
-		}
-		outprintf(parser, "\nextern struct %s%s%s_vmt {\n", class->name,
-			sec_vmt_sep, sec_vmt_origin);
+		outprintf(parser, "\nextern struct %s {\n", vmt->name);
 		for (j = 0; j < class->members_arr.num; j++) {
 			member = class->members_arr.mem[j];
-			if (member->vmt != vmt)
+			if (member->vmt == NULL)
+				continue;
+			if (member->vmt->origin != vmt->origin)
 				continue;
 
 			outprintf(parser, "\t%s(*%s)(struct %s *%s%s%s;\n",
@@ -1089,7 +1093,7 @@ static void print_vmt_type(struct parser *parser, struct class *class)
 				member->definition->name, member->definition->name,
 				member->params[0] != 0 ? ", " : "", member->params);
 		}
-		outprintf(parser, "} %s_vmt;\n", class->name);
+		outprintf(parser, "} %s;\n", vmt->name);
 	}
 }
 
@@ -1149,17 +1153,17 @@ static void print_func_decl(struct parser *parser, struct class *class,
 static void print_member_decls(struct parser *parser, struct class *class)
 {
 	struct member *member;
-	unsigned j;
+	unsigned i;
 
-	if (class->has_vmt && !parser->pf.coo_inline_defined) {
+	if (class->vmt && !parser->pf.coo_inline_defined) {
 		outputs(parser, "\n"DEF_COO_INLINE);
 		parser->pf.coo_inline_defined = 1;
 	}
 
-	for (j = 0; j < class->members_arr.num; j++) {
-		member = class->members_arr.mem[j];
-		/* don't inherited members */
-		if (member->origin != class)
+	for (i = 0; i < class->members_arr.num; i++) {
+		member = class->members_arr.mem[i];
+		/* don't print inherited members (that we did not override) */
+		if (member->definition != class)
 			continue;
 		if (member->props.is_function) {
 			print_func_decl(parser, class, member, MEMBER_FUNCTION);
@@ -1185,7 +1189,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	struct class *class, *retclass, *parentclass;
 	struct memberprops memberprops;
 	char *declbegin, *membername, *nameend, *params, *declend, *nextdecl;
-	char *classname, *retend, *retnext, *prevdeclend;
+	char *classname, *retend, *retnext, *prevdeclend, *prevnext;
 	int level, is_typedef, parent_primary, parent_virtual;
 	int first_virtual_warn, first_vmt_warn;
 	struct classtype *parentclasstype;
@@ -1211,7 +1215,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		parent_virtual = 0;
 		first_virtual_warn = 0;
 		first_vmt_warn = 0;
-		outwrite(parser, "{\n", 2);
+		outwrite(parser, "{", 1);
 		for (classname = nextdecl;;) {
 			classname = skip_whitespace(classname + 1);
 			if (strprefixcmp("public ", classname)) {
@@ -1247,7 +1251,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 						"first for efficiency\n");
 					first_virtual_warn = 1;
 				}
-				if (parentclass->has_vmt && !firstparent->class->has_vmt
+				if (parentclass->vmt && !firstparent->class->vmt
 						&& !parent_virtual && !first_vmt_warn) {
 					fprintf(stderr, "put virtual function class "
 						"first for efficiency\n");
@@ -1259,7 +1263,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 			}
 
 			import_parent(class, parent);
-			outprintf(parser, "\tstruct %s %s%s;\n", parent->class->name,
+			outprintf(parser, "\n\tstruct %s %s%s;", parent->class->name,
 				parent_virtual ? "*" : "", parent->class->name);
 
 			nextdecl = skip_whitespace(nameend);
@@ -1273,8 +1277,8 @@ static struct class *parse_struct(struct parser *parser, char *next)
 			classname = nextdecl;
 		}
 
-		/* already printed '{', so start at word after '{', or next line */
-		parser->pf.writepos = skip_whiteline(nextdecl+1);
+		/* already printed '{', so start after '{' */
+		parser->pf.writepos = nextdecl+1;
 	}
 
 	level = 1;  /* next is at opening brace '{' */
@@ -1282,10 +1286,12 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	declbegin = NULL;
 	for (;;) {
 		/* search (sub)struct or end of variable or function prototype */
-		prevdeclend = next + 1;
-		next = skip_whitespace(prevdeclend);
-		if (declbegin == NULL)
+		prevnext = next + 1;
+		next = skip_whitespace(prevnext);
+		if (declbegin == NULL) {
+			prevdeclend = prevnext;
 			declbegin = next;
+		}
 		/* remember last word before '(' or ';' => member name */
 		if (isalpha(*next) || *next == '*')
 			membername = next;
@@ -1313,7 +1319,6 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		retend = membername;
 		declend = params = next;
 		memberprops.is_function = *params == '(';
-		memberprops.is_static = strprefixcmp("static ", declbegin) != NULL;
 
 		/* skip pointers in membername */
 		for (;; membername++) {
@@ -1341,9 +1346,11 @@ static struct class *parse_struct(struct parser *parser, char *next)
 			break;
 
 		memberprops.from_primary  = 1;  /* defined here so always primary */
+		memberprops.is_static = strprefixcmp("static ", declbegin) != NULL;
 		memberprops.is_virtual = strprefixcmp("virtual ", declbegin) != NULL;
 		memberprops.is_override = strprefixcmp("override ", declbegin) != NULL;
 		memberprops.is_virtual |= memberprops.is_override;
+		memberprops.is_function |= memberprops.is_override;
 		if (memberprops.is_virtual && !memberprops.is_function) {
 			fprintf(stderr, "Member variable cannot be virtual\n");
 			continue;
@@ -1351,16 +1358,16 @@ static struct class *parse_struct(struct parser *parser, char *next)
 
 		/* no need to check virtual and static because cannot both at declbegin */
 		if (memberprops.is_virtual) {
-			declbegin += 8;  /* skip "virtual " */
-			if (!class->vmt) {
-				/* add vmt here so addmember below can reference it */
-				addvmt(class);
+			/* new members need a primary vmt to put them in */
+			if (!memberprops.is_override && !class->vmt) {
+				addvmt(class, class, PRIMARY_VMT);
 				/* flush to front of virtual function */
 				flush_until(parser, declbegin);
 				outputs(parser, "void *vmt;");
 				/* set writepos such that flush below is no-op */
 				parser->pf.writepos = prevdeclend;
 			}
+			declbegin += 8;  /* skip "virtual " */
 		}
 		if (memberprops.is_override)
 			declbegin++;     /* skip "override " (diff with "virtual ") */
@@ -1376,14 +1383,19 @@ static struct class *parse_struct(struct parser *parser, char *next)
 			parser->pf.pos = parser->pf.writepos = next + 1;
 		}
 
-		retclass = parse_type(parser, declbegin, &retnext);
 		if (memberprops.is_override) {
 			/* cannot add member, should have inherited already from parent */
-			implmember(class, retclass, declbegin,
-				membername, nameend, params+1, memberprops);
-		} else
+			implmember(class, membername, nameend);
+			if (declbegin != membername)
+				fprintf(stderr, "membername must follow override\n");
+			if (*params != ';')
+				fprintf(stderr, "no parameters allowed for override\n");
+		} else {
+			retclass = parse_type(parser, declbegin, &retnext);
 			addmember(class, retclass, declbegin, retend,
 				membername, nameend, params+1, declend, memberprops);
+		}
+		declbegin = NULL;
 	}
 
 	/* check for typedef struct X {} Y; */
@@ -1821,7 +1833,7 @@ static void print_vmts(struct parser *parser)
 		for (i = 0; i < class->vmts.num; i++) {
 			vmt = class->vmts.mem[i];
 			if (!vmt->modified)
-				break;
+				continue;
 
 			/* flush if not already done so */
 			if (parser->pf.writepos != parser->pf.pos)
@@ -1830,10 +1842,12 @@ static void print_vmts(struct parser *parser)
 			/* TODO: print multiple vmts in case of multiple inheritance / interfaces */
 			/* TODO: for multiple inheritance, print wrappers to fix base address */
 			/* TODO: fix member-defined-in-class type, make it match */
-			outprintf(parser, "\nstruct %s_vmt %s_vmt = {\n", vmt->name, vmt->name);
+			outprintf(parser, "\nstruct %s %s = {\n", vmt->name, vmt->name);
 			for (j = 0; j < class->members_arr.num; j++) {
 				member = class->members_arr.mem[j];
-				if (member->vmt != vmt)
+				if (member->vmt == NULL)
+					continue;
+				if (member->vmt->origin != vmt->origin)
 					continue;
 
 				outprintf(parser, "\t%s_%s,\n",
@@ -2244,7 +2258,7 @@ int main(int argc, char **argv)
 	for (; argc; argc--, argv++) {
 		if ((*argv)[0] == '-') {
 			switch ((*argv)[1]) {
-			case 'j':
+			case 'I':
 				if (addincludepath(parser, *argv + 2) < 0)
 					return 2;
 				break;

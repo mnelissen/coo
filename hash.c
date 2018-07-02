@@ -48,12 +48,6 @@ uint32_t uint64hash(uint64_t key)
 
 #endif
 
-size_t ptrhash(void *ptr)
-{
-	/* combination of Knuth and some extra to try mingle lower bits more */
-	return ((size_t)ptr * 2654435761 >> 20) ^ ((size_t)ptr * 2154435697);
-}
-
 size_t memhash(const void *ptr, size_t size)
 {
 	size_t i, hash = 5381;
@@ -164,15 +158,16 @@ void *hash_find_custom(struct hash *table, size_t hash, hash_cmp_cb compare, voi
 	return NULL;
 }
 
-void *hash_find(struct hash *table, size_t hash, struct hash_entry *key)
+void *hash_find(struct hash *table, size_t hash, void *key)
 {
-	return hash_find_custom(table, hash, table->compare, to_user(table, key));
+	return hash_find_custom(table, hash, table->compare, key);
 }
 
 int hash_insert(struct hash *table, struct hash_entry *new, size_t hash)
 {
 	struct hash_entry *entry;
 	size_t table_index, depth;
+	void *new_cmp = to_cmp(table, new);
 
 	/* check for duplicates */
 	new->hash = hash;
@@ -181,7 +176,7 @@ retry:
 	entry = table->entries[table_index];
 	for (depth = 0; entry; entry = entry->next) {
 		/* hash is equal, check if really equal, that is a fail */
-		if (entry->hash == hash && table->compare(entry, new) == 0)
+		if (entry->hash == hash && table->compare(to_cmp(table, entry), new_cmp) == 0)
 			return -1;
 		if (++depth == MAX_HASH_DEPTH) {
 			if (grow(table) < 0)

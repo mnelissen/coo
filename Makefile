@@ -1,6 +1,6 @@
 CFLAGS=-Wall -g -fno-diagnostics-show-caret
 .SUFFIXES:
-coo: main.o hash.o
+coo: main.o hash.o hasho.o
 	gcc $(LDFLAGS) -o $@ $^
 t: testc.o
 testc.o: testc.c

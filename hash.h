@@ -22,7 +22,6 @@ typedef struct hash {
 
 uint32_t uint32hash(uint32_t key);
 size_t uint64hash(uint64_t key);
-size_t ptrhash(void *ptr);
 size_t strhash(const char *str);
 size_t memhash(const void *mem, size_t size);
 
@@ -30,8 +29,8 @@ size_t memhash(const void *mem, size_t size);
 int hash_init(hash_t *table, hash_cmp_cb compare, unsigned size,
         int user_entry_offset, int user_cmp_offset);
 void hash_clear(struct hash *table);
-/* find user entry with provided dummy hash_entry as key, return NULL if not found */
-void *hash_find(struct hash *table, size_t hash, struct hash_entry *key);
+/* find user entry with provided address of compare data as key, return NULL if not found */
+void *hash_find(struct hash *table, size_t hash, void *key);
 /* custom compare callback called like compare(user, key) */
 void *hash_find_custom(struct hash *table, size_t hash, hash_cmp_cb compare, void *key);
 int hash_insert(struct hash *table, struct hash_entry *entry, size_t hash);

@@ -31,6 +31,14 @@ struct E : D {
 	override vfunc_d;
 };
 
+void E::vfunc_d(int d2, int d3)
+{
+	struct E *e;
+	struct B *b;
+	printf("E::vfunc_d(), b1=%d c1=%d d1=%d d2=%d d3=%d e1=%d\n", b1, c1, d1, d2, d3, e1);
+	b = 2 + e + 2;
+}
+
 void C::test_c(void)
 {
 	printf("%d %d\n", a1, c1);
@@ -113,9 +121,4 @@ void D::vfunc_d(int d2, int d3)
 void E::vfunc_b(int b2)
 {
 	printf("E::vfunc_b(), b1=%d b2=%d d1=% e1=%d\n", b1, b2, d1, e1);
-}
-
-void E::vfunc_d(int d2, int d3)
-{
-	printf("E::vfunc_d(), b1=%d c1=%d d1=%d d2=%d d3=%d e1=%d\n", b1, c1, d1, d2, d3, e1);
 }

@@ -155,6 +155,7 @@ DEFINE_STRHASH_FIND_E(class, members, member, member)
 
 struct variable {
 	struct classptr decl;
+	struct dynarr params;   /* struct classptr, for function pointer variables */
 	unsigned blocklevel;
 	struct hash_entry node;
 	char name[];
@@ -616,7 +617,7 @@ static char *parse_parameters(struct parser *parser, char *params, new_param_cb 
 
 	decl.pointerlevel = 0;
 	state = FINDVAR;
-	for (next = params;;) {
+	for (position = 0, next = params;;) {
 		curr = skip_whitespace(next);
 		if (curr[0] == 0)
 			return NULL;
@@ -718,8 +719,7 @@ static void save_param_class(struct parser *parser, int position,
 	struct dynarr *dynarr = &parser->param_classes;
 	struct classptr *newclassptr;
 
-	dynarr->num = position+1;
-	if (grow_dynarr_to(dynarr, dynarr->num) < 0)
+	if (grow_dynarr_to(dynarr, position) < 0)
 		return;
 
 	newclassptr = malloc(sizeof(*newclassptr));
@@ -727,10 +727,21 @@ static void save_param_class(struct parser *parser, int position,
 		return;
 
 	*newclassptr = *decl;
-	parser->param_classes.mem[position] = newclassptr;
+	dynarr->mem[position] = newclassptr;
+	dynarr->num = position+1;
 }
 
 static void addmember_to_children(struct class *class, struct member *member);
+
+static void parse_parameters_to(struct parser *parser,
+	char *params, struct dynarr *param_classes)
+{
+	/* save_param_class stores params in parser->param_classes */
+	parse_parameters(parser, params, save_param_class);
+	/* move the dynarr (array pointer etc) to requested array */
+	memcpy(param_classes, &parser->param_classes, sizeof(*param_classes));
+	memset(&parser->param_classes, 0, sizeof(parser->param_classes));
+}
 
 static struct member *addmember(struct parser *parser, struct class *class,
 		struct classptr *retclassptr, char *rettype, char *retend,
@@ -754,9 +765,7 @@ static struct member *addmember(struct parser *parser, struct class *class,
 	member->rettype = stredup(rettype, retend);
 	if (paramend >= params) {
 		member->paramstext = stredup(params, paramend);
-		parse_parameters(parser, params, save_param_class);
-		memcpy(&member->params, &parser->param_classes, sizeof(member->params));
-		memset(&parser->param_classes, 0, sizeof(parser->param_classes));
+		parse_parameters_to(parser, params, &member->params);
 	}
 	if (props.is_function || props.is_static) {
 		vmt_insert = props.is_virtual ? "vmt_" : "";
@@ -774,7 +783,8 @@ static struct member *addmember(struct parser *parser, struct class *class,
 }
 
 static struct variable *addvariable(struct parser *parser, unsigned blocklevel,
-		struct classptr *decl, int extraptr, char *membername, char *nameend)
+		struct classptr *decl, int extraptr, char *membername, char *nameend,
+		char *params, char *paramsend)
 {
 	struct dynarr *dynarr = &parser->nested_locals;
 	struct variable *variable;
@@ -796,6 +806,10 @@ static struct variable *addvariable(struct parser *parser, unsigned blocklevel,
 	variable->decl = *decl;
 	variable->decl.pointerlevel += extraptr;  /* typedef type + extra pointers */
 	variable->blocklevel = blocklevel;
+	if (params) {
+		parse_parameters(parser, params, save_param_class);
+		memcpy(&variable->params, &parser->param_classes, sizeof(variable->params));
+	}
 	dynarr->num++;
 	return variable;
 }
@@ -826,7 +840,8 @@ static struct insert **addinsert(struct parser *parser, struct insert **after_po
 		for (after_pos = end_pos - 1;; after_pos--) {
 			if ((void**)after_pos < parser->inserts.mem)
 				break;
-			if ((*after_pos)->flush_until < flush_until)
+			/* add new inserts after existing (so stop if equal) */
+			if ((*after_pos)->flush_until <= flush_until)
 				break;
 		}
 	}
@@ -883,23 +898,26 @@ static void remove_locals(struct parser *parser, int blocklevel)
 	parser->nested_locals.num = j;
 }
 
-static int find_global_e_class(struct parser *parser,
-		char *name, char *nameend, struct classptr *ret_decl)
+static int find_global_e_class(struct parser *parser, char *name, char *nameend,
+		struct classptr *ret_decl, struct dynarr **retparams)
 {
 	struct variable *var = find_global_e(parser, name, nameend);
 	if (var == NULL)
 		return -1;
 	*ret_decl = var->decl;
+	/* TODO: parse function parameters for variables (params always empty now) */
+	*retparams = &var->params;
 	return 0;
 }
 
-static int find_local_e_class(struct parser *parser,
-		char *name, char *nameend, struct classptr *ret_decl)
+static int find_local_e_class(struct parser *parser, char *name, char *nameend,
+		struct classptr *ret_decl, struct dynarr **retparams)
 {
 	struct variable *var = find_local_e(parser, name, nameend);
 	if (var == NULL)
 		return -1;
 	*ret_decl = var->decl;
+	*retparams = &var->params;
 	return 0;
 }
 
@@ -990,6 +1008,10 @@ struct classptr parse_type(struct parser *parser, char *pos, char **retnext)
 			pos += 6;  /* const */
 			continue;
 		}
+		/* not necessary to parse unsigned/signed/int properly,
+		   (1) retnext is only used to parse typedef
+		   (1b) retnext usage is only interested in class types
+		   (2) use context like '(' and ';' to find member names */
 		if (strprefixcmp("struct ", pos)) {
 			name = skip_whitespace(pos + 7);  /* "struct " */
 			next = skip_word(name);
@@ -1479,7 +1501,6 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		if (isspace(*next))
 			continue;
 
-		retend = membername;
 		declend = params = next;
 		memberprops.is_function = *params == '(';
 
@@ -1502,6 +1523,10 @@ static struct class *parse_struct(struct parser *parser, char *next)
 			params = scan_token(nameend, "/(;");
 			if (!params)
 				return NULL;
+		} else {
+			/* params >= nameend means this is not function variable
+			   (in that case retend is already assigned above) */
+			retend = membername;
 		}
 
 		/* next is either '(' or ';', but declend must be at ';' */
@@ -1589,7 +1614,8 @@ static struct class *parse_struct(struct parser *parser, char *next)
 }
 
 int parse_member(struct parser *parser, char *exprstart, char *exprend,
-	struct class *class, char *name, char *nameend, struct classptr *retclassptr)
+	struct class *class, char *name, char *nameend,
+	struct classptr *retclassptr, struct dynarr **retparams)
 {
 	struct member *member;
 	struct insert **after_pos = NULL;
@@ -1682,6 +1708,7 @@ int parse_member(struct parser *parser, char *exprstart, char *exprend,
 
 out:
 	*retclassptr = member->retclassptr;
+	*retparams = &member->params;
 	return 0;
 }
 
@@ -1723,7 +1750,7 @@ static void print_inserts(struct parser *parser)
 static void param_to_variable(struct parser *parser, int position,
 		struct classptr *decl, char *name, char *next)
 {
-	addvariable(parser, 0, decl, 0, name, next);
+	addvariable(parser, 0, decl, 0, name, next, NULL, NULL);
 }
 
 static void accessancestor(struct parser *parser,
@@ -1752,16 +1779,38 @@ static void accessancestor(struct parser *parser,
 	addinsert(parser, afterpos, end, ancestor->path, end);
 }
 
+struct paramstate {
+	struct dynarr *params;
+	int index;
+};
+
+void select_next_param(struct paramstate *state, struct classptr *dest)
+{
+	dest->class = NULL;
+	state->index++;
+	if (state->params && state->index < state->params->num) {
+		struct classptr *source = state->params->mem[state->index];
+		if (source)
+			*dest = *source;   /* only two pointer copies */
+	}
+}
+
+/* state for detecting function variable: (*name)(.... */
+enum parse_funcvar_state { FV_NONE, FV_NAME, FV_PARENCLOSE };
+
 static void parse_function(struct parser *parser, char *next)
 {
 	struct class *class;
 	struct classptr exprdecl[MAX_PAREN_LEVELS], targetdecl[MAX_PAREN_LEVELS];
 	struct classptr retclassptr, decl, immdecl, *target, *expr;
+	struct paramstate targetparams[MAX_PAREN_LEVELS];
+	struct dynarr **tgtparams;
 	struct classtype *classtype;
 	struct member *member;
 	char *curr, *funcname, *funcnameend, *classname, *name, *argsep, *dblcolonsep;
 	char *exprstart[MAX_PAREN_LEVELS], *exprend, *params, *paramend;
-	char *memberstart[MAX_PAREN_LEVELS];
+	char *memberstart[MAX_PAREN_LEVELS], *funcvarname, *funcvarnameend;
+	enum parse_funcvar_state funcvarstate;
 	enum parse_state state;
 	int blocklevel, parenlevel, seqparen;
 
@@ -1778,7 +1827,7 @@ static void parse_function(struct parser *parser, char *next)
 	paramend = scan_token(params, "/)");
 	if (paramend == NULL)
 		return;
-	if (funcname) {
+	if (funcname) {   /* funcname assigned means there is a classname::funcname */
 		if ((class = find_class(parser, classname)) != NULL) {
 			/* lookup method name */
 			funcnameend = skip_word(funcname);
@@ -1839,12 +1888,15 @@ static void parse_function(struct parser *parser, char *next)
 	blocklevel = seqparen = parenlevel = exprdecl[0].pointerlevel = 0;
 	exprdecl[0].class = targetdecl[0].class = decl.class = immdecl.class = NULL;
 	exprstart[0] = memberstart[0] = NULL;
+	targetparams[0].params = NULL;
+	funcvarstate = FV_NONE;
 	state = STMTSTART;
 	for (;;) {
 		curr = skip_whitespace(next);
 		/* skip comments */
 		if (curr[0] == 0)
 			return;
+
 		/* track block nesting level */
 		if (*curr == '{') {
 			blocklevel++;
@@ -1889,24 +1941,27 @@ static void parse_function(struct parser *parser, char *next)
 			switch (state) {
 			case DECLVAR:
 				addvariable(parser, blocklevel, &decl,
-						exprdecl[0].pointerlevel, name, next);
+					exprdecl[0].pointerlevel, name, next, NULL, NULL);
 				state = FINDVAR;
 				break;
 			case ACCESSMEMBER:
 				expr = immdecl.class ? &immdecl : &exprdecl[parenlevel];
 				if (expr->pointerlevel == 1)
 					parse_member(parser, memberstart[parenlevel], exprend,
-						expr->class, name, next, expr);
+						expr->class, name, next, expr,
+						&targetparams[parenlevel].params);
 				state = FINDVAR;
 				break;
 			default:
 				/* try to find variable or member field
 				 * if can't find, then maybe is a typedef to declare variable */
-				if (find_local_e_class(parser, name, next, &immdecl) < 0
+				tgtparams = &targetparams[parenlevel].params;
+				if (find_local_e_class(parser, name, next,
+						&immdecl, tgtparams) < 0
 					&& parse_member(parser, NULL, NULL,
-						class, name, next, &immdecl) < 0
+						class, name, next, &immdecl, tgtparams) < 0
 					&& find_global_e_class(
-						parser, name, next, &immdecl) < 0
+						parser, name, next, &immdecl, tgtparams) < 0
 					&& (classtype = find_classtype_e(
 						parser, name, next)) != NULL) {
 					decl = classtype->decl;
@@ -1927,12 +1982,32 @@ static void parse_function(struct parser *parser, char *next)
 						/* grammar error, ignore */
 						decl.class = NULL;
 					}
+				} else if (parenlevel == 1 && exprdecl[1].pointerlevel == -1) {
+					/* perhaps this is a function pointer variable decl? */
+					funcvarname = name;
+					funcvarnameend = next;
+					funcvarstate = FV_NAME;
 				}
 				state = FINDVAR;
 				break;
 			}
 
 			continue;
+		}
+
+		if (funcvarstate == FV_NAME)
+			funcvarstate = *curr == ')' ? FV_PARENCLOSE : FV_NONE;
+		else if (funcvarstate == FV_PARENCLOSE) {
+			funcvarstate = FV_NONE;
+			if (*curr == '(') {
+				next = scan_token(curr+1, "/);");
+				if (next == NULL)
+					break;
+				if (*next == ')')
+					addvariable(parser, blocklevel, &decl,
+						exprdecl[0].pointerlevel, funcvarname,
+						funcvarnameend, curr+1, next);
+			}
 		}
 
 		if (*curr != '.' && (*curr != '-' || curr[1] != '>'))
@@ -1952,17 +2027,22 @@ static void parse_function(struct parser *parser, char *next)
 		}
 		if (*curr == '(')
 			seqparen++;
-		else
+		else {
 			seqparen = 0;
+			targetparams[parenlevel].params = NULL;
+		}
 		if (*curr == '(') {
 			memberstart[parenlevel] = curr;
 			if (parenlevel < MAX_PAREN_LEVELS) {
 				parenlevel++;
 				memberstart[parenlevel] = NULL;  /* reset, assigned later */
-				exprstart[parenlevel] = curr;
-				targetdecl[parenlevel].class = NULL;
+				exprstart[parenlevel] = NULL;
 				exprdecl[parenlevel].class = NULL;
 				exprdecl[parenlevel].pointerlevel = 0;
+				targetparams[parenlevel].params = NULL;
+				targetparams[parenlevel-1].index = -1;
+				select_next_param(&targetparams[parenlevel-1],
+					&targetdecl[parenlevel]);
 			} else
 				fprintf(stderr, "maximum parenthesis nesting level reached\n");
 			state = EXPRUNARY;
@@ -1985,6 +2065,9 @@ static void parse_function(struct parser *parser, char *next)
 				state = DECLVAR;
 			else
 				state = EXPRUNARY;
+			if (parenlevel)
+				select_next_param(&targetparams[parenlevel-1],
+					&targetdecl[parenlevel]);
 			exprdecl[parenlevel].pointerlevel = 0;
 		} else if (*curr == '=') {
 			targetdecl[parenlevel] = immdecl;

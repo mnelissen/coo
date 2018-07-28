@@ -77,8 +77,7 @@ an include file is not found, then an error _is_ printed.
 ## TODO
 
 * initialize the "vmt" field to the VMT (add a constructor?)
-* inheritance (pass to base class variable in parameter)
-* recognize global variables (searched, but never any added)
+* recognize global variables and function parameters (searched, but never any added)
 * line number counting, and add it to error messages
 
 ## License

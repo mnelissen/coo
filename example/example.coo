@@ -22,7 +22,7 @@ struct D : B, C {
 	override vfunc_a;
 	override vfunc_b;
 	override vfunc_c;
-	virtual void vfunc_d(int d2, int d3);
+	virtual void vfunc_d(A* a, B *b);
 };
 
 struct E : D {
@@ -37,6 +37,7 @@ void E::vfunc_d(int d2, int d3)
 	struct B *b;
 	printf("E::vfunc_d(), b1=%d c1=%d d1=%d d2=%d d3=%d e1=%d\n", b1, c1, d1, d2, d3, e1);
 	b = 2 + e + 2;
+	vfunc_d(e, e);
 }
 
 void C::test_c(void)

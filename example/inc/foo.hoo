@@ -9,7 +9,7 @@ struct foo {
 	void *get_foo(int a);
 	virtual void vfunc(int arg1, int arg2);
 	int *(*intfuncptr)(char c);
-	int *y;
+	unsigned int *y;
 };
 
 

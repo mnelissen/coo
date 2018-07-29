@@ -1274,7 +1274,8 @@ static void print_vmt_type(struct parser *parser, struct class *class)
 			outprintf(parser, "\t%s(*%s)(struct %s *%s%s%s;\n",
 				member->rettype, member->name,
 				member->definition->name, member->definition->name,
-				member->paramstext[0] ? ", " : "", member->paramstext);
+				member->paramstext[0] != ')' ? ", " : "",
+				member->paramstext);
 		}
 		outprintf(parser, "} %s;\n", vmt->name);
 	}
@@ -1289,11 +1290,10 @@ static void print_func_decl(struct parser *parser, struct class *class,
 		struct member *member, enum func_decltype emittype)
 {
 	char *func_prefix, *name_insert, *func_body;
-	char *p, *first_param, *last_word, *last_end;
+	char *p, *last_word, *last_end;
 	unsigned empty;
 
-	first_param = skip_whitespace(member->paramstext);
-	empty = *first_param == ')';
+	empty = member->paramstext[0] == ')';
 	if (emittype == VIRTUAL_WRAPPER) {
 		func_prefix = "coo_inline ";
 		name_insert = "vmt_";
@@ -1308,7 +1308,7 @@ static void print_func_decl(struct parser *parser, struct class *class,
 	if (emittype == VIRTUAL_WRAPPER) {
 		outprintf(parser, "\n\t((struct %s_vmt*)this->vmt)->%s(this",
 			class->name, member->name);
-		for (p = first_param;;) {
+		for (p = member->paramstext;;) {
 			last_word = NULL;
 			/* search for last word, assume it is parameter name */
 			while (*p != ')' && *p != ',') {
@@ -1580,8 +1580,9 @@ static struct class *parse_struct(struct parser *parser, char *next)
 				fprintf(stderr, "no parameters allowed for override\n");
 		} else {
 			retclassptr = parse_type(parser, declbegin, &retnext);
+			params = skip_whitespace(params+1);
 			addmember(parser, class, &retclassptr, declbegin, retend,
-				membername, nameend, params+1, declend, memberprops);
+				membername, nameend, params, declend, memberprops);
 		}
 		declbegin = NULL;
 	}

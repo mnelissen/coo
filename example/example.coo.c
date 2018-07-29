@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <foo.coo.h>
 
 struct A {
@@ -99,15 +100,6 @@ extern struct E_vmt {
 
 void E_vfunc_b(struct E *this, int b2);
 void E_vfunc_d(struct E *this, A* a, B *b);
-void E_vfunc_d(struct E *this, int d2, int d3)
-{
-	struct E *e;
-	struct B *b;
-	printf("E::vfunc_d(), b1=%d c1=%d d1=%d d2=%d d3=%d e1=%d\n", this->D.B.b1, this->D.C.c1, this->D.d1, d2, d3, this->e1);
-	b = &(2 + e + 2)->D.B;
-	D_vmt_vfunc_d(&this->D, &e->D.B.A, &e->D.B);
-}
-
 static void C_test_c(struct C *this)
 {
 	printf("%d %d\n", this->A->a1, this->c1);
@@ -192,6 +184,52 @@ void E_vfunc_b(struct E *this, int b2)
 	printf("E::vfunc_b(), b1=%d b2=%d d1=% e1=%d\n", this->D.B.b1, b2, this->D.d1, this->e1);
 }
 
+void E_vfunc_d(struct E *this, int d2, int d3)
+{
+	printf("E::vfunc_d(), b1=%d c1=%d d1=%d d2=%d d3=%d e1=%d\n", this->D.B.b1, this->D.C.c1, this->D.d1, d2, d3, this->e1);
+}
+
+int main(int argc, char **argv)
+{
+	A a;
+	B b;
+	C c;
+	D d;
+	E e;
+
+	a.a1 = 10;
+	a.vfunc_a(11);
+
+	&(b.a1 ).A= 20;
+	b.vfunc_a(21);
+	b.vfunc_b(22);
+
+	c.a1 = 30;
+	c.c1 = 31;
+	c.vfunc_a(32);
+	c.vfunc_c(33);
+
+	&(d.a1 ).C= 40;
+	d.b1 = 41;
+	d.c1 = 42;
+	d.d1 = 43;
+	d.vfunc_a(44);
+	d.vfunc_b(45);
+	d.vfunc_c(46);
+	&(d.vfunc_d(&e, &e)).D;
+
+	&(e.a1 ).D= 50;
+	e.b1 = 51;
+	e.c1 = 52;
+	e.d1 = 53;
+	e.e1 = 54;
+	e.vfunc_a(55);
+	e.vfunc_b(56);
+	e.vfunc_c(57);
+	e.vfunc_d(&e, &e);
+
+	return 0;
+}
 struct foo_vmt foo_vmt = {
 	foo_vfunc,
 };

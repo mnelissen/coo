@@ -1,10 +1,10 @@
 #include <stdio.h>
 #include <foo.coo.h>
 
-struct A {
+typedef struct A {
 	int a1;
 	void *vmt;
-};
+} A;
 
 extern struct A_vmt {
 	void (*vfunc_a)(struct A *A, int a2);
@@ -71,7 +71,7 @@ struct D {
 extern struct D_vmt {
 	void (*vfunc_a)(struct D *D, int a2);
 	void (*vfunc_b)(struct D *D, int b2);
-	void (*vfunc_d)(struct D *D, A* a, B *b);
+	void (*vfunc_d)(struct D *D, struct A* a, struct B *b);
 } D_vmt;
 
 extern struct D_C_vmt {
@@ -81,8 +81,8 @@ extern struct D_C_vmt {
 void D_vfunc_a(struct D *this, int a2);
 void D_vfunc_b(struct D *this, int b2);
 void D_vfunc_c(struct D *this, int c2);
-void D_vfunc_d(struct D *this, A* a, B *b);
-coo_inline void D_vmt_vfunc_d(struct D *this, A* a, B *b)
+void D_vfunc_d(struct D *this, struct A* a, struct B *b);
+coo_inline void D_vmt_vfunc_d(struct D *this, struct A* a, struct B *b)
 {
 	((struct D_vmt*)this->B.A.vmt)->vfunc_d(this, a, b);
 }
@@ -95,11 +95,11 @@ struct E {
 extern struct E_vmt {
 	void (*vfunc_a)(struct D *D, int a2);
 	void (*vfunc_b)(struct E *E, int b2);
-	void (*vfunc_d)(struct E *E, A* a, B *b);
+	void (*vfunc_d)(struct E *E, struct A* a, struct B *b);
 } E_vmt;
 
 void E_vfunc_b(struct E *this, int b2);
-void E_vfunc_d(struct E *this, A* a, B *b);
+void E_vfunc_d(struct E *this, struct A* a, struct B *b);
 static void C_test_c(struct C *this)
 {
 	printf("%d %d\n", this->A->a1, this->c1);
@@ -191,11 +191,11 @@ void E_vfunc_d(struct E *this, int d2, int d3)
 
 int main(int argc, char **argv)
 {
-	A a;
-	B b;
-	C c;
-	D d;
-	E e;
+	struct A a;
+	struct B b;
+	struct C c;
+	struct D d;
+	struct E e;
 
 	a.a1 = 10;
 	a.vfunc_a(11);

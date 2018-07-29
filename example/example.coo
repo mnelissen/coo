@@ -1,10 +1,10 @@
 #include <stdio.h>
 #include <foo.hoo>
 
-struct A {
+typedef struct A {
 	int a1;
 	virtual void vfunc_a(int a2);
-};
+} A;
 
 struct B : A {
 	override vfunc_a;

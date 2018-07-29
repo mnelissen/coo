@@ -1290,7 +1290,8 @@ static void print_func_decl(struct parser *parser, struct class *class,
 		struct member *member, enum func_decltype emittype)
 {
 	char *func_prefix, *name_insert, *func_body;
-	char *p, *last_word, *last_end;
+	char *p, *last_word, *last_end, *vmtpath, *vmtaccess;
+	struct ancestor *ancestor;
 	unsigned empty;
 
 	empty = member->paramstext[0] == ')';
@@ -1306,8 +1307,14 @@ static void print_func_decl(struct parser *parser, struct class *class,
 		member->rettype, class->name, name_insert, member->name,
 		class->name, empty ? "" : ", ", member->paramstext, func_body);
 	if (emittype == VIRTUAL_WRAPPER) {
-		outprintf(parser, "\n\t((struct %s_vmt*)this->vmt)->%s(this",
-			class->name, member->name);
+		ancestor = hasho_find(&class->ancestors, class->vmt->origin);
+		if (ancestor) {
+			vmtpath = ancestor->path;
+			vmtaccess = ancestor->parent->is_virtual ? "->" : ".";
+		} else
+			vmtpath = vmtaccess = "";
+		outprintf(parser, "\n\t((struct %s_vmt*)this->%s%svmt)->%s(this",
+			class->name, vmtpath, vmtaccess, member->name);
 		for (p = member->paramstext;;) {
 			last_word = NULL;
 			/* search for last word, assume it is parameter name */

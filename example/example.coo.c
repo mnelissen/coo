@@ -38,7 +38,7 @@ void B_vfunc_a(struct B *this, int a2);
 void B_vfunc_b(struct B *this, int b2);
 coo_inline void B_vmt_vfunc_b(struct B *this, int b2)
 {
-	((struct B_vmt*)this->vmt)->vfunc_b(this, b2);
+	((struct B_vmt*)this->A.vmt)->vfunc_b(this, b2);
 }
 
 struct C {
@@ -84,7 +84,7 @@ void D_vfunc_c(struct D *this, int c2);
 void D_vfunc_d(struct D *this, A* a, B *b);
 coo_inline void D_vmt_vfunc_d(struct D *this, A* a, B *b)
 {
-	((struct D_vmt*)this->vmt)->vfunc_d(this, a, b);
+	((struct D_vmt*)this->B.A.vmt)->vfunc_d(this, a, b);
 }
 
 struct E {

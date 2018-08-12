@@ -26,6 +26,7 @@ typedef uint32_t pid_t;
 #define OUTPR_MAX          256             /* maximum outprintf size we do */
 #define STDIN_BUFSIZE      (1024 * 1024)   /* size for inputbuffer when using stdin */
 #define MAX_PAREN_LEVELS   16
+#define MAX_USER_ERRORS    25
 #define DEF_COO_INLINE \
 	"#ifndef coo_inline\n" \
 	"#ifdef _MSC_VER\n" \
@@ -188,8 +189,10 @@ struct parse_file {
 	char *outfilename_end;    /* pointer to null-character of output filename */
 	char *newfilename_path;   /* points to start of path (last in stack) */
 	char *newfilename_file;   /* points after parsing file dir in newfilename */
+	char *linestart;	  /* points to line-end before currently parsing line */
 	int coo_inline_defined;   /* defined the COO_INLINE macro yet? */
 	int outfailed;            /* prevent error spam if creating file failed */
+	int lineno;               /* line number of currently parsing line */
 };
 
 struct parser {
@@ -209,6 +212,7 @@ struct parser {
 	struct dynarr implicit_structs;  /* char *, param positions to add "struct " */
 	struct hash files_seen;       /* struct file_id pointers */
 	int include_ext_in_len;       /* length of include_ext_in, optimization */
+	int num_errors;               /* user errors, prevent spam */
 	char printbuffer[OUTPR_MAX];  /* buffer for outprintf */
 	char newfilename[NEWFN_MAX];  /* (stacked) store curdir + new input filename */
 	char *newfilename_end;        /* pointer to end of new input filename */
@@ -222,10 +226,16 @@ DEFINE_STRHASH_FIND_E(parser, locals, local, variable)
 
 pid_t g_pid;
 
-static char *strchrnul(const char *str, int ch)
+static char *parser_strchrnul(struct parser *parser, char *str, int ch)
 {
-	while (*str && *str != ch)
-		str++;
+	for (; *str; str++) {
+		if (*str == '\n') {
+			parser->pf.lineno++;
+			parser->pf.linestart = str;
+		}
+		if (*str == ch)
+			break;
+	}
 	return (char*)str;
 }
 
@@ -235,12 +245,12 @@ static int islinespace(int ch)
 }
 
 /* assumes pos[0] == '/' was matched, starting a possible comment */
-static char *skip_comment(char *pos)
+static char *skip_comment(struct parser *parser, char *pos)
 {
 	/* C style comment? */
 	if (pos[1] == '*') {
 		for (pos += 2;; pos++) {
-			pos = strchrnul(pos, '*');
+			pos = parser_strchrnul(parser, pos, '*');
 			if (pos[0] == 0)
 				return pos;
 			if (pos[1] == '/')
@@ -250,7 +260,7 @@ static char *skip_comment(char *pos)
 	}
 	/* C++ style comment? */
 	if (pos[1] == '/') {
-		pos = strchrnul(pos+2, '\n');
+		pos = parser_strchrnul(parser, pos+2, '\n');
 		if (pos[0] == 0)
 			return pos;
 		return pos + 1;
@@ -258,16 +268,20 @@ static char *skip_comment(char *pos)
 	return pos;
 }
 
-static char *skip_whitespace(char *p)
+static char *skip_whitespace(struct parser *parser, char *p)
 {
 	for (;;) {
-		if (isspace(*p))
+		if (isspace(*p)) {
+			if (*p == '\n') {
+				parser->pf.lineno++;
+				parser->pf.linestart = p;
+			}
 			p++;
-		else if (*p == '/')
-			p = skip_comment(p);
+		} else if (*p == '/')
+			p = skip_comment(parser, p);
 		else if (*p == '"') {
 			for (;;) {
-				p = strchrnul(p + 1, '"');
+				p = parser_strchrnul(parser, p + 1, '"');
 				if (*p == 0)
 					return p;
 				if (*(p-1) != '\\')
@@ -289,21 +303,24 @@ static char *skip_whitespace(char *p)
 }
 
 /* skip whitespace and comments for this line only */
-static char *skip_whiteline(char *p)
+static char *skip_whiteline(struct parser *parser, char *p)
 {
 	for (;;) {
 		if (islinespace(*p))
 			p++;
 		else if (*p == '/')
-			p = skip_comment(p);
+			p = skip_comment(parser, p);
 		else
 			break;
 	}
 	/* skip one line ending, not all */
 	if (*p == '\r')
 		p++;
-	if (*p == '\n')
+	if (*p == '\n') {
+		parser->pf.lineno++;
+		parser->pf.linestart = p;
 		p++;
+	}
 	return p;
 }
 
@@ -312,6 +329,41 @@ static char *skip_word(char *p)
 	while (isalnum(*p) || *p == '_')
 		p++;
 	return p;
+}
+
+/* scan for character set, ignoring comments, include '/' and '\n' in set!
+   if '/' is first in set, then skip '/' as a token
+   if '\n' is second in set, then skip '\n' as token */
+static char *scan_token(struct parser *parser, char *pos, char *set)
+{
+	char *newpos;
+
+	for (;;) {
+		pos = strpbrk(pos, set);
+		if (pos == NULL)
+			return NULL;
+		if (pos[0] == '\n') {
+			parser->pf.lineno++;
+			parser->pf.linestart = pos;
+			if (set[1] != '\n')
+				return pos;
+			pos++;
+			continue;
+		}
+		if (pos[0] != '/')
+			return pos;
+		newpos = skip_comment(parser, pos);
+		if (newpos[0] == 0)
+			return NULL;
+		if (newpos == pos) {
+			/* no comment detected, do we want this '/' as token? */
+			if (set[0] != '/')
+				return pos;
+			/* no, skip it */
+			newpos++;
+		}
+		pos = newpos;
+	}
 }
 
 char *strprefixcmp(const char *s1, const char *s2)
@@ -402,27 +454,6 @@ static char *replace_ext_temp(char *filename, char *strend, char *bufend, char *
 	if (pidend >= bufend)
 		return NULL;
 	return ext;
-}
-
-/* scan for character set, ignoring comments, include '/' in set!
-   if '/' is first in set, then skip '/' as a token */
-static char *scan_token(char *pos, char *set)
-{
-	char *newpos;
-
-	for (;;) {
-		pos = strpbrk(pos, set);
-		if (pos == NULL)
-			return NULL;
-		if (pos[0] != '/')
-			return pos;
-		newpos = skip_comment(pos);
-		if (newpos[0] == 0)
-			return NULL;
-		if (newpos == pos && set[0] == '/')
-			newpos++;
-		pos = newpos;
-	}
 }
 
 __attribute__((format(printf,1,2))) static char *aprintf(const char *format, ...)
@@ -548,6 +579,26 @@ static int grow_dynarr(struct dynarr *dynarr)
 }
 
 /*** print helpers ***/
+
+static void print_message(struct parser *parser,
+		char *pos, char *severity, char *message, ...)
+{
+	char msgbuf[256];
+	va_list va_args;
+
+	if (parser->num_errors == MAX_USER_ERRORS)
+		return;
+
+	parser->num_errors++;
+	va_start(va_args, message);
+	vsnprintf(msgbuf, sizeof(msgbuf), message, va_args);
+	va_end(va_args);
+	fprintf(stderr, "%s:%d:%d: %s: %s\n", parser->pf.filename,
+		parser->pf.lineno, (int)(pos - parser->pf.linestart), severity, msgbuf);
+}
+
+#define pr_err(pos, ...) print_message(parser, pos, "error", __VA_ARGS__)
+#define pr_warn(pos, ...) print_message(parser, pos, "warning", __VA_ARGS__)
 
 static int prepare_output_file(struct parser *parser)
 {
@@ -714,14 +765,14 @@ static char *parse_parameters(struct parser *parser, char *params,
 	decl.pointerlevel = 0;
 	state = FINDVAR;
 	for (position = 0, next = params;;) {
-		curr = skip_whitespace(next);
+		curr = skip_whitespace(parser, next);
 		if (curr[0] == 0)
 			return NULL;
 		if (strprefixcmp("const ", curr)) {
 			next = curr + 6;  /* "const " */
 			continue;
 		} else if (strprefixcmp("struct ", curr)) {
-			name = skip_whitespace(curr + 7);  /* "struct " */
+			name = skip_whitespace(parser, curr + 7);  /* "struct " */
 			next = skip_word(name);
 			if (state == DECLVAR) {
 				/* grammar error, ignore */
@@ -841,7 +892,8 @@ static void save_param_class(struct parser *parser, int position,
 	dynarr->num = position+1;
 }
 
-static void addmember_to_children(struct class *class, struct member *member);
+static void addmember_to_children(struct parser *parser, char *parsepos,
+		struct class *class, struct member *member);
 
 static char *insert_implicit_structs(struct parser *parser, char *src, char *srcend)
 {
@@ -893,7 +945,8 @@ static struct member *addmember(struct parser *parser, struct class *class,
 	member = allocmember_e(class, membername, nameend);
 	if (member == NULL) {
 		*nameend = 0;
-		fprintf(stderr, "duplicate member %s, did you mean override?\n", membername);
+		pr_err(membername, "duplicate member %s,\n"
+			" did you mean override?", membername);
 		return NULL;
 	}
 
@@ -915,7 +968,7 @@ static struct member *addmember(struct parser *parser, struct class *class,
 
 	/* in case of defining functions on the fly,
 	   insert into classes inheriting from this class as well */
-	addmember_to_children(class, member);
+	addmember_to_children(parser, membername, class, member);
 	return member;
 }
 
@@ -1075,7 +1128,7 @@ struct classptr parse_type(struct parser *parser, char *pos, char **retnext)
 	struct classtype *classtype;
 	char *name, *next;
 
-	for (decl.class = NULL;; pos = skip_whitespace(pos)) {
+	for (decl.class = NULL;; pos = skip_whitespace(parser, pos)) {
 		if (strprefixcmp("const ", pos) != NULL) {
 			pos += 6;  /* const */
 			continue;
@@ -1085,7 +1138,7 @@ struct classptr parse_type(struct parser *parser, char *pos, char **retnext)
 		   (1b) retnext usage is only interested in class types
 		   (2) use context like '(' and ';' to find member names */
 		if (strprefixcmp("struct ", pos)) {
-			name = skip_whitespace(pos + 7);  /* "struct " */
+			name = skip_whitespace(parser, pos + 7);  /* "struct " */
 			next = skip_word(name);
 			decl.class = find_class_e(parser, pos, next);
 			decl.pointerlevel = 0;
@@ -1102,21 +1155,21 @@ struct classptr parse_type(struct parser *parser, char *pos, char **retnext)
 		}
 	}
 
-	for (next = skip_whitespace(next); *next == '*'; next++)
+	for (next = skip_whitespace(parser, next); *next == '*'; next++)
 		decl.pointerlevel++;
 	*retnext = next;
 	return decl;
 }
 
-static struct member *inheritmember(struct class *class,
-		struct parent *parent, struct member *parentmember)
+static struct member *inheritmember(struct parser *parser, char *parsepos,
+		struct class *class, struct parent *parent, struct member *parentmember)
 {
 	struct member *member;
 
 	member = dupmemberto(class, parentmember);
 	if (member == NULL) {
-		fprintf(stderr, "duplicate member %s from parent "
-			"class %s to %s\n", parentmember->name,
+		pr_err(parsepos, "duplicate member %s from parent "
+			"class %s to %s", parentmember->name,
 			parentmember->origin->name, class->name);
 		goto err;
 	}
@@ -1136,21 +1189,22 @@ static struct member *inheritmember(struct class *class,
 				member->parent_virtual ? "->" : ".");
 	/* in case of defining functions on the fly,
 	   insert into classes inheriting from this class as well */
-	addmember_to_children(class, member);
+	addmember_to_children(parser, parsepos, class, member);
 	return member;
 err:
 	free(member);
 	return NULL;
 }
 
-static void addmember_to_children(struct class *class, struct member *member)
+static void addmember_to_children(struct parser *parser, char *parsepos,
+		struct class *class, struct member *member)
 {
 	struct parent *parent;
 	int i;
 
 	for (i = 0; i < class->descendants.num; i++) {
 		parent = class->descendants.mem[i];
-		inheritmember(parent->child, parent, member);
+		inheritmember(parser, parsepos, parent->child, parent, member);
 	}
 }
 
@@ -1231,7 +1285,8 @@ static void addvmt(struct class *class, struct class *origin, enum primary_vmt p
 		class->vmt = vmt;
 }
 
-static void import_parent(struct class *class, struct parent *parent)
+static void import_parent(struct parser *parser, char *parsepos,
+		struct class *class, struct parent *parent)
 {
 	struct member *parentmember;
 	struct dynarr *parentmembers;
@@ -1259,12 +1314,12 @@ static void import_parent(struct class *class, struct parent *parent)
 			}
 			/* on the other hand, might both be non-virtual */
 			if (ret == 0 && !parentmember->props.from_virtual) {
-				fprintf(stderr, "inherit duplicate class %s\n", origin->name);
+				pr_err(parsepos, "inherit duplicate class %s", origin->name);
 				ignoreorigin = origin;
 			}
 		}
 
-		inheritmember(class, parent, parentmember);
+		inheritmember(parser, parsepos, class, parent, parentmember);
 		/* write to output later, when opening brace '{' parsed */
 	}
 
@@ -1289,7 +1344,8 @@ static void import_parent(struct class *class, struct parent *parent)
 	parentclass->descendants.mem[parentclass->descendants.num++] = parent;
 }
 
-static struct member *implmember(struct class *class, char *membername, char *nameend)
+static struct member *implmember(struct parser *parser, char *parsepos,
+		struct class *class, char *membername, char *nameend)
 {
 	struct class *vmt_origin;
 	struct member *member;
@@ -1298,12 +1354,12 @@ static struct member *implmember(struct class *class, char *membername, char *na
 
 	member = find_member_e(class, membername, nameend);
 	if (member == NULL) {
-		fprintf(stderr, "cannot find member to override\n");
+		pr_err(parsepos, "cannot find member to override");
 		return NULL;
 	}
 
 	if (!member->props.is_virtual) {
-		fprintf(stderr, "inherited member is not virtual\n");
+		pr_err(parsepos, "inherited member is not virtual");
 		return NULL;
 	}
 
@@ -1312,7 +1368,7 @@ static struct member *implmember(struct class *class, char *membername, char *na
 	/* find same vmt in this class (same origin) */
 	for (i = 0;; i++) {
 		if (i == class->vmts.num) {
-			fprintf(stderr, "internal error, vmt for %s not found\n", member->name);
+			pr_err(parsepos, "(ierr) vmt for %s not found", member->name);
 			break;
 		}
 		vmt = class->vmts.mem[i];
@@ -1394,7 +1450,7 @@ static void print_func_decl(struct parser *parser, struct class *class,
 			/* search for last word, assume it is parameter name */
 			while (*p != ')' && *p != ',') {
 				if (*p == '/')
-					p = skip_comment(p);
+					p = skip_comment(parser, p);
 				else if (isalpha(*p)) {
 					last_word = p;
 					last_end = p = skip_word(p);
@@ -1408,7 +1464,7 @@ static void print_func_decl(struct parser *parser, struct class *class,
 			if (*p == ')')
 				break;
 			/* go to next argument */
-			p = skip_whitespace(p+1);
+			p = skip_whitespace(parser, p+1);
 		}
 		outprintf(parser, ");\n}\n");
 	}
@@ -1462,7 +1518,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 
 	is_typedef = *parser->pf.pos == 't';
 	/* skip 'typedef struct ' or just 'struct ' */
-	classname = skip_whitespace(parser->pf.pos + (is_typedef ? 15 : 7));
+	classname = skip_whitespace(parser, parser->pf.pos + (is_typedef ? 15 : 7));
 	declend = skip_word(classname);
 	if (declend != classname) {
 		class = addclass(parser, classname, declend);
@@ -1475,7 +1531,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	} else
 		class = NULL;
 
-	nextdecl = skip_whitespace(declend);
+	nextdecl = skip_whitespace(parser, declend);
 	if (class && *nextdecl == ':') {
 		flush_until(parser, nextdecl);
 		parent_primary = 1;
@@ -1484,7 +1540,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		first_vmt_warn = 0;
 		outwrite(parser, "{", 1);
 		for (classname = nextdecl;;) {
-			classname = skip_whitespace(classname + 1);
+			classname = skip_whitespace(parser, classname + 1);
 			if (strprefixcmp("public ", classname)) {
 				classname += 6;  /* "public" */
 				continue;
@@ -1498,11 +1554,11 @@ static struct class *parse_struct(struct parser *parser, char *next)
 			nameend = skip_word(classname);
 			parentclasstype = find_classtype_e(parser, classname, nameend);
 			if (parentclasstype == NULL) {
-				fprintf(stderr, "cannot find parent class\n");
+				pr_err(classname, "cannot find parent class");
 				goto nextparent;
 			}
 			if (parentclasstype->decl.pointerlevel) {
-				fprintf(stderr, "parent type cannot be pointer type\n");
+				pr_err(classname, "parent type cannot be pointer type");
 				goto nextparent;
 			}
 
@@ -1518,14 +1574,14 @@ static struct class *parse_struct(struct parser *parser, char *next)
 			if (class->ancestors.num_entries) {
 				if (!parent_virtual && firstparent->is_virtual
 						&& !first_virtual_warn) {
-					fprintf(stderr, "put non-virtual base class "
-						"first for efficiency\n");
+					pr_warn(classname, "put non-virtual base class "
+						"first for efficiency");
 					first_virtual_warn = 1;
 				}
 				if (parentclass->vmt && !firstparent->class->vmt
 						&& !parent_virtual && !first_vmt_warn) {
-					fprintf(stderr, "put virtual function class "
-						"first for efficiency\n");
+					pr_warn(classname, "put virtual function class "
+						"first for efficiency");
 					first_vmt_warn = 1;
 				}
 			} else {
@@ -1533,16 +1589,16 @@ static struct class *parse_struct(struct parser *parser, char *next)
 				firstparent = parent;
 			}
 
-			import_parent(class, parent);
+			import_parent(parser, classname, class, parent);
 			outprintf(parser, "\n\tstruct %s %s%s;", parent->class->name,
 				parent_virtual ? "*" : "", parent->class->name);
 
 		  nextparent:
-			nextdecl = skip_whitespace(nameend);
+			nextdecl = skip_whitespace(parser, nameend);
 			if (*nextdecl == '{')
 				break;
 			if (*nextdecl != ',') {
-				fprintf(stderr, "expected comma after parent class\n");
+				pr_err(nextdecl, "expected comma or brace after parent class");
 				break;
 			}
 			parent_primary = parent_virtual = 0;
@@ -1558,7 +1614,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	for (;;) {
 		/* search (sub)struct or end of variable or function prototype */
 		prevnext = next + 1;
-		next = skip_whitespace(prevnext);
+		next = skip_whitespace(parser, prevnext);
 		if (declbegin == NULL) {
 			prevdeclend = prevnext;
 			declbegin = next;
@@ -1566,7 +1622,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		/* remember last word before '(' or ';' => member name */
 		if (isalpha(*next) || *next == '*')
 			membername = next;
-		if (!(next = scan_token(next, "/{};( \r\n\t\v")))
+		if (!(next = scan_token(parser, next, "/{};( \r\n\t\v")))
 			return NULL;
 
 		/* count substruct level */
@@ -1606,7 +1662,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		/* find nameend and real params in case of function pointer variable */
 		nameend = skip_word(membername);
 		if (params < nameend) {
-			params = scan_token(nameend, "/(;");
+			params = scan_token(parser, nameend, "/\n(;");
 			if (!params)
 				return NULL;
 		} else {
@@ -1616,8 +1672,14 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		}
 
 		/* next is either '(' or ';', but declend must be at ';' */
-		if (*params == '(' && !(declend = scan_token(declend, "/;")))
-			return NULL;
+		if (*params == '(') {
+			/* scan forward, once, to prevent lineno mistakes */
+			params = skip_whitespace(parser, params+1);
+			declend = scan_token(parser, params, "/\n;");
+			if (declend == NULL)
+				return NULL;
+		} else
+			params = NULL;
 
 		memberprops.from_primary  = 1;  /* defined here so always primary */
 		memberprops.is_static = strprefixcmp("static ", declbegin) != NULL;
@@ -1626,7 +1688,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		memberprops.is_virtual |= memberprops.is_override;
 		memberprops.is_function |= memberprops.is_override;
 		if (memberprops.is_virtual && !memberprops.is_function) {
-			fprintf(stderr, "Member variable cannot be virtual\n");
+			pr_err(membername, "Member variable cannot be virtual");
 			continue;
 		}
 
@@ -1659,16 +1721,15 @@ static struct class *parse_struct(struct parser *parser, char *next)
 
 		if (memberprops.is_override) {
 			/* cannot add member, should have inherited already from parent */
-			implmember(class, membername, nameend);
+			implmember(parser, membername, class, membername, nameend);
 			if (declbegin != membername)
-				fprintf(stderr, "membername must follow override\n");
-			if (*params != ';')
-				fprintf(stderr, "no parameters allowed for override\n");
+				pr_err(membername, "membername must follow override");
+			if (params)
+				pr_err(params, "no parameters allowed for override");
 		} else {
 			retclassptr = parse_type(parser, declbegin, &retnext);
-			params = skip_whitespace(params+1);
 			addmember(parser, class, &retclassptr, declbegin, retend, membername,
-				nameend, declend >= params ? params : NULL, memberprops);
+				nameend, params, memberprops);
 		}
 		declbegin = NULL;
 	}
@@ -1676,10 +1737,10 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	/* check for typedef struct X {} Y, *Z; */
 	for (;;) {
 		decl.pointerlevel = 0;
-		for (classname = skip_whitespace(next + 1); *classname == '*'; classname++)
+		for (classname = skip_whitespace(parser, next + 1); *classname == '*'; classname++)
 			decl.pointerlevel++;
 		next = skip_word(classname);
-		declend = scan_token(next, "/,;");
+		declend = scan_token(parser, next, "/\n,;");
 		if (declend == NULL)
 			return NULL;
 		if (next != classname) {
@@ -1693,7 +1754,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 			break;
 		next = declend;
 	}
-	parser->pf.pos = skip_whiteline(declend + 1);
+	parser->pf.pos = skip_whiteline(parser, declend + 1);
 	flush(parser);
 	print_vmt_type(parser, class);
 	print_member_decls(parser, class);
@@ -1715,7 +1776,7 @@ int parse_member(struct parser *parser, char *exprstart, char *exprend,
 		return -1;
 
 	if (exprstart && member->props.is_static) {
-		fprintf(stderr, "Cannot access static member\n");
+		pr_err(name, "Cannot access static member");
 		return -1;
 	}
 
@@ -1726,11 +1787,11 @@ int parse_member(struct parser *parser, char *exprstart, char *exprend,
 	continue_at = NULL;
 	add_this = !exprstart && !member->props.is_static;
 	if (member->props.is_function) {
-		args = scan_token(nameend, "/(;");
+		args = scan_token(parser, nameend, "/\n(;");
 		if (args != NULL && *args == ';')
 			args = NULL;
 		if (args != NULL)
-			args = skip_whitespace(args+1);
+			args = skip_whitespace(parser, args+1);
 		if (args == NULL)
 			goto out;   /* end of file? escape */
 
@@ -1811,7 +1872,7 @@ static void parse_typedef(struct parser *parser, char *declend)
 
 	/* note: after next cannot be '{', as in 'typedef struct X {'
 	   it is handled by calling parse_struct in caller */
-	parser->pf.pos = skip_whitespace(next);
+	parser->pf.pos = skip_whitespace(parser, next);
 	next = skip_word(parser->pf.pos);
 	addclasstype(parser, parser->pf.pos, next, &decl, TYPEDEF_EXPLICIT);
 	parser->pf.pos = declend + 1;
@@ -1906,12 +1967,12 @@ static void parse_function(struct parser *parser, char *next)
 		if (classname[0] == ':' && classname[1] == ':') {
 			dblcolonsep = classname;
 			classname[0] = 0;
-			funcname = skip_whitespace(classname+2);
+			funcname = skip_whitespace(parser, classname+2);
 		}
 	}
 
 	params = ++next;  /* advance after '(' */
-	paramend = scan_token(params, "/)");
+	paramend = scan_token(parser, params, "/\n)");
 	if (paramend == NULL)
 		return;
 	if (funcname) {   /* funcname assigned means there is a classname::funcname */
@@ -1940,7 +2001,7 @@ static void parse_function(struct parser *parser, char *next)
 			parser->pf.writepos = funcname;
 			flush_until(parser, next);
 			/* check if there are parameters */
-			next = skip_whitespace(next);
+			next = skip_whitespace(parser, next);
 			argsep = "";  /* start assumption: no params */
 			if (*next != ')') {
 				if (strprefixcmp("void", next) && !isalpha(next[4]))
@@ -1952,12 +2013,12 @@ static void parse_function(struct parser *parser, char *next)
 			outprintf(parser, "struct %s *this%s", classname, argsep);
 			parser->pf.writepos = next;
 		} else {
-			fprintf(stderr, "class '%s' not declared\n", classname);
+			pr_err(classname, "class '%s' not declared", classname);
 		}
 	} else
 		class = NULL;
 
-	next = skip_whitespace(paramend+1);
+	next = skip_whitespace(parser, paramend+1);
 	if (*next == ';') {
 		/* function prototype */
 		parser->pf.pos = next + 1;
@@ -1978,7 +2039,7 @@ static void parse_function(struct parser *parser, char *next)
 	funcvarstate = FV_NONE;
 	state = STMTSTART;
 	for (;;) {
-		curr = skip_whitespace(next);
+		curr = skip_whitespace(parser, next);
 		/* skip comments */
 		if (curr[0] == 0)
 			return;
@@ -2010,7 +2071,7 @@ static void parse_function(struct parser *parser, char *next)
 				next = curr + 6;  /* "const " */
 				continue;   /* stay in e.g. declare-var state */
 			} else if (strprefixcmp("struct ", curr)) {
-				name = skip_whitespace(curr + 7);  /* "struct " */
+				name = skip_whitespace(parser, curr + 7);  /* "struct " */
 				next = skip_word(name);
 				if (state == DECLVAR || state == ACCESSMEMBER) {
 					/* grammar error, ignore */
@@ -2091,7 +2152,7 @@ static void parse_function(struct parser *parser, char *next)
 		else if (funcvarstate == FV_PARENCLOSE) {
 			funcvarstate = FV_NONE;
 			if (*curr == '(') {
-				next = scan_token(curr+1, "/);");
+				next = scan_token(parser, curr+1, "/\n);");
 				if (next == NULL)
 					break;
 				if (*next == ')')
@@ -2135,7 +2196,7 @@ static void parse_function(struct parser *parser, char *next)
 				select_next_param(&targetparams[parenlevel-1],
 					&targetdecl[parenlevel]);
 			} else
-				fprintf(stderr, "maximum parenthesis nesting level reached\n");
+				pr_err(curr, "maximum parenthesis nesting level reached");
 			state = EXPRUNARY;
 		} else if (*curr == ')') {
 			if (parenlevel > 0) {
@@ -2384,7 +2445,7 @@ static void try_include(struct parser *parser, char *nameend, enum include_locat
 
 	if (parser->include_ext_in_len) {
 		char *tempname = stredup(parser->pf.pos, nameend);
-		fprintf(stderr, "%s: file not found\n", tempname);
+		pr_err(parser->pf.pos, "file not found: %s", tempname);
 		free(tempname);
 	} else {
 		/* not found... assume it's a system header or so */
@@ -2397,13 +2458,13 @@ static void parse_include(struct parser *parser)
 
 	while (islinespace(*parser->pf.pos))
 		parser->pf.pos++;
-	next = scan_token(parser->pf.pos + 1, "/\">\r\n");
+	next = scan_token(parser, parser->pf.pos + 1, "/\">\r\n");
 	if (*parser->pf.pos == '"' && *next == '"')
 		try_include(parser, next, SEARCH_CURRENT_DIR);
 	else if (*parser->pf.pos == '<' && *next == '>')
 		try_include(parser, next, SEARCH_ONLY_PATHS);
 	else
-		fprintf(stderr, "unknown character after #include, ignored\n");
+		pr_warn(parser->pf.pos, "unknown character after #include, ignored");
 
 	parser->pf.pos = next+1;
 }
@@ -2414,7 +2475,7 @@ static void parse(struct parser *parser)
 
 	/* search for start of struct or function */
 	for (;;) {
-		parser->pf.pos = skip_whitespace(parser->pf.pos);
+		parser->pf.pos = skip_whitespace(parser, parser->pf.pos);
 		if (*parser->pf.pos == '#') {
 			parser->pf.pos++;
 			if (strprefixcmp("include ", parser->pf.pos)) {
@@ -2426,11 +2487,12 @@ static void parse(struct parser *parser)
 			if (next == NULL)
 				break;
 
-			parser->pf.pos = next + 1;
+			/* do not skip lineend, let skip_whitespace count lineno */
+			parser->pf.pos = next;
 			continue;
 		}
 
-		next = scan_token(parser->pf.pos, "/({;");
+		next = scan_token(parser, parser->pf.pos, "/\n({;");
 		if (next == NULL)
 			break;
 
@@ -2469,6 +2531,8 @@ static int parse_source_size(struct parser *parser, char *filename,
 	fclose(in);
 
 	/* scan (previously generated) output file for comparison, if applicable */
+	parser->pf.lineno = 1;
+	parser->pf.linestart = buffer - 1;  /* 1-based column index in messages */
 	if (parser->pf.out == NULL) {
 		/* input filename was written into newfilename, just need to
 		 * replace extension to generate output filename */
@@ -2646,5 +2710,5 @@ int main(int argc, char **argv)
 	if (parser->pf.filename == NULL)
 		parse_stdin(parser);
 
-	return 0;
+	return parser->num_errors > 0;
 }

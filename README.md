@@ -30,9 +30,9 @@ not available.
 * class methods
 * virtual methods
 * no runtime library required
+* inheritance (add more tests)
 
 Planned:
-* inheritance (TODO)
 * structured error handling (TODO)
 
 ## Design
@@ -78,7 +78,7 @@ an include file is not found, then an error _is_ printed.
 
 * initialize the "vmt" field to the VMT (add a constructor?)
 * recognize global variables and function parameters (searched, but never any added)
-* line number counting, and add it to error messages
+* line number counting, add line pragmas
 
 ## License
 

@@ -1150,7 +1150,8 @@ struct classptr parse_type(struct parser *parser, char *pos, char **retnext)
 					print_implicit_struct(parser, classtype, pos);
 					decl = classtype->decl;
 				}
-			}
+			} else
+				next = pos;
 			break;
 		}
 	}
@@ -1538,6 +1539,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		parent_virtual = 0;
 		first_virtual_warn = 0;
 		first_vmt_warn = 0;
+		firstparent = NULL;
 		outwrite(parser, "{", 1);
 		for (classname = nextdecl;;) {
 			classname = skip_whitespace(parser, classname + 1);
@@ -1611,6 +1613,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 
 	level = 1;  /* next is at opening brace '{' */
 	declbegin = NULL;
+	membername = retend = next;  /* make compiler happy */
 	for (;;) {
 		/* search (sub)struct or end of variable or function prototype */
 		prevnext = next + 1;
@@ -2034,7 +2037,8 @@ static void parse_function(struct parser *parser, char *next)
 
 	blocklevel = seqparen = parenlevel = exprdecl[0].pointerlevel = 0;
 	exprdecl[0].class = targetdecl[0].class = decl.class = immdecl.class = NULL;
-	exprstart[0] = memberstart[0] = NULL;
+	exprstart[0] = memberstart[0] = exprend = NULL;
+	funcvarname = funcvarnameend = name = NULL;  /* make compiler happy */
 	targetparams[0].params = NULL;
 	funcvarstate = FV_NONE;
 	state = STMTSTART;

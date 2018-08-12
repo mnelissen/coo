@@ -1,4 +1,4 @@
-CFLAGS=-Wall -g -fno-diagnostics-show-caret
+CFLAGS=-Wall -O2 -g -fno-diagnostics-show-caret
 .SUFFIXES:
 coo: main.o hash.o hasho.o
 	gcc $(LDFLAGS) -o $@ $^

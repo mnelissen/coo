@@ -2032,7 +2032,7 @@ static void parse_function(struct parser *parser, char *next)
 				break;
 			case ACCESSMEMBER:
 				expr = immdecl.class ? &immdecl : &exprdecl[parenlevel];
-				if (expr->pointerlevel == 1)
+				if (expr->pointerlevel <= 1)
 					parse_member(parser, memberstart[parenlevel], exprend,
 						expr->class, name, next, expr,
 						&targetparams[parenlevel].params);

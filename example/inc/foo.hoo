@@ -7,9 +7,10 @@ struct foo {
 	float func1(void *p);
 	int *func2(char a, int b);
 	void *get_foo(int a);
-	virtual void vfunc(int arg1, int arg2);
+	virtual void vfunc(int arg1, float *arg2);
 	int *(*intfuncptr)(char c);
-	unsigned int *y;
+	int *y;
+	unsigned int *z;
 };
 
 

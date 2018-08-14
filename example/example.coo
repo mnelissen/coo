@@ -53,17 +53,18 @@ char foo::func()
 
 double foo::func_new(int z)
 {
-	struct foo *x = get_x(), *x2;
-	printf("%d\n", *y + z);
+	struct foo *x = x->get_foo(2), *x2;
+	printf("%d\n", *y + *z);
 	func1(z);
 	x->func();
 	x2->func1(z);
 	((struct foo*)(3 + x->get_foo(x2->func1(z))) + 5)->func();
+	return 1.0;
 }
 
-void foo::vfunc(int arg1, int arg2)
+void foo::vfunc(int arg1, float *arg2)
 {
-	int b = func1(arg1);
+	*arg2 = func1(&arg1);
 }
 
 void A::vfunc_a(int a2)
@@ -71,9 +72,9 @@ void A::vfunc_a(int a2)
 	printf("A::vfunc(%d)\n", a2);
 }
 
-void B::vfunc_a(void)
+void B::vfunc_a(int a2)
 {
-	printf("B::vfunc_a(), b1=%d\n", b1);
+	printf("B::vfunc_a(), a2=%d, b1=%d\n", a2, b1);
 }
 
 void B::vfunc_b(int b2)
@@ -83,12 +84,12 @@ void B::vfunc_b(int b2)
 
 void C::vfunc_a(int a2)
 {
-	printf("C::vfunc_a(), a1=%d a2=%d b1=%d c1=%d\n", a1, a2, b1, c1);
+	printf("C::vfunc_a(), a1=%d a2=%d c1=%d\n", a1, a2, c1);
 }
 
 void C::vfunc_c(int c2)
 {
-	printf("C::vfunc_c(), b1=%d c1=%d c2=%d\n", b1, c1, c2);
+	printf("C::vfunc_c(), c1=%d c2=%d\n", c1, c2);
 }
 
 void D::vfunc_a(int a2)
@@ -98,7 +99,7 @@ void D::vfunc_a(int a2)
 
 void D::vfunc_b(int b2)
 {
-	printf("D::vfunc_b(), b1=%d, b2=%d, d1=%\n", b1, b2, d1);
+	printf("D::vfunc_b(), b1=%d, b2=%d, d1=%d\n", b1, b2, d1);
 }
 
 void D::vfunc_c(int c2)
@@ -106,19 +107,19 @@ void D::vfunc_c(int c2)
 	printf("D::vfunc_c(), b1=%d c1=%d c2=%d d1=%d\n", b1, c1, c2, d1);
 }
 
-void D::vfunc_d(int d2, int d3)
+void D::vfunc_d(A *a, B *b)
 {
-	printf("D::vfunc_d(), b1=%d c1=%d d1=%d d2=%d d3=%d\n", b1, c1, d1, d2, d3);
+	printf("D::vfunc_d(), b1=%d c1=%d d1=%d a.a1=%d b.b1=%d\n", b1, c1, d1, a->a1, b->b1);
 }
 
 void E::vfunc_b(int b2)
 {
-	printf("E::vfunc_b(), b1=%d b2=%d d1=% e1=%d\n", b1, b2, d1, e1);
+	printf("E::vfunc_b(), b1=%d b2=%d d1=%d e1=%d\n", b1, b2, d1, e1);
 }
 
-void E::vfunc_d(int d2, int d3)
+void E::vfunc_d(A *a, B *b)
 {
-	printf("E::vfunc_d(), b1=%d c1=%d d1=%d d2=%d d3=%d e1=%d\n", b1, c1, d1, d2, d3, e1);
+	printf("E::vfunc_d(), b1=%d c1=%d d1=%d e1=%d a.a1=%d b.b1=%d\n", b1, c1, d1, e1, a->a1, b->b1);
 }
 
 int main(int argc, char **argv)

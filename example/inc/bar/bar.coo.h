@@ -1,3 +1,4 @@
+#line 1 "inc/bar/bar.hoo"
 struct bar {
 	int a, b;
 	void *vmt;
@@ -22,3 +23,5 @@ coo_inline void bar_vmt_vbarf(struct bar *this)
 {
 	((struct bar_vmt*)this->vmt)->vbarf(this);
 }
+
+#line 7

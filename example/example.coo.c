@@ -1,3 +1,4 @@
+#line 1 "example.coo"
 #include <stdio.h>
 #include <foo.coo.h>
 
@@ -24,6 +25,7 @@ coo_inline void A_vmt_vfunc_a(struct A *this, int a2)
 	((struct A_vmt*)this->vmt)->vfunc_a(this, a2);
 }
 
+#line 9
 struct B {
 	struct A A;
 	int b1;
@@ -41,6 +43,7 @@ coo_inline void B_vmt_vfunc_b(struct B *this, int b2)
 	((struct B_vmt*)this->A.vmt)->vfunc_b(this, b2);
 }
 
+#line 15
 struct C {
 	struct A *A;
 	int c1;
@@ -62,6 +65,7 @@ coo_inline void C_vmt_vfunc_c(struct C *this, int c2)
 	((struct C_vmt*)this->vmt)->vfunc_c(this, c2);
 }
 
+#line 21
 struct D {
 	struct B B;
 	struct C C;
@@ -87,6 +91,7 @@ coo_inline void D_vmt_vfunc_d(struct D *this, struct A* a, struct B *b)
 	((struct D_vmt*)this->B.A.vmt)->vfunc_d(this, a, b);
 }
 
+#line 29
 struct E {
 	struct D D;
 	int e1;
@@ -100,6 +105,7 @@ extern struct E_vmt {
 
 void E_vfunc_b(struct E *this, int b2);
 void E_vfunc_d(struct E *this, struct A* a, struct B *b);
+#line 35
 static void C_test_c(struct C *this)
 {
 	printf("%d %d\n", this->A->a1, this->c1);
@@ -121,17 +127,18 @@ char foo_func(struct foo *this)
 
 static double foo_func_new(struct foo *this, int z)
 {
-	struct foo *x = get_x(), *x2;
-	printf("%d\n", *this->y + z);
-	foo_func1(this, z);
+	struct foo *x = foo_get_foo(x, 2), *x2;
+	printf("%d\n", *this->y + *this->z);
+	foo_func1(this, this->z);
 	foo_func(x);
-	foo_func1(x2, z);
-	((struct foo*)(3 + foo_get_foo(x, foo_func1(x2, z))) + 5)->func();
+	foo_func1(x2, this->z);
+	foo_func(((struct foo*)(3 + foo_get_foo(x, foo_func1(x2, this->z))) + 5));
+	return 1.0;
 }
 
-void foo_vfunc(struct foo *this, int arg1, int arg2)
+void foo_vfunc(struct foo *this, int arg1, float *arg2)
 {
-	int b = foo_func1(this, arg1);
+	*arg2 = foo_func1(this, &arg1);
 }
 
 void A_vfunc_a(struct A *this, int a2)
@@ -139,9 +146,9 @@ void A_vfunc_a(struct A *this, int a2)
 	printf("A::vfunc(%d)\n", a2);
 }
 
-void B_vfunc_a(struct B *this)
+void B_vfunc_a(struct B *this, int a2)
 {
-	printf("B::vfunc_a(), b1=%d\n", this->b1);
+	printf("B::vfunc_a(), a2=%d, b1=%d\n", a2, this->b1);
 }
 
 void B_vfunc_b(struct B *this, int b2)
@@ -151,12 +158,12 @@ void B_vfunc_b(struct B *this, int b2)
 
 void C_vfunc_a(struct C *this, int a2)
 {
-	printf("C::vfunc_a(), a1=%d a2=%d b1=%d c1=%d\n", this->A->a1, a2, b1, this->c1);
+	printf("C::vfunc_a(), a1=%d a2=%d c1=%d\n", this->A->a1, a2, this->c1);
 }
 
 void C_vfunc_c(struct C *this, int c2)
 {
-	printf("C::vfunc_c(), b1=%d c1=%d c2=%d\n", b1, this->c1, c2);
+	printf("C::vfunc_c(), c1=%d c2=%d\n", this->c1, c2);
 }
 
 void D_vfunc_a(struct D *this, int a2)
@@ -166,7 +173,7 @@ void D_vfunc_a(struct D *this, int a2)
 
 void D_vfunc_b(struct D *this, int b2)
 {
-	printf("D::vfunc_b(), b1=%d, b2=%d, d1=%\n", this->B.b1, b2, this->d1);
+	printf("D::vfunc_b(), b1=%d, b2=%d, d1=%d\n", this->B.b1, b2, this->d1);
 }
 
 void D_vfunc_c(struct D *this, int c2)
@@ -174,19 +181,19 @@ void D_vfunc_c(struct D *this, int c2)
 	printf("D::vfunc_c(), b1=%d c1=%d c2=%d d1=%d\n", this->B.b1, this->C.c1, c2, this->d1);
 }
 
-void D_vfunc_d(struct D *this, int d2, int d3)
+void D_vfunc_d(struct D *this, struct A *a, struct B *b)
 {
-	printf("D::vfunc_d(), b1=%d c1=%d d1=%d d2=%d d3=%d\n", this->B.b1, this->C.c1, this->d1, d2, d3);
+	printf("D::vfunc_d(), b1=%d c1=%d d1=%d a.a1=%d b.b1=%d\n", this->B.b1, this->C.c1, this->d1, a->a1, b->b1);
 }
 
 void E_vfunc_b(struct E *this, int b2)
 {
-	printf("E::vfunc_b(), b1=%d b2=%d d1=% e1=%d\n", this->D.B.b1, b2, this->D.d1, this->e1);
+	printf("E::vfunc_b(), b1=%d b2=%d d1=%d e1=%d\n", this->D.B.b1, b2, this->D.d1, this->e1);
 }
 
-void E_vfunc_d(struct E *this, int d2, int d3)
+void E_vfunc_d(struct E *this, struct A *a, struct B *b)
 {
-	printf("E::vfunc_d(), b1=%d c1=%d d1=%d d2=%d d3=%d e1=%d\n", this->D.B.b1, this->D.C.c1, this->D.d1, d2, d3, this->e1);
+	printf("E::vfunc_d(), b1=%d c1=%d d1=%d e1=%d a.a1=%d b.b1=%d\n", this->D.B.b1, this->D.C.c1, this->D.d1, this->e1, a->a1, b->b1);
 }
 
 int main(int argc, char **argv)
@@ -198,35 +205,35 @@ int main(int argc, char **argv)
 	struct E e;
 
 	a.a1 = 10;
-	a.vfunc_a(11);
+	A_vmt_vfunc_a(&a, 11);
 
-	&(b.a1 ).A= 20;
-	b.vfunc_a(21);
-	b.vfunc_b(22);
+	b.A.a1 = 20;
+	A_vmt_vfunc_a(&b.A, 21);
+	B_vmt_vfunc_b(&b, 22);
 
-	c.a1 = 30;
+	c.A->a1 = 30;
 	c.c1 = 31;
-	c.vfunc_a(32);
-	c.vfunc_c(33);
+	A_vmt_vfunc_a(c.A, 32);
+	C_vmt_vfunc_c(&c, 33);
 
-	&(d.a1 ).C= 40;
-	d.b1 = 41;
-	d.c1 = 42;
+	d.B.A.a1 = 40;
+	d.B.b1 = 41;
+	d.C.c1 = 42;
 	d.d1 = 43;
-	d.vfunc_a(44);
-	d.vfunc_b(45);
-	d.vfunc_c(46);
-	&(d.vfunc_d(&e, &e)).D;
+	A_vmt_vfunc_a(&d.B.A, 44);
+	B_vmt_vfunc_b(&d.B, 45);
+	C_vmt_vfunc_c(&d.C, 46);
+	D_vmt_vfunc_d(&d, &(&e)->D.B.A, &(&e)->D.B);
 
-	&(e.a1 ).D= 50;
-	e.b1 = 51;
-	e.c1 = 52;
-	e.d1 = 53;
+	e.D.B.A.a1 = 50;
+	e.D.B.b1 = 51;
+	e.D.C.c1 = 52;
+	e.D.d1 = 53;
 	e.e1 = 54;
-	e.vfunc_a(55);
-	e.vfunc_b(56);
-	e.vfunc_c(57);
-	e.vfunc_d(&e, &e);
+	A_vmt_vfunc_a(&e.D.B.A, 55);
+	B_vmt_vfunc_b(&e.D.B, 56);
+	C_vmt_vfunc_c(&e.D.C, 57);
+	D_vmt_vfunc_d(&e.D, &(&e)->D.B.A, &(&e)->D.B);
 
 	return 0;
 }

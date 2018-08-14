@@ -69,7 +69,7 @@ struct file_id {
 };
 
 enum parse_state {
-	FINDVAR, STMTSTART, DECLVAR, ACCESSMEMBER, EXPRUNARY
+	FINDVAR, STMTSTART, DECLVAR, CASTVAR, ACCESSMEMBER, EXPRUNARY
 };
 
 struct dynarr {
@@ -1513,7 +1513,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	char *declbegin, *membername, *nameend, *params, *declend, *nextdecl;
 	char *classname, *retend, *retnext, *prevdeclend, *prevnext;
 	int level, is_typedef, parent_primary, parent_virtual;
-	int first_virtual_warn, first_vmt_warn;
+	int first_virtual_warn, first_vmt_warn, empty_line;
 	struct classtype *parentclasstype;
 	struct parent *parent, *firstparent;
 
@@ -1761,11 +1761,24 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	flush(parser);
 	print_vmt_type(parser, class);
 	print_member_decls(parser, class);
+	/* skip line endings, so we put resync at next declaration line */
+	for (empty_line = 0;; parser->pf.pos++) {
+		if (*parser->pf.pos == '\r')
+			continue;
+		if (*parser->pf.pos != '\n')
+			break;
+		parser->pf.lineno++;
+		parser->pf.linestart = parser->pf.pos;
+		empty_line = 1;
+	}
+	/* many reasons why lineno could have gone out of sync, always resync */
+	flush(parser);
+	outprintf(parser, "%s#line %d\n", empty_line ? "" : "\n", parser->pf.lineno);
 	return class;
 }
 
 int parse_member(struct parser *parser, char *exprstart, char *exprend,
-	struct class *class, char *name, char *nameend,
+	struct class *class, int pointerlevel, char *name, char *nameend,
 	struct classptr *retclassptr, struct dynarr **retparams)
 {
 	struct member *member;
@@ -1779,7 +1792,7 @@ int parse_member(struct parser *parser, char *exprstart, char *exprend,
 		return -1;
 
 	if (exprstart && member->props.is_static) {
-		pr_err(name, "Cannot access static member");
+		pr_err(name, "cannot access static member");
 		return -1;
 	}
 
@@ -1802,8 +1815,8 @@ int parse_member(struct parser *parser, char *exprstart, char *exprend,
 		if (add_this) {
 			flush_until = args;
 			if (member->parentname) {
-				after_pos = addinsert(parser, after_pos,
-					args, "&this->", args);
+				after_pos = addinsert(parser, after_pos, args,
+					member->parent_virtual ? "this->" : "&this->", args);
 				if (*args != ')') {
 					after_pos = addinsert(parser, after_pos,
 						args, member->parentname, args);
@@ -1823,15 +1836,20 @@ int parse_member(struct parser *parser, char *exprstart, char *exprend,
 				insert_text = ", ";
 			if (exprstart) {
 				/* after other->function(, need to jump to
-				   'other' expression and back to arguments */
+				   'other' expression and back to arguments
+				   we need to take address:
+				   (1) if plain (stack) variable as is
+				   (2) or taking substruct which is a virtual member */
 				addinsert(parser, after_pos, args,
-					member->parentname ? "&" : "", exprstart);
+					( member->parentname && !member->parent_virtual) ||
+					(!member->parentname && pointerlevel == 0)
+					? "&" : "", exprstart);
 				/* continue at end */
 				after_pos = (struct insert **)
 					&parser->inserts.mem[parser->inserts.num];
 				if (member->parentname) {
 					after_pos = addinsert(parser, after_pos,
-						exprend, "->", args);
+						exprend, pointerlevel ? "->" : ".", args);
 					/* reuse empty insert_text if possible */
 					if (insert_text[0] != 0)
 						after_pos = addinsert(parser, after_pos,
@@ -1852,6 +1870,10 @@ int parse_member(struct parser *parser, char *exprstart, char *exprend,
 			after_pos = addinsert(parser, after_pos, name, insert_text, name);
 			insert_text = member->nameinsert;
 		}
+	} else if (member->nameinsert) {
+		flush_until = name;
+		continue_at = name;
+		insert_text = member->nameinsert;
 	}
 
 	if (continue_at)
@@ -2099,8 +2121,8 @@ static void parse_function(struct parser *parser, char *next)
 				expr = immdecl.class ? &immdecl : &exprdecl[parenlevel];
 				if (expr->pointerlevel <= 1)
 					parse_member(parser, memberstart[parenlevel], exprend,
-						expr->class, name, next, expr,
-						&targetparams[parenlevel].params);
+						expr->class, expr->pointerlevel, name, next,
+						expr, &targetparams[parenlevel].params);
 				state = FINDVAR;
 				break;
 			default:
@@ -2110,7 +2132,7 @@ static void parse_function(struct parser *parser, char *next)
 				if (find_local_e_class(parser, name, next,
 						&immdecl, tgtparams) < 0
 					&& parse_member(parser, NULL, NULL,
-						class, name, next, &immdecl, tgtparams) < 0
+						class, 1, name, next, &immdecl, tgtparams) < 0
 					&& find_global_e_class(
 						parser, name, next, &immdecl, tgtparams) < 0
 					&& (classtype = find_classtype_e(
@@ -2134,6 +2156,8 @@ static void parse_function(struct parser *parser, char *next)
 						exprdecl[parenlevel-2].pointerlevel +=
 							decl.pointerlevel;
 						decl.class = NULL;
+						state = CASTVAR;
+						break;
 					} else {
 						/* grammar error, ignore */
 						decl.class = NULL;
@@ -2171,8 +2195,10 @@ static void parse_function(struct parser *parser, char *next)
 		if (*curr == ')' || *curr == ',' || *curr == '=' || *curr == ';') {
 			if (exprdecl[parenlevel].class != NULL)
 				expr = &exprdecl[parenlevel];
-			else
+			else {
 				expr = &immdecl;
+				immdecl.pointerlevel += exprdecl[parenlevel].pointerlevel;
+			}
 			target = &targetdecl[parenlevel];
 			if (target->class && expr->class && target->class != expr->class
 					&& target->pointerlevel == expr->pointerlevel
@@ -2208,9 +2234,11 @@ static void parse_function(struct parser *parser, char *next)
 				if (exprdecl[parenlevel].class == NULL)
 					exprdecl[parenlevel] = exprdecl[parenlevel+1];
 			}
+			state = FINDVAR;
 		} else if (*curr == '*') {
 			switch (state) {
-			case DECLVAR: exprdecl[0].pointerlevel++; break;
+			case DECLVAR:
+			case CASTVAR: exprdecl[0].pointerlevel++; break;
 			case STMTSTART:
 			case ACCESSMEMBER:
 			case EXPRUNARY: exprdecl[parenlevel].pointerlevel--; break;
@@ -2249,10 +2277,14 @@ static void parse_function(struct parser *parser, char *next)
 		} else if (*curr == '+' || *curr == '-' || *curr == '/' || *curr == '%'
 			|| *curr == '&' || *curr == '|' || *curr == '^' || *curr == '!'
 			|| *curr == '?' || *curr == ':') {
-			state = EXPRUNARY;
-			if (immdecl.class != NULL) {
-				exprdecl[parenlevel] = immdecl;
-				immdecl.class = NULL;
+			if (*curr == '&' && state == EXPRUNARY) {
+				exprdecl[parenlevel].pointerlevel++;
+			} else {
+				state = EXPRUNARY;
+				if (immdecl.class != NULL) {
+					exprdecl[parenlevel] = immdecl;
+					immdecl.class = NULL;
+				}
 			}
 		} else
 			state = FINDVAR;
@@ -2477,6 +2509,8 @@ static void parse(struct parser *parser)
 {
 	char *next;
 
+	/* write line directives for useful compiler messages */
+	outprintf(parser, "#line 1 \"%s\"\n", parser->pf.filename);
 	/* search for start of struct or function */
 	for (;;) {
 		parser->pf.pos = skip_whitespace(parser, parser->pf.pos);

@@ -2,7 +2,9 @@ CFLAGS=-Wall -g -fno-diagnostics-show-caret
 .SUFFIXES:
 coo: main.o hash.o hasho.o
 	gcc $(LDFLAGS) -o $@ $^
-t: testc.o
+t: testc
+testc: testc.o
+	gcc $(LDFLAGS) -o $@ $^
 tp: testcpp.o
 testc.o: testc.c
 	gcc $(CFLAGS) -ansi -pedantic -c -o $@ $<

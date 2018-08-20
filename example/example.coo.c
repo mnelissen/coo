@@ -20,6 +20,7 @@ extern struct A_vmt {
 #endif
 
 void A_vfunc_a(struct A *this, int a2);
+void A_A(struct A *this);
 coo_inline void A_vmt_vfunc_a(struct A *this, int a2)
 {
 	((struct A_vmt*)this->vmt)->vfunc_a(this, a2);
@@ -38,6 +39,7 @@ extern struct B_vmt {
 
 void B_vfunc_a(struct B *this, int a2);
 void B_vfunc_b(struct B *this, int b2);
+void B_B(struct B *this);
 coo_inline void B_vmt_vfunc_b(struct B *this, int b2)
 {
 	((struct B_vmt*)this->A.vmt)->vfunc_b(this, b2);
@@ -60,6 +62,7 @@ extern struct C_vmt {
 
 void C_vfunc_a(struct C *this, int a2);
 void C_vfunc_c(struct C *this, int c2);
+void C_C(struct C *this);
 coo_inline void C_vmt_vfunc_c(struct C *this, int c2)
 {
 	((struct C_vmt*)this->vmt)->vfunc_c(this, c2);
@@ -86,6 +89,7 @@ void D_vfunc_a(struct D *this, int a2);
 void D_vfunc_b(struct D *this, int b2);
 void D_vfunc_c(struct D *this, int c2);
 void D_vfunc_d(struct D *this, struct A* a, struct B *b);
+void D_D(struct D *this);
 coo_inline void D_vmt_vfunc_d(struct D *this, struct A* a, struct B *b)
 {
 	((struct D_vmt*)this->B.A.vmt)->vfunc_d(this, a, b);
@@ -105,6 +109,7 @@ extern struct E_vmt {
 
 void E_vfunc_b(struct E *this, int b2);
 void E_vfunc_d(struct E *this, struct A* a, struct B *b);
+void E_E(struct E *this);
 #line 35
 static void C_test_c(struct C *this)
 {
@@ -123,6 +128,7 @@ char foo_func(struct foo *this)
 	this->x = *this->y;
 	*this->y = this->x;
 	this->y = &this->x;
+	return 0;
 }
 
 static double foo_func_new(struct foo *this, int z)
@@ -184,6 +190,23 @@ void D_vfunc_c(struct D *this, int c2)
 void D_vfunc_d(struct D *this, struct A *a, struct B *b)
 {
 	printf("D::vfunc_d(), b1=%d c1=%d d1=%d a.a1=%d b.b1=%d\n", this->B.b1, this->C.c1, this->d1, a->a1, b->b1);
+}
+
+void D_D(struct D *this)
+{
+	this->B.A.a1 = -5;
+	B_B(&this->B);
+	C_C(&this->C);
+	this->B.A.vmt = &D_vmt;
+	this->C.vmt = &D_C_vmt;
+}
+
+void E_E(struct E *this)
+{
+	this->D.B.A.a1 = -6;
+	D_D(&this->D);
+	this->D.B.A.vmt = &E_vmt;
+	this->D.C.vmt = &D_C_vmt;
 }
 
 void E_vfunc_b(struct E *this, int b2)

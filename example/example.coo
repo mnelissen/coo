@@ -49,6 +49,7 @@ char foo::func()
 	x = *y;
 	*y = x;
 	y = &x;
+	return 0;
 }
 
 double foo::func_new(int z)
@@ -110,6 +111,19 @@ void D::vfunc_c(int c2)
 void D::vfunc_d(A *a, B *b)
 {
 	printf("D::vfunc_d(), b1=%d c1=%d d1=%d a.a1=%d b.b1=%d\n", b1, c1, d1, a->a1, b->b1);
+}
+
+void D::D(void)
+{
+	a1 = -5;
+	B();
+	C();
+}
+
+void E::E(void)
+{
+	a1 = -6;
+	D();
 }
 
 void E::vfunc_b(int b2)

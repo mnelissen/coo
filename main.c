@@ -2070,12 +2070,13 @@ static void parse_function(struct parser *parser, char *next)
 	struct classtype *classtype;
 	struct member *member;
 	char *curr, *funcname, *funcnameend, *classname, *name, *argsep, *dblcolonsep;
-	char *exprstart[MAX_PAREN_LEVELS], *exprend, *params, *paramend;
+	char *exprstart[MAX_PAREN_LEVELS], *exprend, *params, *param0, *paramend;
 	char *memberstart[MAX_PAREN_LEVELS], *funcvarname, *funcvarnameend;
 	enum parse_funcvar_state funcvarstate;
 	enum parse_state state, nextstate;
 	int blocklevel, parenlevel, seqparen;
 	int is_constructor, num_constr_called, parents_inited, vmts_inited;
+	unsigned i;
 
 	funcname = NULL, classname = next;
 	for (; classname > parser->pf.pos && !isspace(*(classname-1)); classname--) {
@@ -2088,7 +2089,8 @@ static void parse_function(struct parser *parser, char *next)
 
 	is_constructor = num_constr_called = parents_inited = vmts_inited = 0;
 	params = ++next;  /* advance after '(' */
-	paramend = scan_token(parser, params, "/\n)");
+	param0 = skip_whitespace(parser, params);
+	paramend = scan_token(parser, param0, "/\n)");
 	if (paramend == NULL)
 		return;
 	if (funcname) {   /* funcname assigned means there is a classname::funcname */
@@ -2115,19 +2117,18 @@ static void parse_function(struct parser *parser, char *next)
 			flush_until(parser, dblcolonsep);
 			outwrite(parser, "_", 1);
 			parser->pf.writepos = funcname;
-			flush_until(parser, next);
+			flush_until(parser, params);
 			/* check if there are parameters */
-			next = skip_whitespace(parser, next);
 			argsep = "";  /* start assumption: no params */
-			if (*next != ')') {
-				if (strprefixcmp("void", next) && !isalpha(next[4]))
-					next += 4;  /* skip "void" if adding this param */
+			if (*param0 != ')') {
+				if (strprefixcmp("void", param0) && !isalpha(param0[4]))
+					param0 += 4;  /* skip "void" if adding "this" param */
 				else
-					argsep = ", ";  /* separate this, rest params */
+					argsep = ", ";  /* separate "this", rest params */
 			}
 			/* add this parameter */
 			outprintf(parser, "struct %s *this%s", classname, argsep);
-			parser->pf.writepos = next;
+			parser->pf.writepos = param0;
 			/* no parents means all are initialized */
 			is_constructor = member->is_constructor;
 			parents_inited = is_constructor && class->num_parents == 0;
@@ -2147,8 +2148,7 @@ static void parse_function(struct parser *parser, char *next)
 	/* store parameters as variables */
 	hash_clear(&parser->locals);
 	parser->nested_locals.num = 0;
-	next = parse_parameters(parser, params, NULL, param_to_variable);
-	if (next == NULL)
+	if (parse_parameters(parser, params, NULL, param_to_variable) == NULL)
 		return;
 
 	blocklevel = seqparen = parenlevel = exprdecl[0].pointerlevel = 0;
@@ -2403,6 +2403,16 @@ static void parse_function(struct parser *parser, char *next)
 		/* advance for most of the operator/separator cases */
 		if (next <= curr)
 			next = curr+1;
+	}
+
+	if (is_constructor && !parents_inited) {
+		for (i = 0; i < class->members_arr.num; i++) {
+			member = class->members_arr.mem[i];
+			if (member->parent_constructor && !member->constr_called) {
+				pr_err(curr, "missing a call to parent "
+					"constructor %s", member->name);
+			}
+		}
 	}
 
 	parser->pf.pos = curr + 1;

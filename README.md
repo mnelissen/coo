@@ -76,7 +76,6 @@ an include file is not found, then an error _is_ printed.
 
 ## TODO
 
-* initialize the "vmt" field to the VMT (add a constructor?)
 * fixup class pointer in multiple inheritance virtual call
 * recognize global variables and function parameters (searched, but never any added)
 

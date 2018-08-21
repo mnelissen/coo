@@ -2232,12 +2232,16 @@ static void parse_function(struct parser *parser, char *next)
 				member = parse_member(parser, NULL, NULL,
 						class, 1, name, next, &immdecl, tgtparams);
 				if (member != NULL) {
-					if (is_constructor && member->parent_constructor
-						&& !member->constr_called) {
-						num_constr_called++;
-						member->constr_called = 1;
-						if (num_constr_called == class->num_parents)
-							parents_inited = 1;
+					if (is_constructor && member->parent_constructor) {
+						if (!member->constr_called) {
+							num_constr_called++;
+							member->constr_called = 1;
+							if (num_constr_called == class->num_parents)
+								parents_inited = 1;
+						} else {
+							pr_err(name, "duplicate call to parent "
+								"constructor %s", member->name);
+						}
 					}
 					break;
 				}

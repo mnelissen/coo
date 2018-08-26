@@ -5,9 +5,11 @@ coo: main.o hash.o hasho.o
 t: testc
 testc: testc.o
 	gcc $(LDFLAGS) -o $@ $^
-tp: testcpp.o
+tp: testcpp
+testcpp: testcpp.o
+	g++ $(LDFLAGS) -o $@ $^
 testc.o: testc.c
-	gcc $(CFLAGS) -ansi -pedantic -c -o $@ $<
+	gcc $(CFLAGS) -c -o $@ $<
 testcpp.o: testcpp.cpp
 	g++ $(CFLAGS) -ansi -pedantic -c -o $@ $<
 %.o: %.c

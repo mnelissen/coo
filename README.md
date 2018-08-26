@@ -62,22 +62,39 @@ acts from there.
   * multiple inheritance is allowed, but not duplicated
   * recognize 'virtual parentname' to declare virtual inheritance (like C++)
 
-## include files
+## Include files
 
 Files in #include lines are looked up same as C. With '<...>' searches provided
 paths on the commandline only, '"..."' also searches the current directory of
 the file that has the #include line.
 
-Note that if included files are not found, no error is printed. Typically coo
-there is no need for coo to parse system headers for example anyway. For
+Note that if included files are not found, no error is printed. Typically
+there is no need for coo to parse for example system headers anyway. For
 diagnostic purpose though, a commandline option '-xi' is available to filter
 what files (the ones with given extension) should be processed. If in this case
 an include file is not found, then an error _is_ printed.
 
+## Constructors
+
+A function defined in a struct that has the same name as the struct is the
+constructor. Let it return void if it cannot fail. This will allow usage as
+stack variable. If it can fail, then let it return a pointer to the struct
+type (return this; or return NULL on fail).
+
+Constructors must call all their parent constructors somewhere in their
+function body. Right after they are all called, the VMT for this class is
+initialized. This creates the same VMT bottom-up creation effect as in C++.
+
+When declaring class variables on the stack, their constructor is called by
+adding the arguments between parentheses after the variable name, just like
+in C++. E.g. suppose class C with constructor C::C(int x) then "C c(5);"
+declares a variable called "c" and calls its constructor with the value 5.
+
 ## TODO
 
 * fixup class pointer in multiple inheritance virtual call
-* recognize global variables and function parameters (searched, but never any added)
+* recognize global variables (searched, but never any added)
+* calls to member functions from constructors does not need to be the VMT version
 
 ## License
 

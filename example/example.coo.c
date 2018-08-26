@@ -88,14 +88,14 @@ extern struct D_C_vmt {
 void D_vfunc_a(struct D *this, int a2);
 void D_vfunc_b(struct D *this, int b2);
 void D_vfunc_c(struct D *this, int c2);
+void D_D(struct D *this, struct A *a);
 void D_vfunc_d(struct D *this, struct A* a, struct B *b);
-void D_D(struct D *this);
 coo_inline void D_vmt_vfunc_d(struct D *this, struct A* a, struct B *b)
 {
 	((struct D_vmt*)this->B.A.vmt)->vfunc_d(this, a, b);
 }
 
-#line 29
+#line 30
 struct E {
 	struct D D;
 	int e1;
@@ -110,7 +110,7 @@ extern struct E_vmt {
 void E_vfunc_b(struct E *this, int b2);
 void E_vfunc_d(struct E *this, struct A* a, struct B *b);
 void E_E(struct E *this);
-#line 35
+#line 36
 static void C_test_c(struct C *this)
 {
 	printf("%d %d\n", this->A->a1, this->c1);
@@ -192,21 +192,23 @@ void D_vfunc_d(struct D *this, struct A *a, struct B *b)
 	printf("D::vfunc_d(), b1=%d c1=%d d1=%d a.a1=%d b.b1=%d\n", this->B.b1, this->C.c1, this->d1, a->a1, b->b1);
 }
 
-void D_D(struct D *this)
+void D_D(struct D *this, struct A *a)
 {
 	this->B.A.a1 = -5;
 	B_B(&this->B);
 	C_C(&this->C);
 	this->B.A.vmt = &D_vmt;
 	this->C.vmt = &D_C_vmt;
+#line 122
 }
 
 void E_E(struct E *this)
 {
 	this->D.B.A.a1 = -6;
-	D_D(&this->D);
+	D_D(&this->D, &this->D.B.A);
 	this->D.B.A.vmt = &E_vmt;
 	this->D.C.vmt = &D_C_vmt;
+#line 128
 }
 
 void E_vfunc_b(struct E *this, int b2)
@@ -221,12 +223,23 @@ void E_vfunc_d(struct E *this, struct A *a, struct B *b)
 
 int main(int argc, char **argv)
 {
-	struct A a;
+	struct A a, a_a;
+	int aa1;
 	struct B b;
+	int ba1;
 	struct C c;
-	struct D d;
+	struct D d; int db1;
 	struct E e;
 
+#line 142
+	A_A(&a); A_A(&a_a);
+	aa1 = a.a1;
+	B_B(&b);
+	ba1 = b.A.a1;
+	C_C(&c);
+	D_D(&d, (&c)->A); db1 = d.B.b1;
+	E_E(&e);
+#line 150
 	a.a1 = 10;
 	A_vmt_vfunc_a(&a, 11);
 
@@ -257,6 +270,9 @@ int main(int argc, char **argv)
 	B_vmt_vfunc_b(&e.D.B, 56);
 	C_vmt_vfunc_c(&e.D.C, 57);
 	D_vmt_vfunc_d(&e.D, &(&e)->D.B.A, &(&e)->D.B);
+
+	/* silence warnings */
+	printf("%d %d %d\n", aa1, ba1, db1);
 
 	return 0;
 }

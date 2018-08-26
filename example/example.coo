@@ -19,6 +19,7 @@ struct C : virtual A {
 };
 
 struct D : B, C {
+	void D(A *a);
 	int d1;
 	override vfunc_a;
 	override vfunc_b;
@@ -113,7 +114,7 @@ void D::vfunc_d(A *a, B *b)
 	printf("D::vfunc_d(), b1=%d c1=%d d1=%d a.a1=%d b.b1=%d\n", b1, c1, d1, a->a1, b->b1);
 }
 
-void D::D(void)
+void D::D(A *a)
 {
 	a1 = -5;
 	B();
@@ -123,7 +124,7 @@ void D::D(void)
 void E::E(void)
 {
 	a1 = -6;
-	D();
+	D(this);
 }
 
 void E::vfunc_b(int b2)
@@ -138,10 +139,12 @@ void E::vfunc_d(A *a, B *b)
 
 int main(int argc, char **argv)
 {
-	A a;
+	A a, a_a;
+	int aa1 = a.a1;
 	B b;
+	int ba1 = b.a1;
 	C c;
-	D d;
+	D d(&c); int db1 = d.b1;
 	E e;
 
 	a.a1 = 10;
@@ -174,6 +177,9 @@ int main(int argc, char **argv)
 	e.vfunc_b(56);
 	e.vfunc_c(57);
 	e.vfunc_d(&e, &e);
+
+	/* silence warnings */
+	printf("%d %d %d\n", aa1, ba1, db1);
 
 	return 0;
 }

@@ -69,7 +69,7 @@ struct file_id {
 };
 
 enum parse_state {
-	FINDVAR, STMTSTART, DECLVAR, CASTVAR, ACCESSMEMBER, EXPRUNARY
+	FINDVAR, STMTSTART, DECLVAR, CONSTRUCT, CASTVAR, ACCESSMEMBER, EXPRUNARY
 };
 
 struct dynarr {
@@ -97,10 +97,11 @@ struct class {
 	struct dynarr vmts;          /* struct vmt *, all applicable vmts */
 	struct dynarr descendants;   /* struct parent *, inheriting from this class */
 	struct vmt *vmt;             /* from primary parent (or new here)  */
+	struct member *constructor;  /* constructor defined for this class */
 	unsigned num_parents;        /* number of direct parent classes */
 	char is_interface;
 	char write_vmt;              /* have seen virtual func implementation */
-	char has_constructor;        /* constructor defined for this class */
+	char void_constructor;       /* constr has void as return type (can't fail) */
 	struct hash_entry node;
 	char name[];
 };
@@ -184,6 +185,16 @@ struct insert {   /* an insert, to insert some text in the output */
 	char *continue_at;   /* where to continue writing (perhaps skip something) */
 };
 
+struct initializer {
+	struct class *varclass; /* class constructor to call, if any */
+	char *params;           /* ... first parameter, to separate from "this" */
+	struct dynarr inserts;  /* inserts for initialization expression */
+	char *name;             /* name of variable */
+	char *start;            /* start of expression (to skip originally) */
+	char *end;              /* ... and its end */
+	int lineno;             /* source line number where expression appeared */
+};
+
 struct parse_file {
 	FILE *out;                /* file writing to */
 	char *filename;           /* input filename */
@@ -211,12 +222,14 @@ struct parser {
 	struct hash classtypes;       /* struct classtype pointers */
 	struct hash globals;          /* struct variable pointers */
 	struct hash locals;           /* struct variable pointers */
+	struct dynarr initializers;   /* struct initializer pointers */
 	struct dynarr nested_locals;  /* struct variable pointers */
-	struct dynarr inserts;        /* struct insert pointers */
+	struct dynarr inserts_arr;    /* struct insert pointers (outer layer) */
 	struct dynarr includepaths;   /* char pointers */
 	struct dynarr file_stack;     /* struct parse_file pointers */
 	struct dynarr param_classes;  /* struct classptr *, collect params of funcs */
 	struct dynarr implicit_structs;  /* char *, param positions to add "struct " */
+	struct dynarr *inserts;       /* either inserts_arr or a initializer's */
 	struct hash files_seen;       /* struct file_id pointers */
 	int include_ext_in_len;       /* length of include_ext_in, optimization */
 	int num_errors;               /* user errors, prevent spam */
@@ -250,6 +263,32 @@ static char *parser_strchrnul(struct parser *parser, char *str, int ch)
 static int islinespace(int ch)
 {
 	return ch == ' ' || ch == '\t';
+}
+
+static char *rev_linestart(const char *bufstart, char *position)
+{
+	for (; position > bufstart; position--) {
+		if (!islinespace(*(position-1)))
+			break;
+	}
+	return position;
+}
+
+static char *rev_lineend(const char *bufstart, char *position)
+{
+	position = rev_linestart(bufstart, position);
+	if (position == bufstart)
+		return position;
+	/* reverse through line ending, but only one */
+	if (*(position-1) != '\n')
+		return position;
+	/* skip LF */
+	if (--position == bufstart)
+		return position;
+	if (*(position-1) != '\r')
+		return position;
+	/* skip CR */
+	return position - 1;
 }
 
 /* assumes pos[0] == '/' was matched, starting a possible comment */
@@ -948,7 +987,7 @@ static struct member *addmember(struct parser *parser, struct class *class,
 		char *membername, char *nameend, char *params, struct memberprops props)
 {
 	struct member *member;
-	char *vmt_insert;
+	char *vmt_insert, *end;
 
 	member = allocmember_e(class, membername, nameend);
 	if (member == NULL) {
@@ -973,11 +1012,14 @@ static struct member *addmember(struct parser *parser, struct class *class,
 		member->vmt = class->vmt;
 		class->vmt->modified = 1;
 	}
-	member->is_constructor = strprefixcmp(class->name, membername) != NULL;
+	end = strprefixcmp(class->name, membername);
+	member->is_constructor = end ? !isalnum(*end) : 0;
 	if (member->is_constructor) {
 		if (!props.is_function)
 			pr_err(membername, "constructor must be a function");
-		class->has_constructor = 1;
+		class->constructor = member;
+		end = strprefixcmp("void", rettype);
+		class->void_constructor = end ? isspace(*end) != 0 : 0;
 	}
 
 	/* in case of defining functions on the fly,
@@ -1023,10 +1065,10 @@ static struct insert **addinsert(struct parser *parser, struct insert **after_po
 {
 	struct insert *insert, **end_pos;
 
-	if (grow_dynarr(&parser->inserts) < 0)
+	if (grow_dynarr(parser->inserts) < 0)
 		return NULL;
 
-	end_pos = (struct insert **)&parser->inserts.mem[parser->inserts.num];
+	end_pos = (struct insert **)&parser->inserts->mem[parser->inserts->num];
 	insert = *end_pos;
 	if (!insert) {
 		insert = calloc(1, sizeof(*insert));
@@ -1038,11 +1080,11 @@ static struct insert **addinsert(struct parser *parser, struct insert **after_po
 	insert->flush_until = flush_until;
 	insert->insert_text = insert_text;
 	insert->continue_at = continue_at;
-	parser->inserts.num++;
+	parser->inserts->num++;
 	if (!after_pos) {
 		/* check flush ordering to be incremental */
 		for (after_pos = end_pos - 1;; after_pos--) {
-			if ((void**)after_pos < parser->inserts.mem)
+			if ((void**)after_pos < parser->inserts->mem)
 				break;
 			/* add new inserts after existing (so stop if equal) */
 			if ((*after_pos)->flush_until <= flush_until)
@@ -1067,6 +1109,33 @@ static void addinsert_implicit_struct(struct parser *parser,
 		return;
 
 	addinsert(parser, NULL, position, "struct ", position);
+}
+
+static struct initializer *addinitializer(struct parser *parser,
+		struct class *varclass, char *name, char *start)
+{
+	struct initializer *initializer;
+
+	if (grow_dynarr(&parser->initializers) < 0)
+		return NULL;
+
+	initializer = parser->initializers.mem[parser->initializers.num];
+	if (initializer == NULL) {
+		initializer = malloc(sizeof(*initializer));
+		if (initializer == NULL)
+			return NULL;
+
+		parser->initializers.mem[parser->initializers.num] = initializer;
+	}
+
+	initializer->lineno = parser->pf.lineno;
+	initializer->varclass = varclass;
+	initializer->params = NULL;
+	initializer->name = name;
+	initializer->start = start;
+	parser->inserts = &initializer->inserts;
+	parser->initializers.num++;
+	return initializer;
 }
 
 static int addincludepath(struct parser *parser, char *path)
@@ -1787,16 +1856,16 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	}
 
 	/* add constructor if needed (vmt) and user did not define one */
-	if (class->vmts.num && !class->has_constructor) {
+	if (class->vmts.num && !class->constructor) {
 		struct memberprops constructorprops = {0,};
 		retclassptr.class = NULL;
 		retclassptr.pointerlevel = 0;
 		declbegin = "void ";
 		retend = declbegin + 5;   /* "void " */
 		constructorprops.is_function = 1;
-		addmember(parser, class, &retclassptr, declbegin, retend,
-			classname, classnameend, ")", constructorprops);
-		class->has_constructor = 1;
+		class->constructor = addmember(parser, class, &retclassptr, declbegin,
+			retend, classname, classnameend, ")", constructorprops);
+		class->void_constructor = 1;
 	}
 
 	/* check for typedef struct X {} Y, *Z; */
@@ -1910,7 +1979,7 @@ static struct member *parse_member(struct parser *parser, char *exprstart, char 
 					? "&" : "", exprstart);
 				/* continue at end */
 				after_pos = (struct insert **)
-					&parser->inserts.mem[parser->inserts.num];
+					&parser->inserts->mem[parser->inserts->num];
 				if (member->parentname) {
 					after_pos = addinsert(parser, after_pos,
 						exprend, pointerlevel ? "->" : ".", args);
@@ -1967,21 +2036,75 @@ static void parse_typedef(struct parser *parser, char *declend)
 	parser->pf.pos = declend + 1;
 }
 
-static void print_inserts(struct parser *parser)
+static void print_inserts(struct parser *parser, struct dynarr *inserts)
 {
 	struct insert *insert;
 	int j;
 
-	if (parser->inserts.num == 0)
+	if (inserts->num == 0)
 		return;
 
-	for (j = 0; j < parser->inserts.num; j++) {
-		insert = parser->inserts.mem[j];
+	for (j = 0; j < inserts->num; j++) {
+		insert = inserts->mem[j];
 		flush_until(parser, insert->flush_until);
 		outputs(parser, insert->insert_text);
 		parser->pf.writepos = insert->continue_at;
 	}
-	parser->inserts.num = 0;
+	inserts->num = 0;
+}
+
+static void print_initializers(struct parser *parser, char *position)
+{
+	char *linestart, *sep_or_end;
+	struct initializer *initializer;
+	struct class *class;
+	unsigned i;
+	int lineno;
+
+	if (parser->initializers.num == 0)
+		return;
+
+	/* go back to start of line, so we can print full line statements
+	   copy the indentation to our added lines */
+	linestart = rev_lineend(parser->pf.writepos, position);
+	flush_until(parser, linestart);
+	lineno = 0;
+	for (i = 0; i < parser->initializers.num; i++) {
+		initializer = parser->initializers.mem[i];
+		if (initializer->lineno != lineno) {
+			/* if moved to next line, only print line ending */
+			if (initializer->lineno != lineno + 1)
+				outprintf(parser, "\n#line %d", initializer->lineno);
+			outwrite(parser, linestart, position - linestart);
+			lineno = initializer->lineno;
+		} else {
+			/* concatenating initializers on one line, add a space */
+			outwrite(parser, " ", 1);
+		}
+		class = initializer->varclass;
+		if (class) {
+			if (initializer->params) {
+				sep_or_end = ", ";
+				parser->pf.writepos = initializer->params;
+			} else {
+				sep_or_end = ")";
+				parser->pf.writepos = initializer->start;
+			}
+			outprintf(parser, "%s_%s(&%s%s", class->name, class->name,
+				initializer->name, sep_or_end);
+		} else {
+			parser->pf.writepos = initializer->name;
+		}
+		print_inserts(parser, &initializer->inserts);
+		flush_until(parser, initializer->end);
+		outwrite(parser, ";", 1);
+	}
+	parser->initializers.num = 0;
+	parser->pf.writepos = linestart;
+	/* resync lineno in case there is an empty line between initialization section
+	   and statements; linestart is before line ending, so compare with lineno + 1 */
+	if (parser->pf.lineno != lineno + 1)
+		outprintf(parser, "\n#line %d", parser->pf.lineno);
 }
 
 static void param_to_variable(struct parser *parser, int position,
@@ -2016,10 +2139,9 @@ static void accessancestor(struct parser *parser,
 	addinsert(parser, afterpos, end, ancestor->path, end);
 }
 
-static void print_vmt_inits(struct parser *parser, struct class *class,
-		char *start, char *position)
+static void print_vmt_inits(struct parser *parser, struct class *class, char *position)
 {
-	char *vmtpath, *vmtaccess;
+	char *linestart, *vmtpath, *vmtaccess;
 	struct vmt *vmt;
 	unsigned i;
 
@@ -2027,18 +2149,18 @@ static void print_vmt_inits(struct parser *parser, struct class *class,
 		return;
 
 	/* go back to start of line, so we can print full line statements */
-	for (; position > start; position--)
-		if (!islinespace(*(position-1)))
-			break;
-
-	parser->pf.pos = position;
-	flush(parser);
+	linestart = rev_linestart(parser->pf.writepos, position);
+	flush_until(parser, linestart);
+	/* TODO: print line pragma for output file */
 	for (i = 0; i < class->vmts.num; i++) {
 		vmt = class->vmts.mem[i];
 		find_vmt_path(class, vmt, &vmtpath, &vmtaccess);
+		outwrite(parser, linestart, position - linestart);
 		outprintf(parser, "\tthis->%s%svmt = &%s;\n",
 			vmtpath, vmtaccess, get_vmt_name(vmt));
 	}
+	parser->pf.writepos = linestart;
+	outprintf(parser, "#line %d\n", parser->pf.lineno);
 }
 
 struct paramstate {
@@ -2066,15 +2188,17 @@ static void parse_function(struct parser *parser, char *next)
 	struct classptr exprdecl[MAX_PAREN_LEVELS], targetdecl[MAX_PAREN_LEVELS];
 	struct classptr retclassptr, decl, immdecl, *target, *expr;
 	struct paramstate targetparams[MAX_PAREN_LEVELS];
-	struct dynarr **tgtparams;
+	struct dynarr **tgtparams, *constr_params;
 	struct classtype *classtype;
 	struct member *member;
+	struct variable *declvar;
+	struct initializer *initializer;
 	char *curr, *funcname, *funcnameend, *classname, *name, *argsep, *dblcolonsep;
 	char *exprstart[MAX_PAREN_LEVELS], *exprend, *params, *param0, *paramend;
 	char *memberstart[MAX_PAREN_LEVELS], *funcvarname, *funcvarnameend;
 	enum parse_funcvar_state funcvarstate;
 	enum parse_state state, nextstate;
-	int blocklevel, parenlevel, seqparen;
+	int blocklevel, parenlevel, seqparen, numwords;
 	int is_constructor, num_constr_called, parents_inited, vmts_inited;
 	unsigned i;
 
@@ -2093,6 +2217,10 @@ static void parse_function(struct parser *parser, char *next)
 	paramend = scan_token(parser, param0, "/\n)");
 	if (paramend == NULL)
 		return;
+
+	/* clear local variables, may add "this" as variable for class */
+	hash_clear(&parser->locals);
+	parser->nested_locals.num = 0;
 	if (funcname) {   /* funcname assigned means there is a classname::funcname */
 		if ((class = find_class(parser, classname)) != NULL) {
 			/* lookup method name */
@@ -2105,7 +2233,7 @@ static void parse_function(struct parser *parser, char *next)
 				struct memberprops props = {0,};
 				/* undeclared, so it's private, include static */
 				flush(parser);
-				outputs(parser, "static ");  /* TODO: require user to write */
+				outputs(parser, "static ");
 				/* add as member so others can call from further down */
 				retclassptr = parse_type(parser, parser->pf.pos, &curr);
 				props.is_function = 1;
@@ -2129,6 +2257,12 @@ static void parse_function(struct parser *parser, char *next)
 			/* add this parameter */
 			outprintf(parser, "struct %s *this%s", classname, argsep);
 			parser->pf.writepos = param0;
+			/* add this as a variable */
+			decl.class = class;
+			decl.pointerlevel = 1;
+			name = "this";
+			next = name + 4;  /* "this" */
+			addvariable(parser, 0, &decl, 0, name, next, NULL, NULL);
 			/* no parents means all are initialized */
 			is_constructor = member->is_constructor;
 			parents_inited = is_constructor && class->num_parents == 0;
@@ -2146,18 +2280,18 @@ static void parse_function(struct parser *parser, char *next)
 	}
 
 	/* store parameters as variables */
-	hash_clear(&parser->locals);
-	parser->nested_locals.num = 0;
 	if (parse_parameters(parser, params, NULL, param_to_variable) == NULL)
 		return;
 
-	blocklevel = seqparen = parenlevel = exprdecl[0].pointerlevel = 0;
+	blocklevel = seqparen = parenlevel = exprdecl[0].pointerlevel = numwords = 0;
 	exprdecl[0].class = targetdecl[0].class = decl.class = immdecl.class = NULL;
 	exprstart[0] = memberstart[0] = exprend = NULL;
 	funcvarname = funcvarnameend = name = NULL;  /* make compiler happy */
+	parser->initializers.num = 0;
 	targetparams[0].params = NULL;
 	funcvarstate = FV_NONE;
 	state = STMTSTART;
+	initializer = NULL;
 	for (;;) {
 		curr = skip_whitespace(parser, next);
 		/* skip comments */
@@ -2165,9 +2299,14 @@ static void parse_function(struct parser *parser, char *next)
 			return;
 		/* if this is the constructor, then initialize vmts if not done so yet */
 		if (!vmts_inited && parents_inited && state == STMTSTART && blocklevel == 1) {
-			print_vmt_inits(parser, class, next, curr);
+			print_vmt_inits(parser, class, curr);
 			vmts_inited = 1;
 		}
+		/* pending initializers and this looks like statement, then print */
+		if (parser->initializers.num && parenlevel == 0 &&
+				(*curr == '=' || *curr == '(' || *curr == '{') && numwords < 2)
+			print_initializers(parser, memberstart[0]);
+
 		/* track block nesting level */
 		if (*curr == '{') {
 			blocklevel++;
@@ -2176,6 +2315,7 @@ static void parse_function(struct parser *parser, char *next)
 		}
 		if (*curr == '}') {
 			remove_locals(parser, blocklevel);
+			print_initializers(parser, curr);
 			if (--blocklevel == 0)
 				break;
 			next = curr + 1;
@@ -2209,11 +2349,18 @@ static void parse_function(struct parser *parser, char *next)
 
 			name = curr;
 			next = skip_word(name);
+			numwords++;
 			nextstate = FINDVAR;
 			switch (state) {
 			case DECLVAR:
-				addvariable(parser, blocklevel, &decl,
+				declvar = addvariable(parser, blocklevel, &decl,
 					exprdecl[0].pointerlevel, name, next, NULL, NULL);
+				if (exprdecl[0].pointerlevel == 0 && decl.pointerlevel == 0 &&
+						decl.class && decl.class->constructor) {
+					nextstate = CONSTRUCT;
+					initializer = addinitializer(parser,
+						decl.class, declvar->name, next);
+				}
 				break;
 			case ACCESSMEMBER:
 				expr = immdecl.class ? &immdecl : &exprdecl[parenlevel];
@@ -2305,9 +2452,29 @@ static void parse_function(struct parser *parser, char *next)
 			}
 		}
 
+		if (state == CONSTRUCT) {
+			constr_params = &decl.class->constructor->params;
+			if (*curr != '(' && constr_params->num) {
+				pr_err(curr, "missing call to constructor");
+				initializer = NULL;
+			} else if (!decl.class->void_constructor)
+				pr_warn(curr, "constructor must return void for stack variable");
+			if (*curr == '(' && initializer) {
+				/* skip parenthesis, need to add "this" parameter */
+				initializer->params = curr + 1;
+				targetparams[parenlevel].params = constr_params;
+			}
+			state = FINDVAR;
+		}
+
 		if (*curr != '.' && (*curr != '-' || curr[1] != '>'))
 			memberstart[parenlevel] = NULL;
-		if (*curr == ')' || *curr == ',' || *curr == '=' || *curr == ';') {
+		if (parser->initializers.num && parenlevel == 0 && *curr == '=') {
+			/* when added one initializer, then copy them all,
+			   to keep order the order the same */
+			initializer = addinitializer(parser, NULL, name, next);
+		} else if (*curr == ')' || *curr == ',' || *curr == '=' || *curr == ';') {
+			/* determine target and source classes to access ancestor of */
 			if (exprdecl[parenlevel].class != NULL)
 				expr = &exprdecl[parenlevel];
 			else {
@@ -2321,6 +2488,15 @@ static void parse_function(struct parser *parser, char *next)
 				accessancestor(parser,
 					exprstart[parenlevel], name, curr, target, expr);
 			exprstart[parenlevel] = NULL;
+		}
+		if (initializer && (*curr == ',' || *curr == ';')) {
+			if (initializer->start != curr) {
+				flush_until(parser, initializer->start);
+				parser->pf.writepos = curr;
+			}
+			initializer->end = curr;
+			parser->inserts = &parser->inserts_arr;
+			initializer = NULL;
 		}
 		if (*curr == '(')
 			seqparen++;
@@ -2364,9 +2540,10 @@ static void parse_function(struct parser *parser, char *next)
 				state = DECLVAR;
 			else
 				state = EXPRUNARY;
-			if (parenlevel)
+			if (parenlevel) {
 				select_next_param(&targetparams[parenlevel-1],
 					&targetdecl[parenlevel]);
+			}
 			exprdecl[parenlevel].pointerlevel = 0;
 		} else if (*curr == '=') {
 			targetdecl[parenlevel] = immdecl;
@@ -2377,14 +2554,18 @@ static void parse_function(struct parser *parser, char *next)
 		} else if (*curr == '.') {
 			state = ACCESSMEMBER;
 			exprend = curr;
+			numwords--;    /* for declaration detection, merge x->y words */
 		} else if (*curr == '-' && curr[1] == '>') {
 			state = ACCESSMEMBER;
 			exprend = curr;
+			numwords--;    /* for declaration detection, merge x->y words */
 			curr++;
 		} else if (*curr == ';') {
-			print_inserts(parser);
+			parser->inserts = &parser->inserts_arr;
+			print_inserts(parser, parser->inserts);
 			immdecl.class = NULL;
 			decl.class = NULL;
+			numwords = 0;
 			seqparen = 0;
 			parenlevel = 0;
 			state = STMTSTART;
@@ -2413,8 +2594,8 @@ static void parse_function(struct parser *parser, char *next)
 		for (i = 0; i < class->members_arr.num; i++) {
 			member = class->members_arr.mem[i];
 			if (member->parent_constructor && !member->constr_called) {
-				pr_err(curr, "missing a call to parent "
-					"constructor %s", member->name);
+				pr_err(curr, "missing parent constructor "
+					"%s call", member->name);
 			}
 		}
 	}
@@ -2443,7 +2624,6 @@ static void print_vmts(struct parser *parser)
 			if (parser->pf.writepos != parser->pf.pos)
 				flush(parser);
 
-			/* TODO: print multiple vmts in case of multiple inheritance / interfaces */
 			/* TODO: for multiple inheritance, print wrappers to fix base address */
 			/* TODO: fix member-defined-in-class type, make it match */
 			vmt_name = get_vmt_name(vmt);
@@ -2838,6 +3018,7 @@ static int initparser(struct parser *parser)
 	parser->source_ext_out = ".coo.c";
 	parser->header_ext_out = ".coo.h";
 	parser->line_pragmas = 1;
+	parser->inserts = &parser->inserts_arr;
 	return strhash_init(&parser->classes, 64, class) < 0 ||
 		strhash_init(&parser->classtypes, 64, classtype) < 0 ||
 		strhash_init(&parser->globals, 64, variable) < 0 ||

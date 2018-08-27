@@ -88,20 +88,20 @@ struct memberprops {
 	unsigned char seen:1;          /* seen implementation? */
 };
 
-struct vmt;
-
 struct class {
 	struct hash members;
 	struct dynarr members_arr;
 	struct hasho ancestors;      /* class => ancestor, all classes inherited from */
+	struct dynarr virtual_ancestors;  /* struct ancestor *, all virtual ancestors */
 	struct dynarr vmts;          /* struct vmt *, all applicable vmts */
 	struct dynarr descendants;   /* struct parent *, inheriting from this class */
 	struct vmt *vmt;             /* from primary parent (or new here)  */
 	struct member *constructor;  /* constructor defined for this class */
 	unsigned num_parents;        /* number of direct parent classes */
 	char is_interface;
-	char write_vmt;              /* have seen virtual func implementation */
+	char is_implemented;         /* have seen class implementation */
 	char void_constructor;       /* constr has void as return type (can't fail) */
+	char leaf_constructor;       /* has virtual bases or vmts to initialize */
 	struct hash_entry node;
 	char name[];
 };
@@ -140,8 +140,8 @@ struct member {
 	struct class *origin;      /* origin class where member was defined */
 	struct class *definition;  /* closest class virtual member overridden */
 	struct vmt *vmt;           /* vmt this member is defined in */
-	char *paramstext;
-	struct dynarr params;
+	char *paramstext;          /* literal text of all params definition */
+	struct dynarr params;      /* struct classptr *, params' class type */
 	char *funcinsert;   /* insert this string in front of function call */
 	  /* for normal function:  func() ==> class_func()
 	     for virtual function: func() ==> class_vmt_func() */
@@ -201,6 +201,7 @@ struct parse_file {
 	char *buffer;             /* input buffer */
 	char *writepos;           /* input buffer written to output till here */
 	char *pos;                /* parsed input buffer till here */
+	char *bufend;             /* end of input buffer */
 	char *outbuffer;          /* comparing output buffer */
 	char *outpos;             /* compared output until here, NULL if writing */
 	char *outfilename;        /* output filename */
@@ -247,13 +248,27 @@ DEFINE_STRHASH_FIND_E(parser, locals, local, variable)
 
 pid_t g_pid;
 
+static void parser_nextline(struct parser *parser, char *pos)
+{
+	/* to prevent counting line-endings multiple times, or even from
+	   completely different buffer (e.g. parameter parsing), compare
+	   whether new position is in expected buffer range */
+	if (pos > parser->pf.linestart && pos < parser->pf.bufend) {
+		parser->pf.lineno++;
+		parser->pf.linestart = pos;
+	}
+}
+
+static void parser_check_lineend(struct parser *parser, char *pos)
+{
+	if (*pos == '\n')
+		parser_nextline(parser, pos);
+}
+
 static char *parser_strchrnul(struct parser *parser, char *str, int ch)
 {
 	for (; *str; str++) {
-		if (*str == '\n') {
-			parser->pf.lineno++;
-			parser->pf.linestart = str;
-		}
+		parser_check_lineend(parser, str);
 		if (*str == ch)
 			break;
 	}
@@ -319,10 +334,7 @@ static char *skip_whitespace(struct parser *parser, char *p)
 {
 	for (;;) {
 		if (isspace(*p)) {
-			if (*p == '\n') {
-				parser->pf.lineno++;
-				parser->pf.linestart = p;
-			}
+			parser_check_lineend(parser, p);
 			p++;
 		} else if (*p == '/')
 			p = skip_comment(parser, p);
@@ -364,8 +376,7 @@ static char *skip_whiteline(struct parser *parser, char *p)
 	if (*p == '\r')
 		p++;
 	if (*p == '\n') {
-		parser->pf.lineno++;
-		parser->pf.linestart = p;
+		parser_nextline(parser, p);
 		p++;
 	}
 	return p;
@@ -390,8 +401,7 @@ static char *scan_token(struct parser *parser, char *pos, char *set)
 		if (pos == NULL)
 			return NULL;
 		if (pos[0] == '\n') {
-			parser->pf.lineno++;
-			parser->pf.linestart = pos;
+			parser_nextline(parser, pos);
 			if (set[1] != '\n')
 				return pos;
 			pos++;
@@ -1311,6 +1321,7 @@ static void add_ancestor(struct class *class, int from_virtual,
 		struct parent *origin_parent,
 		char *via_class_name, char *link, char *path)
 {
+	struct hasho_entry *orig_entry;
 	struct ancestor *ancestor;
 
 	/* allocate struct and printf path in one alloc */
@@ -1321,9 +1332,17 @@ static void add_ancestor(struct class *class, int from_virtual,
 
 	ancestor->parent = origin_parent;
 	ancestor->from_virtual = from_virtual;
+	if (origin_parent->is_virtual && grow_dynarr(&class->virtual_ancestors) == 0)
+		class->virtual_ancestors.mem[class->virtual_ancestors.num++] = ancestor;
 	/* duplicates may occur for virtual bases */
-	if (hasho_insert(&class->ancestors, origin_parent->class, ancestor) < 0)
-		free(ancestor);
+	if (hasho_insert_exists(&class->ancestors, origin_parent->class,
+			ancestor, orig_entry)) {
+		/* store primary base, not the virtual one */
+		if (!origin_parent->is_virtual) {
+			/* replace with new literal one */
+			orig_entry->value = ancestor;
+		}
+	}
 }
 
 static void add_ancestors(struct class *class, struct parent *parent)
@@ -1534,6 +1553,33 @@ static void find_vmt_path(struct class *class, struct vmt *vmt,
 		*ret_vmtpath = *ret_vmtaccess = "";
 }
 
+static void print_param_names(struct parser *parser, char *params)
+{
+	char *p, *last_word, *last_end;
+
+	for (p = params;;) {
+		last_word = NULL;
+		/* search for last word, assume it is parameter name */
+		while (*p != ')' && *p != ',') {
+			if (*p == '/')
+				p = skip_comment(parser, p);
+			else if (isalpha(*p)) {
+				last_word = p;
+				last_end = p = skip_word(p);
+			} else
+				p++;
+		}
+		if (last_word) {
+			outwrite(parser, ", ", 2);
+			outwrite(parser, last_word, last_end - last_word);
+		}
+		if (*p == ')')
+			break;
+		/* go to next argument */
+		p = skip_whitespace(parser, p+1);
+	}
+}
+
 enum func_decltype {
 	MEMBER_FUNCTION,
 	VIRTUAL_WRAPPER,
@@ -1542,8 +1588,7 @@ enum func_decltype {
 static void print_func_decl(struct parser *parser, struct class *class,
 		struct member *member, enum func_decltype emittype)
 {
-	char *func_prefix, *name_insert, *func_body;
-	char *p, *last_word, *last_end, *vmtpath, *vmtaccess;
+	char *func_prefix, *name_insert, *func_body, *vmtpath, *vmtaccess;
 	unsigned empty;
 
 	empty = member->paramstext[0] == ')';
@@ -1562,27 +1607,7 @@ static void print_func_decl(struct parser *parser, struct class *class,
 		find_vmt_path(class, member->vmt, &vmtpath, &vmtaccess);
 		outprintf(parser, "\n\t((struct %s_vmt*)this->%s%svmt)->%s(this",
 			class->name, vmtpath, vmtaccess, member->name);
-		for (p = member->paramstext;;) {
-			last_word = NULL;
-			/* search for last word, assume it is parameter name */
-			while (*p != ')' && *p != ',') {
-				if (*p == '/')
-					p = skip_comment(parser, p);
-				else if (isalpha(*p)) {
-					last_word = p;
-					last_end = p = skip_word(p);
-				} else
-					p++;
-			}
-			if (last_word) {
-				outwrite(parser, ", ", 2);
-				outwrite(parser, last_word, last_end - last_word);
-			}
-			if (*p == ')')
-				break;
-			/* go to next argument */
-			p = skip_whitespace(parser, p+1);
-		}
+		print_param_names(parser, member->paramstext);
 		outprintf(parser, ");\n}\n");
 	}
 }
@@ -1666,6 +1691,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 			if (strprefixcmp("virtual ", parentname)) {
 				parentname += 7;  /* "virtual" */
 				parent_virtual = 1;
+				class->leaf_constructor = 1;
 				continue;
 			}
 
@@ -1815,6 +1841,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		/* no need to check virtual and static because cannot both at declbegin */
 		if (memberprops.is_virtual) {
 			/* new members need a primary vmt to put them in */
+			class->leaf_constructor = 1;
 			if (!memberprops.is_override && !class->vmt) {
 				addvmt(class, NULL, class, PRIMARY_VMT);
 				/* flush to front of virtual function */
@@ -2139,30 +2166,6 @@ static void accessancestor(struct parser *parser,
 	addinsert(parser, afterpos, end, ancestor->path, end);
 }
 
-static void print_vmt_inits(struct parser *parser, struct class *class, char *position)
-{
-	char *linestart, *vmtpath, *vmtaccess;
-	struct vmt *vmt;
-	unsigned i;
-
-	if (class->vmts.num == 0)
-		return;
-
-	/* go back to start of line, so we can print full line statements */
-	linestart = rev_linestart(parser->pf.writepos, position);
-	flush_until(parser, linestart);
-	/* TODO: print line pragma for output file */
-	for (i = 0; i < class->vmts.num; i++) {
-		vmt = class->vmts.mem[i];
-		find_vmt_path(class, vmt, &vmtpath, &vmtaccess);
-		outwrite(parser, linestart, position - linestart);
-		outprintf(parser, "\tthis->%s%svmt = &%s;\n",
-			vmtpath, vmtaccess, get_vmt_name(vmt));
-	}
-	parser->pf.writepos = linestart;
-	outprintf(parser, "#line %d\n", parser->pf.lineno);
-}
-
 struct paramstate {
 	struct dynarr *params;
 	int index;
@@ -2199,7 +2202,7 @@ static void parse_function(struct parser *parser, char *next)
 	enum parse_funcvar_state funcvarstate;
 	enum parse_state state, nextstate;
 	int blocklevel, parenlevel, seqparen, numwords;
-	int is_constructor, num_constr_called, parents_inited, vmts_inited;
+	int is_constructor, num_constr_called, parents_inited;
 	unsigned i;
 
 	funcname = NULL, classname = next;
@@ -2211,7 +2214,7 @@ static void parse_function(struct parser *parser, char *next)
 		}
 	}
 
-	is_constructor = num_constr_called = parents_inited = vmts_inited = 0;
+	is_constructor = num_constr_called = parents_inited = 0;
 	params = ++next;  /* advance after '(' */
 	param0 = skip_whitespace(parser, params);
 	paramend = scan_token(parser, param0, "/\n)");
@@ -2227,8 +2230,7 @@ static void parse_function(struct parser *parser, char *next)
 			funcnameend = skip_word(funcname);
 			member = find_member_e(class, funcname, funcnameend);
 			if (member != NULL) {
-				if (member->props.is_virtual)
-					class->write_vmt = 1;
+				class->is_implemented = 1;
 			} else {
 				struct memberprops props = {0,};
 				/* undeclared, so it's private, include static */
@@ -2297,11 +2299,6 @@ static void parse_function(struct parser *parser, char *next)
 		/* skip comments */
 		if (curr[0] == 0)
 			return;
-		/* if this is the constructor, then initialize vmts if not done so yet */
-		if (!vmts_inited && parents_inited && state == STMTSTART && blocklevel == 1) {
-			print_vmt_inits(parser, class, curr);
-			vmts_inited = 1;
-		}
 		/* pending initializers and this looks like statement, then print */
 		if (parser->initializers.num && parenlevel == 0 &&
 				(*curr == '=' || *curr == '(' || *curr == '{') && numwords < 2)
@@ -2603,6 +2600,54 @@ static void parse_function(struct parser *parser, char *next)
 	parser->pf.pos = curr + 1;
 }
 
+static void print_leaf_constructor(struct parser *parser, struct class *class)
+{
+	char *vmtpath, *vmtaccess, *sep_or_end, *paramstext;
+	struct ancestor *ancestor, *literal_ancestor;
+	struct class *parentclass;
+	struct vmt *vmt;
+	unsigned i;
+
+	if (!class->leaf_constructor)
+		return;
+
+	if (class->constructor->params.num) {
+		sep_or_end = ", ";
+		paramstext = class->constructor->paramstext;
+	} else {
+		sep_or_end = "";
+		paramstext = ")";
+	}
+	/* leaf constructor function signature */
+	outprintf(parser, "\nvoid %s_%s_leaf(struct %s *this%s%s\n{\n",
+		class->name, class->name, class->name, sep_or_end, paramstext);
+	/* virtual inits */
+	for (i = 0; i < class->virtual_ancestors.num; i++) {
+		ancestor = class->virtual_ancestors.mem[i];
+		parentclass = ancestor->parent->class;
+		literal_ancestor = hasho_find(&class->ancestors, parentclass);
+		if (!literal_ancestor || literal_ancestor->parent->is_virtual) {
+			fprintf(stderr, "internal error, cannot find literal for virtual "
+				"class %s in %s\n", parentclass->name, class->name);
+			parser->num_errors++;
+			continue;
+		}
+		outprintf(parser, "\tthis->%s = &this->%s;\n",
+			ancestor->path, literal_ancestor->path);
+	}
+	/* vmt inits */
+	for (i = 0; i < class->vmts.num; i++) {
+		vmt = class->vmts.mem[i];
+		find_vmt_path(class, vmt, &vmtpath, &vmtaccess);
+		outprintf(parser, "\tthis->%s%svmt = &%s;\n",
+			vmtpath, vmtaccess, get_vmt_name(vmt));
+	}
+	/* class constructor call */
+	outprintf(parser, "\t%s_%s(this", class->name, class->name);
+	print_param_names(parser, paramstext);
+	outwrite(parser, ");\n}\n", 5);
+}
+
 static void print_vmts(struct parser *parser)
 {
 	struct class *class;
@@ -2612,7 +2657,7 @@ static void print_vmts(struct parser *parser)
 	unsigned i, j;
 
 	hash_foreach(class, &parser->classes) {
-		if (!class->write_vmt)
+		if (!class->is_implemented)
 			continue;
 
 		for (i = 0; i < class->vmts.num; i++) {
@@ -2640,6 +2685,8 @@ static void print_vmts(struct parser *parser)
 			}
 			outprintf(parser, "};\n");
 		}
+
+		print_leaf_constructor(parser, class);
 	}
 }
 
@@ -2695,7 +2742,7 @@ static int parse_source(struct parser *parser, char *filename, FILE *in, char *e
 static int try_include_file(struct parser *parser, char *dir, char *nameend)
 {
 	FILE *fp_inc;
-	char *buffer, *outbuffer, *fullname, *filename, *outfilename;
+	char *buffer, *bufend, *outbuffer, *fullname, *filename, *outfilename;
 	char *p, *new_newfilename_file;
 	struct parse_file *parse_file;
 	int parse_ret;
@@ -2718,6 +2765,7 @@ static int try_include_file(struct parser *parser, char *dir, char *nameend)
 	filename = strdupto(parse_file->filename, fullname);
 	/* reuse old buffers, if any */
 	buffer = parse_file->buffer;
+	bufend = parse_file->bufend;
 	outbuffer = parse_file->outbuffer;
 	outfilename = parse_file->outfilename;
 	/* save current parsing state */
@@ -2725,6 +2773,7 @@ static int try_include_file(struct parser *parser, char *dir, char *nameend)
 	/* parser->filename assigned in parse_source */
 	parser->pf.out = NULL;
 	parser->pf.buffer = buffer;
+	parser->pf.bufend = bufend;
 	parser->pf.outbuffer = outbuffer;
 	parser->pf.outfilename = outfilename;
 	parser->pf.coo_inline_defined = 0;
@@ -2737,11 +2786,13 @@ static int try_include_file(struct parser *parser, char *dir, char *nameend)
 	parse_ret = parse_source(parser, filename, fp_inc, parser->header_ext_out);
 	/* restore parser state, swap the buffers back, we can reuse them later */
 	buffer = parser->pf.buffer;
+	bufend = parser->pf.bufend;
 	filename = parser->pf.filename;
 	outbuffer = parser->pf.outbuffer;
 	outfilename = parser->pf.outfilename;
 	memcpy(&parser->pf, parse_file, sizeof(parser->pf));
 	parse_file->buffer = buffer;
+	parse_file->bufend = bufend;
 	parse_file->filename = filename;
 	parse_file->outbuffer = outbuffer;
 	parse_file->outfilename = outfilename;
@@ -2912,6 +2963,7 @@ static int parse_source_size(struct parser *parser, char *filename,
 
 	/* prepare input buffer pointers for scanning */
 	parser->pf.buffer = parser->pf.writepos = parser->pf.pos = buffer;
+	parser->pf.bufend = buffer + size;
 	/* make sure filename_file points to filename (after last /) */
 	for (p = parser->pf.newfilename_file; *p; p++)
 		if (*p == DIRSEP)
@@ -2919,6 +2971,7 @@ static int parse_source_size(struct parser *parser, char *filename,
 
 	/* start parsing! */
 	parse(parser);
+	/* TODO: print line pragma for output file */
 	print_vmts(parser);
 	/* if nothing changed (== no flush, writepos did not move) */
 	if (parser->pf.writepos == buffer) {

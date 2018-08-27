@@ -163,7 +163,7 @@ void *hash_find(struct hash *table, size_t hash, void *key)
 	return hash_find_custom(table, hash, table->compare, key);
 }
 
-int hash_insert(struct hash *table, struct hash_entry *new, size_t hash)
+struct hash_entry *hash_insert(struct hash *table, struct hash_entry *new, size_t hash)
 {
 	struct hash_entry *entry;
 	size_t table_index, depth;
@@ -177,10 +177,10 @@ retry:
 	for (depth = 0; entry; entry = entry->next) {
 		/* hash is equal, check if really equal, that is a fail */
 		if (entry->hash == hash && table->compare(to_cmp(table, entry), new_cmp) == 0)
-			return -1;
+			return entry;
 		if (++depth == MAX_HASH_DEPTH) {
 			if (grow(table) < 0)
-				return -1;
+				return (void*)(size_t)-1;
 			/* could be more optimal by checking "other" hash is
 			   not empty, but this is simpler, and seldom grow */
 			goto retry;
@@ -188,7 +188,7 @@ retry:
 	}
 
 	insert(&table->entries[table_index], new);
-	return 0;
+	return NULL;
 }
 
 void *hash_next(struct hash *table, void *user)

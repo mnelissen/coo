@@ -63,19 +63,19 @@ void *hasho_find(struct hasho *table, void *key)
 	}
 }
 
-int hasho_insert(struct hasho *table, void *key, void *value)
+struct hasho_entry *hasho_insert(struct hasho *table, void *key, void *value)
 {
 	unsigned i;
 
 	if (table->num_entries * 2 > table->mask)
 		if (grow(table) < 0)
-			return -1;
+			return (void*)(size_t)-1;
 
 	i = ptrhash(key) & table->mask;
 	for (;;) {
 		/* hash is equal, check if really equal, that is a fail */
 		if (table->entries[i].key == key)
-			return -1;
+			return &table->entries[i];
 		if (table->entries[i].key == NULL) {
 			table->entries[i].key = key;
 			table->entries[i].value = value;

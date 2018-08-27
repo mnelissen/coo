@@ -7,6 +7,7 @@ Object Oriented C to plain C compiler
 The language COO stands for 'C Object Oriented'. It adds object oriented
 features to C but keeps the emphasis on lightweight and simple. So why not use
 C++ then? Reasons to dislike C++:
+
 * has many traps, e.g. around default-defined and explicit constructors
 * constructors cannot fail gracefully, have to throw exception
 * causes programmers to write (over?)complicated template-heavy code
@@ -33,6 +34,7 @@ not available.
 * inheritance (add more tests)
 
 Planned:
+
 * structured error handling (TODO)
 
 ## Design
@@ -95,6 +97,8 @@ declares a variable called "c" and calls its constructor with the value 5.
 * fixup class pointer in multiple inheritance virtual call
 * recognize global variables (searched, but never any added)
 * calls to member functions from constructors does not need to be the VMT version
+* add destructors, plus call them for stack variables
+* define final classes for non-resolved virtual-using classes and use them
 
 ## License
 

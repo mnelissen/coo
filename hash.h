@@ -1,7 +1,11 @@
+/* bucket hash table implementation */
 #ifndef _HASH_H
 #define _HASH_H
 #include <stddef.h>
 #include <stdint.h>
+
+#define hash_insert_exists(tbl, new_entry, h, resvar) \
+        (resvar = hash_insert(tbl, new_entry, h)) != NULL && (int)(size_t)resvar != -1
 
 typedef struct hash_entry {
 	struct hash_entry *next;
@@ -33,7 +37,7 @@ void hash_clear(struct hash *table);
 void *hash_find(struct hash *table, size_t hash, void *key);
 /* custom compare callback called like compare(user, key) */
 void *hash_find_custom(struct hash *table, size_t hash, hash_cmp_cb compare, void *key);
-int hash_insert(struct hash *table, struct hash_entry *entry, size_t hash);
+struct hash_entry *hash_insert(struct hash *table, struct hash_entry *entry, size_t hash);
 void *hash_next(struct hash *table, void *user);
 int hash_remove(struct hash *table, struct hash_entry *entry);
 int hash_destroy(struct hash *table);

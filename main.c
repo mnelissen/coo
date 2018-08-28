@@ -97,12 +97,13 @@ struct class {
 	struct dynarr descendants;   /* struct parent *, inheriting from this class */
 	struct vmt *vmt;             /* from primary parent (or new here)  */
 	struct member *constructor;  /* constructor defined for this class */
+	struct hash_entry node;
 	unsigned num_parents;        /* number of direct parent classes */
 	char is_interface;
 	char is_implemented;         /* have seen class implementation */
 	char void_constructor;       /* constr has void as return type (can't fail) */
-	char leaf_constructor;       /* has virtual bases or vmts to initialize */
-	struct hash_entry node;
+	char root_constructor;       /* has virtual bases or vmts to initialize */
+	char has_duplicates;         /* multiple parents override same member */
 	char name[];
 };
 
@@ -1002,7 +1003,7 @@ static struct member *addmember(struct parser *parser, struct class *class,
 	member = allocmember_e(class, membername, nameend);
 	if (member == NULL) {
 		*nameend = 0;
-		pr_err(membername, "duplicate member %s,\n"
+		pr_err(membername, "duplicate member %s,"
 			" did you mean override?", membername);
 		return NULL;
 	}
@@ -1317,6 +1318,34 @@ static int is_virtual_base(struct class *origin, struct class *class)
 	return ancestor->from_virtual;
 }
 
+static void mergemember(struct parser *parser, struct class *class, struct member *parentmember)
+{
+	struct member *member;
+	char *nameend;
+
+	/* if new parent did not override, there is no ambiguity anyway */
+	if (parentmember->definition == parentmember->origin)
+		return;
+
+	nameend = parentmember->name + strlen(parentmember->name);
+	member = find_member_e(class, parentmember->name, nameend);
+	if (member == NULL) {
+		fprintf(stderr, "internal error, cannot find member %s in"
+			"class %s for merging\n", parentmember->name, class->name);
+		parser->num_errors++;
+		return;
+	}
+
+	/* if both parents override this member, mark member as to-be overridden */
+	if (member->definition != member->origin) {
+		class->has_duplicates = 1;
+		member->definition = NULL;
+	} else {
+		/* did not override yet, use new parent's definition */
+		member->definition = parentmember->definition;
+	}
+}
+
 static void add_ancestor(struct class *class, int from_virtual,
 		struct parent *origin_parent,
 		char *via_class_name, char *link, char *path)
@@ -1426,7 +1455,7 @@ static void import_parent(struct parser *parser, char *parsepos,
 		parentmember = parentmembers->mem[i];
 		origin = parentmember->origin;
 		if (origin == ignoreorigin)
-			continue;
+			goto merge;
 		if (origin != currorigin) {
 			currorigin = origin;
 			/* if we already imported this class virtual, or
@@ -1435,20 +1464,24 @@ static void import_parent(struct parser *parser, char *parsepos,
 			ret = is_virtual_base(origin, class);
 			if (ret == 1 || (ret == 0 && parentmember->props.from_virtual)) {
 				ignoreorigin = origin;
-				continue;
+				goto merge;
 			}
 			/* on the other hand, might both be non-virtual */
 			if (ret == 0 && !parentmember->props.from_virtual) {
+				/* class inherited indirectly, e.g. B:A, C:A, D:B,C */
 				pr_err(parsepos, "inherit duplicate class %s", origin->name);
 				ignoreorigin = origin;
 			}
 		}
-		/* don't inherit the constructor for parent classes to prevent mistakes */
+		/* only need parent constructors, not grand-parent constructors */
 		if (parentmember->parent_constructor)
 			continue;
 
 		inheritmember(parser, parsepos, class, parent, parentmember);
 		/* write to output later, when opening brace '{' parsed */
+		continue;
+	  merge:
+		mergemember(parser, class, parentmember);
 	}
 
 	/* only add class after origin checks */
@@ -1657,6 +1690,8 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	int first_virtual_warn, first_vmt_warn, empty_line;
 	struct classtype *parentclasstype;
 	struct parent *parent, *firstparent;
+	struct member *member;
+	unsigned i;
 
 	is_typedef = *parser->pf.pos == 't';
 	/* skip 'typedef struct ' or just 'struct ' */
@@ -1691,7 +1726,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 			if (strprefixcmp("virtual ", parentname)) {
 				parentname += 7;  /* "virtual" */
 				parent_virtual = 1;
-				class->leaf_constructor = 1;
+				class->root_constructor = 1;
 				continue;
 			}
 
@@ -1841,7 +1876,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		/* no need to check virtual and static because cannot both at declbegin */
 		if (memberprops.is_virtual) {
 			/* new members need a primary vmt to put them in */
-			class->leaf_constructor = 1;
+			class->root_constructor = 1;
 			if (!memberprops.is_override && !class->vmt) {
 				addvmt(class, NULL, class, PRIMARY_VMT);
 				/* flush to front of virtual function */
@@ -1893,6 +1928,19 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		class->constructor = addmember(parser, class, &retclassptr, declbegin,
 			retend, classname, classnameend, ")", constructorprops);
 		class->void_constructor = 1;
+	}
+
+	/* check if multiple parents override same member, without final override */
+	if (class->has_duplicates) {
+		for (i = 0; i < class->members_arr.num; i++) {
+			member = class->members_arr.mem[i];
+			if (member->definition == NULL) {
+				pr_err(next, "duplicate inheritance, need override "
+					"for member %s", member->name);
+				/* define here anyway to prevent segfaults */
+				member->definition = class;
+			}
+		}
 	}
 
 	/* check for typedef struct X {} Y, *Z; */
@@ -2600,7 +2648,7 @@ static void parse_function(struct parser *parser, char *next)
 	parser->pf.pos = curr + 1;
 }
 
-static void print_leaf_constructor(struct parser *parser, struct class *class)
+static void print_root_constructor(struct parser *parser, struct class *class)
 {
 	char *vmtpath, *vmtaccess, *sep_or_end, *paramstext;
 	struct ancestor *ancestor, *literal_ancestor;
@@ -2608,7 +2656,7 @@ static void print_leaf_constructor(struct parser *parser, struct class *class)
 	struct vmt *vmt;
 	unsigned i;
 
-	if (!class->leaf_constructor)
+	if (!class->root_constructor)
 		return;
 
 	if (class->constructor->params.num) {
@@ -2618,8 +2666,8 @@ static void print_leaf_constructor(struct parser *parser, struct class *class)
 		sep_or_end = "";
 		paramstext = ")";
 	}
-	/* leaf constructor function signature */
-	outprintf(parser, "\nvoid %s_%s_leaf(struct %s *this%s%s\n{\n",
+	/* root constructor function signature */
+	outprintf(parser, "\nvoid %s_%s_root(struct %s *this%s%s\n{\n",
 		class->name, class->name, class->name, sep_or_end, paramstext);
 	/* virtual inits */
 	for (i = 0; i < class->virtual_ancestors.num; i++) {
@@ -2686,7 +2734,7 @@ static void print_vmts(struct parser *parser)
 			outprintf(parser, "};\n");
 		}
 
-		print_leaf_constructor(parser, class);
+		print_root_constructor(parser, class);
 	}
 }
 

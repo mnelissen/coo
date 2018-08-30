@@ -117,8 +117,6 @@ void D::vfunc_d(A *a, B *b)
 void D::D(A *a)
 {
 	a1 = -5;
-	B();
-	C();
 }
 
 void E::E(void)

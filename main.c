@@ -96,13 +96,18 @@ struct class {
 	struct dynarr vmts;          /* struct vmt *, all applicable vmts */
 	struct dynarr descendants;   /* struct parent *, inheriting from this class */
 	struct vmt *vmt;             /* from primary parent (or new here)  */
-	struct member *constructor;  /* constructor defined for this class */
+	struct member *constructor;  /* regular constructor defined for this class */
+	struct member *root_constructor;  /* root constructor defined for this class */
+	struct class *missing_root;  /* missing root constructor because of non-void ... */
 	struct hash_entry node;
 	unsigned num_parents;        /* number of direct parent classes */
 	char is_interface;
 	char is_implemented;         /* have seen class implementation */
-	char void_constructor;       /* constr has void as return type (can't fail) */
-	char root_constructor;       /* has virtual bases or vmts to initialize */
+	char void_constructor;       /* constructor has return type void (can't fail) */
+	char void_root_constructor;  /* root constructor has return type void */
+	char need_root_constructor;  /* has virtual bases or vmts to initialize */
+	char gen_root_constructor;   /* need root constructor and not user defined */
+	char has_root_class;         /* root-class defined for missing virtual base(s) */
 	char has_duplicates;         /* multiple parents override same member */
 	char name[];
 };
@@ -153,10 +158,11 @@ struct member {
 	     for inherited: field1 ==> parent.field1 */
 	struct memberprops props;
 	char duplicate_pr;  /* to prevent spam, already printed duplicated message */
-	char parent_virtual;  /* member inherited from a virtual base class */
+	char parent_virtual;      /* member inherited from a virtual base class */
 	char is_constructor;      /* is the constructor for this class */
-	char parent_constructor;  /* is a constructor function for a parent class */
-	char constr_called;       /* is a parent constructor and has been called */
+	char is_root_constructor; /* is the root constructor for this class */
+	char parent_constructor;  /* is the constructor for a parent class */
+	char constructor_called;  /* is a parent constructor and has been called */
 	struct hash_entry node;
 	char name[];
 };
@@ -187,7 +193,7 @@ struct insert {   /* an insert, to insert some text in the output */
 };
 
 struct initializer {
-	struct class *varclass; /* class constructor to call, if any */
+	struct class *varclass; /* class (root) constructor to call, if any */
 	char *params;           /* ... first parameter, to separate from "this" */
 	struct dynarr inserts;  /* inserts for initialization expression */
 	char *name;             /* name of variable */
@@ -993,12 +999,25 @@ static void parse_parameters_to(struct parser *parser,
 		*params_out = insert_implicit_structs(parser, params, paramsend);
 }
 
+static char is_void_rettype(char *rettype)
+{
+	char *end = strprefixcmp("void", rettype);
+	if (!end)
+		return 0;
+	if (!isspace(*end))
+		return *end == 0;
+	do {
+		end++;
+	} while (isspace(*end));
+	return *end != '*';
+}
+
 static struct member *addmember(struct parser *parser, struct class *class,
 		struct classptr *retclassptr, char *rettype, char *retend,
 		char *membername, char *nameend, char *params, struct memberprops props)
 {
 	struct member *member;
-	char *vmt_insert, *end;
+	char *vmt_insert, *end, void_ret;
 
 	member = allocmember_e(class, membername, nameend);
 	if (member == NULL) {
@@ -1024,13 +1043,29 @@ static struct member *addmember(struct parser *parser, struct class *class,
 		class->vmt->modified = 1;
 	}
 	end = strprefixcmp(class->name, membername);
-	member->is_constructor = end ? !isalnum(*end) : 0;
-	if (member->is_constructor) {
-		if (!props.is_function)
+	if (end) {
+		member->is_constructor = *end != '_' && !isalnum(*end);
+		end = strprefixcmp("_root", end);
+		member->is_root_constructor = end ? !isalnum(*end) : 0;
+	} else {
+		member->is_constructor = 0;
+		member->is_root_constructor = 0;
+	}
+	if (member->is_constructor || member->is_root_constructor) {
+		if (!props.is_function) {
 			pr_err(membername, "constructor must be a function");
-		class->constructor = member;
-		end = strprefixcmp("void", rettype);
-		class->void_constructor = end ? isspace(*end) != 0 : 0;
+			/* don't bother anymore, prevent problems */
+			class->need_root_constructor = 0;
+		} else {
+			void_ret = is_void_rettype(rettype);
+			if (member->is_constructor) {
+				class->void_constructor = void_ret;
+				class->constructor = member;
+			} else {
+				class->void_root_constructor = void_ret;
+				class->root_constructor = member;
+			}
+		}
 	}
 
 	/* in case of defining functions on the fly,
@@ -1330,7 +1365,7 @@ static void mergemember(struct parser *parser, struct class *class, struct membe
 	nameend = parentmember->name + strlen(parentmember->name);
 	member = find_member_e(class, parentmember->name, nameend);
 	if (member == NULL) {
-		fprintf(stderr, "internal error, cannot find member %s in"
+	fprintf(stderr, "internal error, cannot find member %s in"
 			"class %s for merging\n", parentmember->name, class->name);
 		parser->num_errors++;
 		return;
@@ -1453,6 +1488,12 @@ static void import_parent(struct parser *parser, char *parsepos,
 	currorigin = ignoreorigin = NULL;
 	for (i = 0; i < parentmembers->num; i++) {
 		parentmember = parentmembers->mem[i];
+		/* skip grand-parent constructors for now */
+		if (parentmember->parent_constructor)
+			continue;
+		/* skip root constructors specific for its own class */
+		if (parentmember->is_root_constructor)
+			continue;
 		origin = parentmember->origin;
 		if (origin == ignoreorigin)
 			goto merge;
@@ -1473,9 +1514,6 @@ static void import_parent(struct parser *parser, char *parsepos,
 				ignoreorigin = origin;
 			}
 		}
-		/* only need parent constructors, not grand-parent constructors */
-		if (parentmember->parent_constructor)
-			continue;
 
 		inheritmember(parser, parsepos, class, parent, parentmember);
 		/* write to output later, when opening brace '{' parsed */
@@ -1542,6 +1580,40 @@ static struct member *implmember(struct parser *parser, char *parsepos,
 	}
 
 	return member;
+}
+
+static void print_root_classes(struct parser *parser, struct class *class)
+{
+	struct hasho_entry *entry;
+	struct ancestor *ancestor;
+	struct class *parentclass;
+	int first = 1;
+	char *name;
+
+	hasho_foreach(entry, &class->ancestors) {
+		ancestor = entry->value;
+		if (ancestor->parent->is_virtual) {
+			if (first) {
+				name = class->name;
+				outprintf(parser, "\nstruct %s_root {\n"
+					"\tstruct %s %s;\n", name, name, name);
+				first = 0;
+			}
+			parentclass = ancestor->parent->class;
+			name = parentclass->name;
+			outprintf(parser, "\tstruct %s %s;\n", name, name);
+			if (!parentclass->void_constructor) {
+				class->missing_root = parentclass;
+				/* don't bother anymore */
+				class->gen_root_constructor = 0;
+			}
+		}
+	}
+
+	if (!first) {
+		outputs(parser, "};\n");
+		class->has_root_class = 1;
+	}
 }
 
 static void print_vmt_type(struct parser *parser, struct class *class)
@@ -1621,7 +1693,7 @@ enum func_decltype {
 static void print_func_decl(struct parser *parser, struct class *class,
 		struct member *member, enum func_decltype emittype)
 {
-	char *func_prefix, *name_insert, *func_body, *vmtpath, *vmtaccess;
+	char *func_prefix, *name_insert, *func_body, *vmtpath, *vmtaccess, *rootclass;
 	unsigned empty;
 
 	empty = member->paramstext[0] == ')';
@@ -1633,9 +1705,10 @@ static void print_func_decl(struct parser *parser, struct class *class,
 		func_prefix = name_insert = "";
 		func_body = ";";   /* no body */
 	}
-	outprintf(parser, "\n%s%s%s_%s%s(struct %s *this%s%s%s", func_prefix,
+	rootclass = member->is_root_constructor && class->has_root_class ? "_root" : "";
+	outprintf(parser, "\n%s%s%s_%s%s(struct %s%s *this%s%s%s", func_prefix,
 		member->rettype, class->name, name_insert, member->name,
-		class->name, empty ? "" : ", ", member->paramstext, func_body);
+		class->name, rootclass, empty ? "" : ", ", member->paramstext, func_body);
 	if (emittype == VIRTUAL_WRAPPER) {
 		find_vmt_path(class, member->vmt, &vmtpath, &vmtaccess);
 		outprintf(parser, "\n\t((struct %s_vmt*)this->%s%svmt)->%s(this",
@@ -1726,7 +1799,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 			if (strprefixcmp("virtual ", parentname)) {
 				parentname += 7;  /* "virtual" */
 				parent_virtual = 1;
-				class->root_constructor = 1;
+				class->need_root_constructor = 1;
 				continue;
 			}
 
@@ -1750,6 +1823,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 			parent->child = class;
 			parent->is_primary = parent_primary;
 			parent->is_virtual = parent_virtual;
+			class->need_root_constructor |= parentclass->need_root_constructor;
 			if (class->ancestors.num_entries) {
 				if (!parent_virtual && firstparent->is_virtual
 						&& !first_virtual_warn) {
@@ -1876,8 +1950,8 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		/* no need to check virtual and static because cannot both at declbegin */
 		if (memberprops.is_virtual) {
 			/* new members need a primary vmt to put them in */
-			class->root_constructor = 1;
 			if (!memberprops.is_override && !class->vmt) {
+				class->need_root_constructor = 1;
 				addvmt(class, NULL, class, PRIMARY_VMT);
 				/* flush to front of virtual function */
 				flush_until(parser, declbegin);
@@ -1917,18 +1991,41 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		declbegin = NULL;
 	}
 
-	/* add constructor if needed (vmt) and user did not define one */
-	if (class->vmts.num && !class->constructor) {
+	/* add root constructor if needed and user did not define one */
+	if (class->need_root_constructor && !class->root_constructor) {
+		/* copy user's constructor signature if defined */
 		struct memberprops constructorprops = {0,};
-		retclassptr.class = NULL;
-		retclassptr.pointerlevel = 0;
-		declbegin = "void ";
-		retend = declbegin + 5;   /* "void " */
+		char namebuf[128];
+		int len;
 		constructorprops.is_function = 1;
-		class->constructor = addmember(parser, class, &retclassptr, declbegin,
-			retend, classname, classnameend, ")", constructorprops);
-		class->void_constructor = 1;
+		if (class->constructor) {
+			retclassptr = class->constructor->retclassptr;
+			declbegin = class->constructor->rettype;
+			retend = declbegin + strlen(declbegin);
+			params = class->constructor->paramstext;
+		} else {
+			retclassptr.class = NULL;
+			retclassptr.pointerlevel = 0;
+			declbegin = "void ";
+			retend = declbegin + 5;   /* "void " */
+			params = ")";
+		}
+		len = snprintf(namebuf, sizeof(namebuf), "%s_root", class->name);
+		addmember(parser, class, &retclassptr, declbegin,
+			retend, namebuf, namebuf + len, params, constructorprops);
+		class->gen_root_constructor = 1;
 	}
+
+	/* if we don't need a root constructor, then use the normal constructor */
+	if (!class->root_constructor && class->constructor) {
+		class->root_constructor = class->constructor;
+		class->void_root_constructor = class->void_constructor;
+	}
+
+	/* if we don't have a constructor, then mark it void to avoid 'must define'
+	   errors later on in other classes trying to initiaize this one */
+	if (!class->constructor)
+		class->void_constructor = 1;
 
 	/* check if multiple parents override same member, without final override */
 	if (class->has_duplicates) {
@@ -1965,6 +2062,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	}
 	parser->pf.pos = skip_whiteline(parser, declend + 1);
 	flush(parser);
+	print_root_classes(parser, class);
 	print_vmt_type(parser, class);
 	print_member_decls(parser, class);
 	/* skip line endings, so we put resync at next declaration line */
@@ -2165,7 +2263,8 @@ static void print_initializers(struct parser *parser, char *position)
 				sep_or_end = ")";
 				parser->pf.writepos = initializer->start;
 			}
-			outprintf(parser, "%s_%s(&%s%s", class->name, class->name,
+			outprintf(parser, "%s_%s(&%s%s", class->name,
+				class->root_constructor->name,
 				initializer->name, sep_or_end);
 		} else {
 			parser->pf.writepos = initializer->name;
@@ -2401,7 +2500,7 @@ static void parse_function(struct parser *parser, char *next)
 				declvar = addvariable(parser, blocklevel, &decl,
 					exprdecl[0].pointerlevel, name, next, NULL, NULL);
 				if (exprdecl[0].pointerlevel == 0 && decl.pointerlevel == 0 &&
-						decl.class && decl.class->constructor) {
+						decl.class && decl.class->root_constructor) {
 					nextstate = CONSTRUCT;
 					initializer = addinitializer(parser,
 						decl.class, declvar->name, next);
@@ -2425,9 +2524,9 @@ static void parse_function(struct parser *parser, char *next)
 						class, 1, name, next, &immdecl, tgtparams);
 				if (member != NULL) {
 					if (is_constructor && member->parent_constructor) {
-						if (!member->constr_called) {
+						if (!member->constructor_called) {
 							num_constr_called++;
-							member->constr_called = 1;
+							member->constructor_called = 1;
 							if (num_constr_called == class->num_parents)
 								parents_inited = 1;
 						} else {
@@ -2498,12 +2597,17 @@ static void parse_function(struct parser *parser, char *next)
 		}
 
 		if (state == CONSTRUCT) {
-			constr_params = &decl.class->constructor->params;
+			if (decl.class->missing_root) {
+				pr_err(parser->pf.pos, "must define root constructor for %s "
+					"due to non-void constructor %s",
+					decl.class->name, decl.class->missing_root->name);
+			}
+			constr_params = &decl.class->root_constructor->params;
 			if (*curr != '(' && constr_params->num) {
 				pr_err(curr, "missing call to constructor");
 				initializer = NULL;
-			} else if (!decl.class->void_constructor)
-				pr_warn(curr, "constructor must return void for stack variable");
+			} else if (!decl.class->void_root_constructor)
+				pr_warn(curr, "non-void root constructor may fail");
 			if (*curr == '(' && initializer) {
 				/* skip parenthesis, need to add "this" parameter */
 				initializer->params = curr + 1;
@@ -2638,7 +2742,7 @@ static void parse_function(struct parser *parser, char *next)
 	if (is_constructor && !parents_inited) {
 		for (i = 0; i < class->members_arr.num; i++) {
 			member = class->members_arr.mem[i];
-			if (member->parent_constructor && !member->constr_called) {
+			if (member->parent_constructor && !member->constructor_called) {
 				pr_err(curr, "missing parent constructor "
 					"%s call", member->name);
 			}
@@ -2652,48 +2756,86 @@ static void print_root_constructor(struct parser *parser, struct class *class)
 {
 	char *vmtpath, *vmtaccess, *sep_or_end, *paramstext;
 	struct ancestor *ancestor, *literal_ancestor;
+	struct hasho_entry *entry;
 	struct class *parentclass;
+	char *name, *retstr, *thisname, *prefix, *sep;
 	struct vmt *vmt;
 	unsigned i;
 
-	if (!class->root_constructor)
+	if (!class->gen_root_constructor)
 		return;
 
-	if (class->constructor->params.num) {
+	if (class->root_constructor->params.num) {
 		sep_or_end = ", ";
-		paramstext = class->constructor->paramstext;
+		paramstext = class->root_constructor->paramstext;
 	} else {
 		sep_or_end = "";
 		paramstext = ")";
 	}
+	if (class->has_root_class) {
+		prefix = class->name;
+		sep = ".";
+	} else {
+		prefix = sep = "";
+	}
 	/* root constructor function signature */
-	outprintf(parser, "\nvoid %s_%s_root(struct %s *this%s%s\n{\n",
-		class->name, class->name, class->name, sep_or_end, paramstext);
+	outprintf(parser, "\nvoid %s_%s_root(struct %s%s *this%s%s\n{\n",
+		class->name, class->name, class->name,
+		class->has_root_class ? "_root" : "", sep_or_end, paramstext);
+	/* result variable in case (only-virtual base) constructor(s) fail */
+	if (class->has_root_class && !class->void_root_constructor)
+		outprintf(parser, "\tvoid *ret;\n\n", 13);
 	/* virtual inits */
 	for (i = 0; i < class->virtual_ancestors.num; i++) {
 		ancestor = class->virtual_ancestors.mem[i];
 		parentclass = ancestor->parent->class;
+		outprintf(parser, "\tthis->%s%s%s = &this->", prefix, sep, ancestor->path);
 		literal_ancestor = hasho_find(&class->ancestors, parentclass);
-		if (!literal_ancestor || literal_ancestor->parent->is_virtual) {
-			fprintf(stderr, "internal error, cannot find literal for virtual "
-				"class %s in %s\n", parentclass->name, class->name);
-			parser->num_errors++;
-			continue;
-		}
-		outprintf(parser, "\tthis->%s = &this->%s;\n",
-			ancestor->path, literal_ancestor->path);
+		if (!literal_ancestor || literal_ancestor->parent->is_virtual)
+			outputs(parser, parentclass->name);
+		else
+			outprintf(parser, "%s%s%s", prefix, sep, literal_ancestor->path);
+		outwrite(parser, ";\n", 2);
 	}
 	/* vmt inits */
 	for (i = 0; i < class->vmts.num; i++) {
 		vmt = class->vmts.mem[i];
 		find_vmt_path(class, vmt, &vmtpath, &vmtaccess);
-		outprintf(parser, "\tthis->%s%svmt = &%s;\n",
-			vmtpath, vmtaccess, get_vmt_name(vmt));
+		outprintf(parser, "\tthis->%s%s%s%svmt = &%s;\n",
+			prefix, sep, vmtpath, vmtaccess, get_vmt_name(vmt));
+	}
+	/* construct classes that are used as virtual bases only */
+	hasho_foreach(entry, &class->ancestors) {
+		ancestor = entry->value;
+		/* if class exists as literal, then normal constructor initializes it */
+		if (!ancestor->parent->is_virtual)
+			continue;
+		/* no need to call non-existent constructors */
+		parentclass = ancestor->parent->class;
+		if (!parentclass->constructor)
+			continue;
+		name = parentclass->name;
+		outprintf(parser, "\t%s_%s(&this->%s", name, name, name);
+		if (parentclass->constructor->params.num)
+			print_param_names(parser, paramstext);
+		outwrite(parser, ");\n", 3);
 	}
 	/* class constructor call */
-	outprintf(parser, "\t%s_%s(this", class->name, class->name);
-	print_param_names(parser, paramstext);
-	outwrite(parser, ");\n}\n", 5);
+	if (class->constructor) {
+		retstr = class->void_root_constructor ? "" : "return ";
+		if (class->has_root_class) {
+			thisname = "&this->";
+			name = class->name;
+		} else {
+			thisname = "this";
+			name = "";
+		}
+		outprintf(parser, "\t%s%s_%s(%s%s", retstr,
+			class->name, class->name, thisname, name);
+		print_param_names(parser, paramstext);
+		outwrite(parser, ");\n", 3);
+	}
+	outwrite(parser, "}\n", 2);
 }
 
 static void print_vmts(struct parser *parser)

@@ -20,7 +20,7 @@ extern struct A_vmt {
 #endif
 
 void A_vfunc_a(struct A *this, int a2);
-void A_A(struct A *this);
+void A_A_root(struct A *this);
 coo_inline void A_vmt_vfunc_a(struct A *this, int a2)
 {
 	((struct A_vmt*)this->vmt)->vfunc_a(this, a2);
@@ -39,7 +39,7 @@ extern struct B_vmt {
 
 void B_vfunc_a(struct B *this, int a2);
 void B_vfunc_b(struct B *this, int b2);
-void B_B(struct B *this);
+void B_B_root(struct B *this);
 coo_inline void B_vmt_vfunc_b(struct B *this, int b2)
 {
 	((struct B_vmt*)this->A.vmt)->vfunc_b(this, b2);
@@ -52,6 +52,11 @@ struct C {
 	void *vmt;
 };
 
+struct C_root {
+	struct C C;
+	struct A A;
+};
+
 extern struct C_A_vmt {
 	void (*vfunc_a)(struct C *C, int a2);
 } C_A_vmt;
@@ -62,7 +67,7 @@ extern struct C_vmt {
 
 void C_vfunc_a(struct C *this, int a2);
 void C_vfunc_c(struct C *this, int c2);
-void C_C(struct C *this);
+void C_C_root(struct C_root *this);
 coo_inline void C_vmt_vfunc_c(struct C *this, int c2)
 {
 	((struct C_vmt*)this->vmt)->vfunc_c(this, c2);
@@ -90,6 +95,7 @@ void D_vfunc_b(struct D *this, int b2);
 void D_vfunc_c(struct D *this, int c2);
 void D_D(struct D *this, struct A *a);
 void D_vfunc_d(struct D *this, struct A* a, struct B *b);
+void D_D_root(struct D *this, struct A *a);
 coo_inline void D_vmt_vfunc_d(struct D *this, struct A* a, struct B *b)
 {
 	((struct D_vmt*)this->B.A.vmt)->vfunc_d(this, a, b);
@@ -109,7 +115,7 @@ extern struct E_vmt {
 
 void E_vfunc_b(struct E *this, int b2);
 void E_vfunc_d(struct E *this, struct A* a, struct B *b);
-void E_E(struct E *this);
+void E_E_root(struct E *this);
 #line 36
 static void C_test_c(struct C *this)
 {
@@ -195,11 +201,9 @@ void D_vfunc_d(struct D *this, struct A *a, struct B *b)
 void D_D(struct D *this, struct A *a)
 {
 	this->B.A.a1 = -5;
-	B_B(&this->B);
-	C_C(&this->C);
 }
 
-void E_E(struct E *this)
+static void E_E(struct E *this)
 {
 	this->D.B.A.a1 = -6;
 	D_D(&this->D, &this->D.B.A);
@@ -225,15 +229,15 @@ int main(int argc, char **argv)
 	struct D d; int db1;
 	struct E e;
 
-#line 142
-	A_A(&a); A_A(&a_a);
+#line 140
+	A_A_root(&a); A_A_root(&a_a);
 	aa1 = a.a1;
-	B_B(&b);
+	B_B_root(&b);
 	ba1 = b.A.a1;
-	C_C(&c);
-	D_D(&d, (&c)->A); db1 = d.B.b1;
-	E_E(&e);
-#line 150
+	C_C_root(&c);
+	D_D_root(&d, (&c)->A); db1 = d.B.b1;
+	E_E_root(&e);
+#line 148
 	a.a1 = 10;
 	A_vmt_vfunc_a(&a, 11);
 
@@ -275,10 +279,9 @@ struct foo_vmt foo_vmt = {
 	foo_vfunc,
 };
 
-void foo_foo_leaf(struct foo *this)
+void foo_foo_root(struct foo *this)
 {
 	this->vmt = &foo_vmt;
-	foo_foo(this);
 }
 
 struct C_A_vmt C_A_vmt = {
@@ -289,11 +292,11 @@ struct C_vmt C_vmt = {
 	C_vfunc_c,
 };
 
-void C_C_leaf(struct C *this)
+void C_C_root(struct C_root *this)
 {
-	this->A->vmt = &C_A_vmt;
-	this->vmt = &C_vmt;
-	C_C(this);
+	this->C.A = &this->A;
+	this->C.A->vmt = &C_A_vmt;
+	this->C.vmt = &C_vmt;
 }
 
 struct B_vmt B_vmt = {
@@ -301,20 +304,18 @@ struct B_vmt B_vmt = {
 	B_vfunc_b,
 };
 
-void B_B_leaf(struct B *this)
+void B_B_root(struct B *this)
 {
 	this->A.vmt = &B_vmt;
-	B_B(this);
 }
 
 struct A_vmt A_vmt = {
 	A_vfunc_a,
 };
 
-void A_A_leaf(struct A *this)
+void A_A_root(struct A *this)
 {
 	this->vmt = &A_vmt;
-	A_A(this);
 }
 
 struct E_vmt E_vmt = {
@@ -323,7 +324,7 @@ struct E_vmt E_vmt = {
 	E_vfunc_d,
 };
 
-void E_E_leaf(struct E *this)
+void E_E_root(struct E *this)
 {
 	this->D.B.A.vmt = &E_vmt;
 	this->D.C.vmt = &D_C_vmt;
@@ -340,7 +341,7 @@ struct D_C_vmt D_C_vmt = {
 	D_vfunc_c,
 };
 
-void D_D_leaf(struct D *this, struct A *a)
+void D_D_root(struct D *this, struct A *a)
 {
 	this->C.A = &this->B.A;
 	this->B.A.vmt = &D_vmt;

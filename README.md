@@ -35,7 +35,8 @@ not available.
 
 Planned:
 
-* structured error handling (TODO)
+* structured error handling (in some form)
+* protected classes, private/public members, encapsulation
 
 ## Design
 
@@ -84,21 +85,32 @@ stack variable. If it can fail, then let it return a pointer to the struct
 type (return this; or return NULL on fail).
 
 Constructors must call all their parent constructors somewhere in their
-function body. Right after they are all called, the VMT for this class is
-initialized. This creates the same VMT bottom-up creation effect as in C++.
+function body. If a class has a VMT or virtual bases, then it also has a
+"root constructor". The root constructor initializes all VMTs and virtual
+bases and then calls the constructor. It is never called by other class
+constructors, it is the origin of class creation (therefore the name
+"root"). In simple cases the root constructor is generated automatically,
+but if virtual base class constructors do not return void or take different
+arguments, then the user must define the root constructor themselves.
 
-When declaring class variables on the stack, their constructor is called by
-adding the arguments between parentheses after the variable name, just like
-in C++. E.g. suppose class C with constructor C::C(int x) then "C c(5);"
-declares a variable called "c" and calls its constructor with the value 5.
+Be careful calling virtual methods from a constructor as they will call
+up to the most descendent class implementing them, immediately. Even though
+that class' constructor might not have finished yet. On the other hand,
+this may allow some different design patterns. For this reason, COO allows
+you to call parent constructors anywhere in the constructor body, so you
+can initialize necessary member variables first (expecting a virtual call).
+
+When declaring class variables on the stack, their (root) constructor is
+called by adding the arguments between parentheses after the variable name,
+just like in C++. E.g. suppose class C with constructor C::C(int x) then
+"C c(5);" declares a variable called "c" and calls its constructor with the
+value 5.
 
 ## TODO
 
 * fixup class pointer in multiple inheritance virtual call
 * recognize global variables (searched, but never any added)
-* calls to member functions from constructors does not need to be the VMT version
 * add destructors, plus call them for stack variables
-* define final classes for non-resolved virtual-using classes and use them
 
 ## License
 

@@ -99,6 +99,7 @@ struct class {
 	struct member *constructor;  /* regular constructor defined for this class */
 	struct member *root_constructor;  /* root constructor defined for this class */
 	struct class *missing_root;  /* missing root constructor because of non-void ... */
+	struct rootclass *rootclass; /* root class for missing virtual base(s), if any */
 	struct hash_entry node;
 	unsigned num_parents;        /* number of direct parent classes */
 	char is_interface;
@@ -107,7 +108,6 @@ struct class {
 	char void_root_constructor;  /* root constructor has return type void */
 	char need_root_constructor;  /* has virtual bases or vmts to initialize */
 	char gen_root_constructor;   /* need root constructor and not user defined */
-	char has_root_class;         /* root-class defined for missing virtual base(s) */
 	char has_duplicates;         /* multiple parents override same member */
 	char name[];
 };
@@ -129,6 +129,11 @@ struct ancestor {   /* link to parent, or parent of parent, etc.. */
 	struct parent *parent;
 	unsigned from_virtual;
 	char path[];   /* full path to ancestor */
+};
+
+struct rootclass {
+	struct parent parent;        /* link between class and this (its) rootclass */
+	struct class class;          /* class this rootclass is the root class of */
 };
 
 struct vmt {
@@ -776,14 +781,8 @@ static void *realloc_namestruct(void *ptr, size_t structsize, char *name, char *
 
 #define alloc_namestruct(s,n,e) realloc_namestruct(NULL, offsetof(s, name), n, e)
 
-static struct class *addclass(struct parser *parser, char *classname, char *nameend)
+static struct class *initclass(struct parser *parser, struct class *class)
 {
-	struct class *class;
-
-	class = alloc_namestruct(struct class, classname, nameend);
-	if (class == NULL)
-		return NULL;
-
 	strhash_init(&class->members, 8, member);
 	hasho_init(&class->ancestors, 8);
 	if (hash_insert(&parser->classes, &class->node, strhash(class->name)) < 0) {
@@ -792,6 +791,17 @@ static struct class *addclass(struct parser *parser, char *classname, char *name
 		class = NULL;
 	}
 	return class;
+}
+
+static struct class *addclass(struct parser *parser, char *classname, char *nameend)
+{
+	struct class *class;
+
+	class = alloc_namestruct(struct class, classname, nameend);
+	if (class == NULL)
+		return NULL;
+
+	return initclass(parser, class);
 }
 
 static struct classtype *addclasstype(struct parser *parser, char *typename,
@@ -1228,6 +1238,12 @@ static void remove_locals(struct parser *parser, int blocklevel)
 	parser->nested_locals.num = j;
 }
 
+static void pr_lineno(struct parser *parser, int lineno)
+{
+	if (parser->line_pragmas)
+		outprintf(parser, "\n#line %d", lineno);
+}
+
 static int find_global_e_class(struct parser *parser, char *name, char *nameend,
 		struct classptr *ret_decl, struct dynarr **retparams)
 {
@@ -1582,24 +1598,60 @@ static struct member *implmember(struct parser *parser, char *parsepos,
 	return member;
 }
 
+static struct rootclass *addrootclass(struct parser *parser, struct class *parentclass)
+{
+	struct rootclass *class;
+	int namelen = strlen(parentclass->name) + 6;  /* "_root\0" */
+
+	class = calloc(1, offsetof(struct rootclass, class.name) + namelen);
+	if (class == NULL)
+		return NULL;
+
+	sprintf(class->class.name, "%s_root", parentclass->name);
+	class->parent.class = parentclass;
+	class->parent.child = &class->class;
+	class->parent.is_primary = 1;
+	if (initclass(parser, &class->class) == NULL)
+		return NULL;
+
+	import_parent(parser, parser->pf.pos, &class->class, &class->parent);
+	return class;
+}
+
 static void print_root_classes(struct parser *parser, struct class *class)
 {
 	struct hasho_entry *entry;
 	struct ancestor *ancestor;
-	struct class *parentclass;
-	int first = 1;
+	struct class *parentclass, *rootclass;
+	struct parent *parent;
 	char *name;
 
+	rootclass = NULL;
 	hasho_foreach(entry, &class->ancestors) {
 		ancestor = entry->value;
 		if (ancestor->parent->is_virtual) {
-			if (first) {
+			if (rootclass == NULL) {
 				name = class->name;
 				outprintf(parser, "\nstruct %s_root {\n"
 					"\tstruct %s %s;\n", name, name, name);
-				first = 0;
+				class->rootclass = addrootclass(parser, class);
+				if (class->rootclass == NULL)
+					break;
+
+				rootclass = &class->rootclass->class;
+				/* copy root constructor for initialization stack var */
+				rootclass->root_constructor = class->root_constructor;
+				rootclass->void_root_constructor = class->void_root_constructor;
 			}
+
+			parent = calloc(1, sizeof(*parent));
+			if (parent == NULL)
+				break;
+
 			parentclass = ancestor->parent->class;
+			parent->class = parentclass;
+			parent->child = rootclass;
+			import_parent(parser, parser->pf.pos, rootclass, parent);
 			name = parentclass->name;
 			outprintf(parser, "\tstruct %s %s;\n", name, name);
 			if (!parentclass->void_constructor) {
@@ -1610,10 +1662,8 @@ static void print_root_classes(struct parser *parser, struct class *class)
 		}
 	}
 
-	if (!first) {
+	if (rootclass)
 		outputs(parser, "};\n");
-		class->has_root_class = 1;
-	}
 }
 
 static void print_vmt_type(struct parser *parser, struct class *class)
@@ -1705,7 +1755,7 @@ static void print_func_decl(struct parser *parser, struct class *class,
 		func_prefix = name_insert = "";
 		func_body = ";";   /* no body */
 	}
-	rootclass = member->is_root_constructor && class->has_root_class ? "_root" : "";
+	rootclass = member->is_root_constructor && class->rootclass ? "_root" : "";
 	outprintf(parser, "\n%s%s%s_%s%s(struct %s%s *this%s%s%s", func_prefix,
 		member->rettype, class->name, name_insert, member->name,
 		class->name, rootclass, empty ? "" : ", ", member->paramstext, func_body);
@@ -2067,16 +2117,17 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	print_member_decls(parser, class);
 	/* skip line endings, so we put resync at next declaration line */
 	for (empty_line = 0;; parser->pf.pos++) {
-		if (*parser->pf.pos == '\r')
-			continue;
-		if (*parser->pf.pos != '\n')
+		if (*parser->pf.pos != '\r' && *parser->pf.pos != '\n')
 			break;
+		if (parser->pf.pos[0] == '\r' && parser->pf.pos[1] == '\n')
+			parser->pf.pos++;
 		parser->pf.lineno++;
 		parser->pf.linestart = parser->pf.pos;
 		empty_line = 1;
 	}
+	/* many reasons why lineno could have gone out of sync, always resync */
 	if (parser->line_pragmas) {
-		/* many reasons why lineno could have gone out of sync, always resync */
+		/* flush line endings just skipped in above loop */
 		flush(parser);
 		outprintf(parser, "%s#line %d\n", empty_line ? "" : "\n", parser->pf.lineno);
 	}
@@ -2231,6 +2282,7 @@ static void print_initializers(struct parser *parser, char *position)
 	char *linestart, *sep_or_end;
 	struct initializer *initializer;
 	struct class *class;
+	struct member *member;
 	unsigned i;
 	int lineno;
 
@@ -2247,7 +2299,7 @@ static void print_initializers(struct parser *parser, char *position)
 		if (initializer->lineno != lineno) {
 			/* if moved to next line, only print line ending */
 			if (initializer->lineno != lineno + 1)
-				outprintf(parser, "\n#line %d", initializer->lineno);
+				pr_lineno(parser, initializer->lineno);
 			outwrite(parser, linestart, position - linestart);
 			lineno = initializer->lineno;
 		} else {
@@ -2263,9 +2315,9 @@ static void print_initializers(struct parser *parser, char *position)
 				sep_or_end = ")";
 				parser->pf.writepos = initializer->start;
 			}
-			outprintf(parser, "%s_%s(&%s%s", class->name,
-				class->root_constructor->name,
-				initializer->name, sep_or_end);
+			member = class->root_constructor;
+			outprintf(parser, "%s_%s(&%s%s", member->origin->name,
+				member->name, initializer->name, sep_or_end);
 		} else {
 			parser->pf.writepos = initializer->name;
 		}
@@ -2277,8 +2329,7 @@ static void print_initializers(struct parser *parser, char *position)
 	parser->pf.writepos = linestart;
 	/* resync lineno in case there is an empty line between initialization section
 	   and statements; linestart is before line ending, so compare with lineno + 1 */
-	if (parser->pf.lineno != lineno + 1)
-		outprintf(parser, "\n#line %d", parser->pf.lineno);
+	pr_lineno(parser, parser->pf.lineno);
 }
 
 static void param_to_variable(struct parser *parser, int position,
@@ -2491,6 +2542,21 @@ static void parse_function(struct parser *parser, char *next)
 				continue;
 			}
 
+			if (state == DECLVAR && decl.class && decl.class->rootclass
+					&& parenlevel == 0) {
+				if (declvar && (declvar->decl.pointerlevel
+						|| exprdecl[0].pointerlevel)) {
+					pr_err(curr, "cannot combine pointer and non-pointer "
+						"declarations of root-requiring classes");
+				} else if (!declvar && exprdecl[0].pointerlevel == 0) {
+					/* declaring stack variable with root class, add _root */
+					flush_until(parser, next);
+					outwrite(parser, "_root", 5);
+					parser->pf.writepos = next;
+					/* fix class type, so ancestor paths are correct */
+					decl.class = &decl.class->rootclass->class;
+				}
+			}
 			name = curr;
 			next = skip_word(name);
 			numwords++;
@@ -2714,6 +2780,7 @@ static void parse_function(struct parser *parser, char *next)
 			print_inserts(parser, parser->inserts);
 			immdecl.class = NULL;
 			decl.class = NULL;
+			declvar = NULL;
 			numwords = 0;
 			seqparen = 0;
 			parenlevel = 0;
@@ -2757,14 +2824,15 @@ static void print_root_constructor(struct parser *parser, struct class *class)
 	char *vmtpath, *vmtaccess, *sep_or_end, *paramstext;
 	struct ancestor *ancestor, *literal_ancestor;
 	struct hasho_entry *entry;
-	struct class *parentclass;
-	char *name, *retstr, *thisname, *prefix, *sep;
+	struct class *parentclass, *rootclass;
+	char *name, *retstr, *thisname;
 	struct vmt *vmt;
 	unsigned i;
 
 	if (!class->gen_root_constructor)
 		return;
 
+	rootclass = class->rootclass ? &class->rootclass->class : class;
 	if (class->root_constructor->params.num) {
 		sep_or_end = ", ";
 		paramstext = class->root_constructor->paramstext;
@@ -2772,37 +2840,27 @@ static void print_root_constructor(struct parser *parser, struct class *class)
 		sep_or_end = "";
 		paramstext = ")";
 	}
-	if (class->has_root_class) {
-		prefix = class->name;
-		sep = ".";
-	} else {
-		prefix = sep = "";
-	}
 	/* root constructor function signature */
-	outprintf(parser, "\nvoid %s_%s_root(struct %s%s *this%s%s\n{\n",
-		class->name, class->name, class->name,
-		class->has_root_class ? "_root" : "", sep_or_end, paramstext);
-	/* result variable in case (only-virtual base) constructor(s) fail */
-	if (class->has_root_class && !class->void_root_constructor)
-		outprintf(parser, "\tvoid *ret;\n\n", 13);
+	outprintf(parser, "\nvoid %s_%s_root(struct %s *this%s%s\n{\n",
+		class->name, class->name, rootclass->name, sep_or_end, paramstext);
 	/* virtual inits */
-	for (i = 0; i < class->virtual_ancestors.num; i++) {
-		ancestor = class->virtual_ancestors.mem[i];
+	for (i = 0; i < rootclass->virtual_ancestors.num; i++) {
+		ancestor = rootclass->virtual_ancestors.mem[i];
 		parentclass = ancestor->parent->class;
-		outprintf(parser, "\tthis->%s%s%s = &this->", prefix, sep, ancestor->path);
-		literal_ancestor = hasho_find(&class->ancestors, parentclass);
+		outprintf(parser, "\tthis->%s = &this->", ancestor->path);
+		literal_ancestor = hasho_find(&rootclass->ancestors, parentclass);
 		if (!literal_ancestor || literal_ancestor->parent->is_virtual)
 			outputs(parser, parentclass->name);
 		else
-			outprintf(parser, "%s%s%s", prefix, sep, literal_ancestor->path);
+			outprintf(parser, "%s", literal_ancestor->path);
 		outwrite(parser, ";\n", 2);
 	}
 	/* vmt inits */
-	for (i = 0; i < class->vmts.num; i++) {
-		vmt = class->vmts.mem[i];
-		find_vmt_path(class, vmt, &vmtpath, &vmtaccess);
-		outprintf(parser, "\tthis->%s%s%s%svmt = &%s;\n",
-			prefix, sep, vmtpath, vmtaccess, get_vmt_name(vmt));
+	for (i = 0; i < rootclass->vmts.num; i++) {
+		vmt = rootclass->vmts.mem[i];
+		find_vmt_path(rootclass, vmt, &vmtpath, &vmtaccess);
+		outprintf(parser, "\tthis->%s%svmt = &%s;\n",
+			vmtpath, vmtaccess, get_vmt_name(vmt));
 	}
 	/* construct classes that are used as virtual bases only */
 	hasho_foreach(entry, &class->ancestors) {
@@ -2823,7 +2881,7 @@ static void print_root_constructor(struct parser *parser, struct class *class)
 	/* class constructor call */
 	if (class->constructor) {
 		retstr = class->void_root_constructor ? "" : "return ";
-		if (class->has_root_class) {
+		if (class->rootclass) {
 			thisname = "&this->";
 			name = class->name;
 		} else {

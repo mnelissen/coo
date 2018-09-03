@@ -3,5 +3,5 @@ CC=gcc
 all: example
 example: example.coo.o
 example.coo.c:
-	../coo -Iinc example.coo
+	../coo $(EXTRA) -Iinc example.coo
 .PHONY: example.coo.c

@@ -1611,11 +1611,7 @@ static struct rootclass *addrootclass(struct parser *parser, struct class *paren
 	class->parent.class = parentclass;
 	class->parent.child = &class->class;
 	class->parent.is_primary = 1;
-	if (initclass(parser, &class->class) == NULL)
-		return NULL;
-
-	import_parent(parser, parser->pf.pos, &class->class, &class->parent);
-	return class;
+	return initclass(parser, &class->class) ? class : NULL;
 }
 
 static void print_root_classes(struct parser *parser, struct class *class)
@@ -1662,8 +1658,11 @@ static void print_root_classes(struct parser *parser, struct class *class)
 		}
 	}
 
-	if (rootclass)
+	if (rootclass) {
+		/* import parent class last, so the literals get priority when resolving */
+		import_parent(parser, parser->pf.pos, rootclass, &class->rootclass->parent);
 		outputs(parser, "};\n");
+	}
 }
 
 static void print_vmt_type(struct parser *parser, struct class *class)

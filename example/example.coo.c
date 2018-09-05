@@ -256,9 +256,9 @@ int main(int argc, char **argv)
 	A_vmt_vfunc_a(&b.A, 22);
 	B_vmt_vfunc_b(&b, 23);
 
-	c.C.A->a1 = 30;
+	c.A.a1 = 30;
 	c.C.c1 = 31;
-	A_vmt_vfunc_a(c.C.A, 32);
+	A_vmt_vfunc_a(&c.A, 32);
 	C_vmt_vfunc_c(&c.C, 33);
 
 	d.B.A.a1 = 40;
@@ -306,7 +306,7 @@ struct C_vmt C_vmt = {
 void C_C_root(struct C_root *this)
 {
 	this->C.A = &this->A;
-	this->A.vmt = &C_A_vmt;
+	this->A.vmt = &A_vmt;
 	this->C.vmt = &C_vmt;
 	A_A(&this->A);
 }

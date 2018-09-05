@@ -149,6 +149,11 @@ static double foo_func_new(struct foo *this, int z)
 	return 1.0;
 }
 
+float foo_func1(struct foo *this, void *p)
+{
+	return 1.0;
+}
+
 void foo_vfunc(struct foo *this, int arg1, float *arg2)
 {
 	*arg2 = foo_func1(this, &arg1);
@@ -235,20 +240,21 @@ int main(int argc, char **argv)
 	struct D d; int db1;
 	struct E e;
 
-#line 147
+#line 152
 	A_A_root(&a); A_A_root(&a_a);
 	aa1 = a.a1;
 	B_B_root(&b);
 	C_C_root(&c);
 	D_D_root(&d, &(&c)->A); db1 = d.B.b1;
 	E_E_root(&e);
-#line 154
+#line 159
 	a.a1 = 10;
 	A_vmt_vfunc_a(&a, 11);
 
 	b.A.a1 = 20;
-	A_vmt_vfunc_a(&b.A, 21);
-	B_vmt_vfunc_b(&b, 22);
+	b.b1 = 21;
+	A_vmt_vfunc_a(&b.A, 22);
+	B_vmt_vfunc_b(&b, 23);
 
 	c.C.A->a1 = 30;
 	c.C.c1 = 31;

@@ -2394,7 +2394,7 @@ static void parse_function(struct parser *parser, char *next)
 	struct member *member;
 	struct variable *declvar;
 	struct initializer *initializer;
-	char *curr, *funcname, *funcnameend, *classname, *name, *argsep, *dblcolonsep;
+	char *curr, *funcname, *nameend, *classname, *name, *argsep, *dblcolonsep;
 	char *exprstart[MAX_PAREN_LEVELS], *exprend, *params, *param0, *paramend;
 	char *memberstart[MAX_PAREN_LEVELS], *funcvarname, *funcvarnameend;
 	enum parse_funcvar_state funcvarstate;
@@ -2414,10 +2414,7 @@ static void parse_function(struct parser *parser, char *next)
 
 	is_constructor = num_constr_called = parents_inited = 0;
 	params = ++next;  /* advance after '(' */
-	param0 = skip_whitespace(parser, params);
-	paramend = scan_token(parser, param0, "/\n)");
-	if (paramend == NULL)
-		return;
+	next = param0 = skip_whitespace(parser, params);
 
 	/* clear local variables, may add "this" as variable for class */
 	hash_clear(&parser->locals);
@@ -2425,8 +2422,8 @@ static void parse_function(struct parser *parser, char *next)
 	if (funcname) {   /* funcname assigned means there is a classname::funcname */
 		if ((class = find_class(parser, classname)) != NULL) {
 			/* lookup method name */
-			funcnameend = skip_word(funcname);
-			member = find_member_e(class, funcname, funcnameend);
+			nameend = skip_word(funcname);
+			member = find_member_e(class, funcname, nameend);
 			if (member != NULL) {
 				class->is_implemented = 1;
 			} else {
@@ -2439,7 +2436,7 @@ static void parse_function(struct parser *parser, char *next)
 				props.is_function = 1;
 				props.seen = 1;
 				member = addmember(parser, class, &retclassptr, parser->pf.pos,
-					classname, funcname, funcnameend, params, props);
+					classname, funcname, nameend, params, props);
 			}
 			/* replace :: with _ */
 			flush_until(parser, dblcolonsep);
@@ -2447,12 +2444,15 @@ static void parse_function(struct parser *parser, char *next)
 			parser->pf.writepos = funcname;
 			flush_until(parser, params);
 			/* check if there are parameters */
-			argsep = "";  /* start assumption: no params */
-			if (*param0 != ')') {
-				if (strprefixcmp("void", param0) && !isalpha(param0[4]))
+			argsep = ", ";  /* start assumption: separate "this", rest params */
+			if (*param0 == ')') {
+				argsep = "";
+			} else if (strprefixcmp("void", param0)) {
+				next = skip_whitespace(parser, param0 + 4);
+				if (*next == ')') {
 					param0 += 4;  /* skip "void" if adding "this" param */
-				else
-					argsep = ", ";  /* separate "this", rest params */
+					argsep = "";
+				}
 			}
 			/* add this parameter */
 			outprintf(parser, "struct %s *this%s", classname, argsep);
@@ -2461,8 +2461,8 @@ static void parse_function(struct parser *parser, char *next)
 			decl.class = class;
 			decl.pointerlevel = 1;
 			name = "this";
-			next = name + 4;  /* "this" */
-			addvariable(parser, 0, &decl, 0, name, next, NULL, NULL);
+			nameend = name + 4;  /* "this" */
+			addvariable(parser, 0, &decl, 0, name, nameend, NULL, NULL);
 			/* no parents means all are initialized */
 			is_constructor = member->is_constructor;
 			parents_inited = is_constructor && class->num_parents == 0;
@@ -2471,6 +2471,10 @@ static void parse_function(struct parser *parser, char *next)
 		}
 	} else
 		class = NULL;
+
+	paramend = scan_token(parser, next, "/\n)");
+	if (paramend == NULL)
+		return;
 
 	next = skip_whitespace(parser, paramend+1);
 	if (*next == ';') {

@@ -37,9 +37,9 @@ Planned:
 
 * structured error handling (in some form)
 * protected classes, private/public members, encapsulation
+* special case for interfaces? (only virtual methods, no variables)
 * dynamic casting (auto *)
 * method instance pointers
-* special case for interfaces? (only virtual methods, no variables)
 * typesafe containers
 * function overloading? (in some form)
 
@@ -120,6 +120,7 @@ value 5.
 * add destructors, plus call them for stack variables
 * add virtual abstract = 0 syntax
 * add call inherited to call parent's overridden function
+* print line pragmas of output file if purely generated (e.g. vmt wrappers)
 
 ## License
 

@@ -65,6 +65,11 @@ double foo::func_new(int z)
 	return 1.0;
 }
 
+float foo::func1(void *p)
+{
+	return 1.0;
+}
+
 void foo::vfunc(int arg1, float *arg2)
 {
 	*arg2 = func1(&arg1);
@@ -155,8 +160,9 @@ int main(int argc, char **argv)
 	a.vfunc_a(11);
 
 	b.a1 = 20;
-	b.vfunc_a(21);
-	b.vfunc_b(22);
+	b.b1 = 21;
+	b.vfunc_a(22);
+	b.vfunc_b(23);
 
 	c.a1 = 30;
 	c.c1 = 31;

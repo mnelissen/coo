@@ -207,6 +207,7 @@ void D_vfunc_d(struct D *this, struct A *a, struct B *b)
 void D_D(struct D *this, struct A *a)
 {
 	this->B.b1 = -5;
+	A_A(&this->B.A);
 }
 
 static void E_E(struct E *this)
@@ -234,14 +235,14 @@ int main(int argc, char **argv)
 	struct D d; int db1;
 	struct E e;
 
-#line 146
+#line 147
 	A_A_root(&a); A_A_root(&a_a);
 	aa1 = a.a1;
 	B_B_root(&b);
 	C_C_root(&c);
 	D_D_root(&d, &(&c)->A); db1 = d.B.b1;
 	E_E_root(&e);
-#line 153
+#line 154
 	a.a1 = 10;
 	A_vmt_vfunc_a(&a, 11);
 

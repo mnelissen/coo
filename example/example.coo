@@ -123,6 +123,7 @@ void D::vfunc_d(A *a, B *b)
 void D::D(A *a)
 {
 	b1 = -5;
+	A();
 }
 
 void E::E(void)

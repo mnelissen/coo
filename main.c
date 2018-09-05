@@ -1504,10 +1504,10 @@ static void import_parent(struct parser *parser, char *parsepos,
 	currorigin = ignoreorigin = NULL;
 	for (i = 0; i < parentmembers->num; i++) {
 		parentmember = parentmembers->mem[i];
-		/* skip grand-parent constructors for now */
-		if (parentmember->parent_constructor)
+		/* hide grand-parent constructors behind parent constructor */
+		if (parentmember->parent_constructor && class->constructor)
 			continue;
-		/* skip root constructors specific for its own class */
+		/* skip root constructors, they are specific for their own class */
 		if (parentmember->is_root_constructor)
 			continue;
 		origin = parentmember->origin;

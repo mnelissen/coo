@@ -37,6 +37,11 @@ Planned:
 
 * structured error handling (in some form)
 * protected classes, private/public members, encapsulation
+* dynamic casting (auto *)
+* method instance pointers
+* special case for interfaces? (only virtual methods, no variables)
+* typesafe containers
+* function overloading? (in some form)
 
 ## Design
 
@@ -110,7 +115,11 @@ value 5.
 
 * fixup class pointer in multiple inheritance virtual call
 * recognize global variables (searched, but never any added)
+* add syntax "new C" to dynamically allocate class C on heap
+* add syntax to zero-initialize a class automatically
 * add destructors, plus call them for stack variables
+* add virtual abstract = 0 syntax
+* add call inherited to call parent's overridden function
 
 ## License
 

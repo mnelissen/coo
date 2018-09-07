@@ -11,7 +11,7 @@ struct foo {
 };
 
 extern struct foo_vmt {
-	void (*vfunc)(struct foo *foo, int arg1, float *arg2);
+	void (*vfunc)(struct foo *this, int arg1, float *arg2);
 } foo_vmt;
 
 #ifndef coo_inline
@@ -20,6 +20,10 @@ extern struct foo_vmt {
 #else
 #define coo_inline extern inline __attribute__((always_inline)) __attribute__((gnu_inline))
 #endif
+#endif
+#ifndef container_of
+#define container_of(ptr, type, node_var) \
+  ((type *)((size_t)(ptr)-(size_t)(&((type *)0)->node_var)))
 #endif
 
 char foo_func(struct foo *this);

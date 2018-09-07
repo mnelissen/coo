@@ -35,6 +35,10 @@ typedef uint32_t pid_t;
 	"#define coo_inline extern inline " \
 		"__attribute__((always_inline)) __attribute__((gnu_inline))\n" \
 	"#endif\n" \
+	"#endif\n" \
+	"#ifndef container_of\n" \
+	"#define container_of(ptr, type, node_var) \\\n" \
+	"  ((type *)((size_t)(ptr)-(size_t)(&((type *)0)->node_var)))\n" \
 	"#endif\n"
 
 static int compare_prefix_strhash(void *user, void *key);
@@ -1468,6 +1472,19 @@ static const char *get_vmt_name(struct vmt *vmt)
 	return vmt->name;
 }
 
+static int this_needs_offset(struct member *member)
+{
+	/* for non-primary, the class does not align to start, so have
+	   to use the original defining class and translate pointer in implementation
+	   for virtual origin, we cannot translate, so that has to use trampoline */
+	return member->vmt && !member->props.from_primary && !member->props.from_virtual;
+}
+
+static struct class *get_this_class(struct member *member)
+{
+	return this_needs_offset(member) ? member->vmt->origin : member->definition;
+}
+
 static void addvmt(struct class *class, struct vmt *parent_vmt,
 		struct class *origin, enum primary_vmt primary_vmt)
 {
@@ -1667,6 +1684,7 @@ static void print_root_classes(struct parser *parser, struct class *class)
 
 static void print_vmt_type(struct parser *parser, struct class *class)
 {
+	struct class *thisclass;
 	struct member *member;
 	struct vmt *vmt;
 	int i, j;
@@ -1684,9 +1702,9 @@ static void print_vmt_type(struct parser *parser, struct class *class)
 			if (member->vmt->origin != vmt->origin)
 				continue;
 
-			outprintf(parser, "\t%s(*%s)(struct %s *%s%s%s;\n",
-				member->rettype, member->name,
-				member->definition->name, member->definition->name,
+			thisclass = get_this_class(member);
+			outprintf(parser, "\t%s(*%s)(struct %s *this%s%s;\n",
+				member->rettype, member->name, thisclass->name,
 				member->paramstext[0] != ')' ? ", " : "",
 				member->paramstext);
 		}
@@ -1743,6 +1761,7 @@ static void print_func_decl(struct parser *parser, struct class *class,
 		struct member *member, enum func_decltype emittype)
 {
 	char *func_prefix, *name_insert, *func_body, *vmtpath, *vmtaccess, *rootclass;
+	struct class *thisclass;
 	unsigned empty;
 
 	empty = member->paramstext[0] == ')';
@@ -1754,10 +1773,11 @@ static void print_func_decl(struct parser *parser, struct class *class,
 		func_prefix = name_insert = "";
 		func_body = ";";   /* no body */
 	}
+	thisclass = get_this_class(member);
 	rootclass = member->is_root_constructor && class->rootclass ? "_root" : "";
 	outprintf(parser, "\n%s%s%s_%s%s(struct %s%s *this%s%s%s", func_prefix,
-		member->rettype, class->name, name_insert, member->name,
-		class->name, rootclass, empty ? "" : ", ", member->paramstext, func_body);
+		member->rettype, class->name, name_insert, member->name, thisclass->name,
+		rootclass, empty ? "" : ", ", member->paramstext, func_body);
 	if (emittype == VIRTUAL_WRAPPER) {
 		find_vmt_path(class, member->vmt, &vmtpath, &vmtaccess);
 		outprintf(parser, "\n\t((struct %s_vmt*)this->%s%svmt)->%s(this",
@@ -2393,9 +2413,11 @@ static void parse_function(struct parser *parser, char *next)
 	struct member *member;
 	struct variable *declvar;
 	struct initializer *initializer;
+	struct ancestor *this_ancestor;
 	char *curr, *funcname, *nameend, *classname, *name, *argsep, *dblcolonsep;
 	char *exprstart[MAX_PAREN_LEVELS], *exprend, *params, *param0, *paramend;
 	char *memberstart[MAX_PAREN_LEVELS], *funcvarname, *funcvarnameend;
+	char *thisprefix, *thisclassname;
 	enum parse_funcvar_state funcvarstate;
 	enum parse_state state, nextstate;
 	int blocklevel, parenlevel, seqparen, numwords;
@@ -2418,6 +2440,7 @@ static void parse_function(struct parser *parser, char *next)
 	/* clear local variables, may add "this" as variable for class */
 	hash_clear(&parser->locals);
 	parser->nested_locals.num = 0;
+	this_ancestor = NULL;
 	if (funcname) {   /* funcname assigned means there is a classname::funcname */
 		if ((class = find_class(parser, classname)) != NULL) {
 			/* lookup method name */
@@ -2453,8 +2476,18 @@ static void parse_function(struct parser *parser, char *next)
 					argsep = "";
 				}
 			}
-			/* add this parameter */
-			outprintf(parser, "struct %s *this%s", classname, argsep);
+			/* add this parameter, does it need offset? */
+			if (this_needs_offset(member)) {
+				this_ancestor = hasho_find(&class->ancestors,
+								member->vmt->origin);
+				thisclassname = member->origin->name;
+				thisprefix = "__";
+			} else {
+				thisclassname = classname;
+				thisprefix = "";
+			}
+			outprintf(parser, "struct %s *%sthis%s",
+						thisclassname, thisprefix, argsep);
 			parser->pf.writepos = param0;
 			/* add this as a variable */
 			decl.class = class;
@@ -2482,11 +2515,29 @@ static void parse_function(struct parser *parser, char *next)
 		return;
 	}
 
+	/* save in case of error exit, or flushing + defining 'this' later */
+	parser->pf.pos = next;
+	if (*next != '{') {
+		pr_err(next, "expected ';' or '{' after function definition");
+		return;
+	}
+
+	/* skip the '{' */
+	blocklevel = 1;
+	next++;
+
 	/* store parameters as variables */
 	if (parse_parameters(parser, params, NULL, param_to_variable) == NULL)
 		return;
 
-	blocklevel = seqparen = parenlevel = exprdecl[0].pointerlevel = numwords = 0;
+	if (this_ancestor) {
+		parser->pf.pos = next;
+		flush(parser);
+		outprintf(parser, "\tstruct %s *this = container_of(__this, struct %s, %s);\n",
+			classname, classname, this_ancestor->path);
+	}
+
+	seqparen = parenlevel = exprdecl[0].pointerlevel = numwords = 0;
 	exprdecl[0].class = targetdecl[0].class = decl.class = immdecl.class = NULL;
 	exprstart[0] = memberstart[0] = exprend = NULL;
 	funcvarname = funcvarnameend = name = NULL;  /* make compiler happy */

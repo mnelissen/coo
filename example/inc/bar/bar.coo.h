@@ -5,7 +5,7 @@ struct bar {
 };
 
 extern struct bar_vmt {
-	void (*vbarf)(struct bar *bar);
+	void (*vbarf)(struct bar *this);
 } bar_vmt;
 
 #ifndef coo_inline
@@ -14,6 +14,10 @@ extern struct bar_vmt {
 #else
 #define coo_inline extern inline __attribute__((always_inline)) __attribute__((gnu_inline))
 #endif
+#endif
+#ifndef container_of
+#define container_of(ptr, type, node_var) \
+  ((type *)((size_t)(ptr)-(size_t)(&((type *)0)->node_var)))
 #endif
 
 int *bar_barf(struct bar *this, char a, int b);

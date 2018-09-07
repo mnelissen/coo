@@ -8,7 +8,7 @@ typedef struct A {
 } A;
 
 extern struct A_vmt {
-	void (*vfunc_a)(struct A *A, int a2);
+	void (*vfunc_a)(struct A *this, int a2);
 } A_vmt;
 
 #ifndef coo_inline
@@ -17,6 +17,10 @@ extern struct A_vmt {
 #else
 #define coo_inline extern inline __attribute__((always_inline)) __attribute__((gnu_inline))
 #endif
+#endif
+#ifndef container_of
+#define container_of(ptr, type, node_var) \
+  ((type *)((size_t)(ptr)-(size_t)(&((type *)0)->node_var)))
 #endif
 
 void A_vfunc_a(struct A *this, int a2);
@@ -34,8 +38,8 @@ struct B {
 };
 
 extern struct B_vmt {
-	void (*vfunc_a)(struct B *B, int a2);
-	void (*vfunc_b)(struct B *B, int b2);
+	void (*vfunc_a)(struct B *this, int a2);
+	void (*vfunc_b)(struct B *this, int b2);
 } B_vmt;
 
 void B_vfunc_a(struct B *this, int a2);
@@ -59,11 +63,11 @@ struct C_root {
 };
 
 extern struct C_A_vmt {
-	void (*vfunc_a)(struct C *C, int a2);
+	void (*vfunc_a)(struct C *this, int a2);
 } C_A_vmt;
 
 extern struct C_vmt {
-	void (*vfunc_c)(struct C *C, int c2);
+	void (*vfunc_c)(struct C *this, int c2);
 } C_vmt;
 
 void C_vfunc_a(struct C *this, int a2);
@@ -82,18 +86,18 @@ struct D {
 };
 
 extern struct D_vmt {
-	void (*vfunc_a)(struct D *D, int a2);
-	void (*vfunc_b)(struct D *D, int b2);
-	void (*vfunc_d)(struct D *D, struct A* a, struct B *b);
+	void (*vfunc_a)(struct D *this, int a2);
+	void (*vfunc_b)(struct D *this, int b2);
+	void (*vfunc_d)(struct D *this, struct A* a, struct B *b);
 } D_vmt;
 
 extern struct D_C_vmt {
-	void (*vfunc_c)(struct D *D, int c2);
+	void (*vfunc_c)(struct C *this, int c2);
 } D_C_vmt;
 
 void D_vfunc_a(struct D *this, int a2);
 void D_vfunc_b(struct D *this, int b2);
-void D_vfunc_c(struct D *this, int c2);
+void D_vfunc_c(struct C *this, int c2);
 void D_D(struct D *this, struct A *a);
 void D_vfunc_d(struct D *this, struct A* a, struct B *b);
 void D_D_root(struct D *this, struct A *a);
@@ -109,9 +113,9 @@ struct E {
 };
 
 extern struct E_vmt {
-	void (*vfunc_a)(struct D *D, int a2);
-	void (*vfunc_b)(struct E *E, int b2);
-	void (*vfunc_d)(struct E *E, struct A* a, struct B *b);
+	void (*vfunc_a)(struct D *this, int a2);
+	void (*vfunc_b)(struct E *this, int b2);
+	void (*vfunc_d)(struct E *this, struct A* a, struct B *b);
 } E_vmt;
 
 void E_vfunc_b(struct E *this, int b2);
@@ -199,8 +203,9 @@ void D_vfunc_b(struct D *this, int b2)
 	printf("D::vfunc_b(), b1=%d, b2=%d, d1=%d\n", this->B.b1, b2, this->d1);
 }
 
-void D_vfunc_c(struct D *this, int c2)
-{
+void D_vfunc_c(struct C *__this, int c2)
+{	struct D *this = container_of(__this, struct D, C);
+
 	printf("D::vfunc_c(), b1=%d c1=%d c2=%d d1=%d\n", this->B.b1, this->C.c1, c2, this->d1);
 }
 

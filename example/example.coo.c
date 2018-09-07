@@ -63,7 +63,7 @@ struct C_root {
 };
 
 extern struct C_A_vmt {
-	void (*vfunc_a)(struct C *this, int a2);
+	void (*vfunc_a)(struct A *this, int a2);
 } C_A_vmt;
 
 extern struct C_vmt {
@@ -300,8 +300,13 @@ void foo_foo_root(struct foo *this)
 	this->vmt = &foo_vmt;
 }
 
+void C_root_vfunc_a(struct A *__this, int a2)
+{	struct C_root *this = container_of(__this, struct C_root, A);
+	C_vfunc_a(&this->C, a2);
+}
+
 struct C_A_vmt C_A_vmt = {
-	C_vfunc_a,
+	C_root_vfunc_a,
 };
 
 struct C_vmt C_vmt = {

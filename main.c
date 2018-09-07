@@ -146,6 +146,7 @@ struct vmt {
 	struct vmt *parent;          /* pointer to same origin vmt in parent */
 	unsigned char modified;      /* any method overriden by class */
 	unsigned char is_primary;    /* is this the primary vmt for this class? */
+	unsigned char from_virtual;  /* vmt inherited from a virtual base? */
 	char *name;                  /* vmt struct type and variable name */
 };
 
@@ -1445,8 +1446,6 @@ static void add_ancestors(struct class *class, struct parent *parent)
 	}
 }
 
-enum primary_vmt { SECONDARY_VMT, PRIMARY_VMT };  /* boolean compatible */
-
 static const char *get_vmt_name(struct vmt *vmt)
 {
 	char *vmt_sec_name, *vmt_sec_sep;
@@ -1472,21 +1471,33 @@ static const char *get_vmt_name(struct vmt *vmt)
 	return vmt->name;
 }
 
-static int this_needs_offset(struct member *member)
+static int vmt_this_needs_offset(struct member *member)
 {
 	/* for non-primary, the class does not align to start, so have
-	   to use the original defining class and translate pointer in implementation
-	   for virtual origin, we cannot translate, so that has to use trampoline */
+	   to use the original defining class and translate pointer in implementation */
+	return member->vmt && (!member->props.from_primary || member->props.from_virtual);
+}
+
+static int impl_this_needs_offset(struct member *member)
+{
+	/* for virtual origin, we cannot translate, so that has to use trampoline */
 	return member->vmt && !member->props.from_primary && !member->props.from_virtual;
 }
 
-static struct class *get_this_class(struct member *member)
+static struct class *get_vmt_this_class(struct member *member)
 {
-	return this_needs_offset(member) ? member->vmt->origin : member->definition;
+	return vmt_this_needs_offset(member) ? member->vmt->origin : member->definition;
 }
 
+static struct class *get_impl_this_class(struct member *member)
+{
+	return impl_this_needs_offset(member) ? member->vmt->origin : member->definition;
+}
+
+enum parent_virtual { LITERAL_PARENT, VIRTUAL_PARENT };  /* boolean compatible */
+
 static void addvmt(struct class *class, struct vmt *parent_vmt,
-		struct class *origin, enum primary_vmt primary_vmt)
+		struct class *origin, enum parent_virtual parent_virtual)
 {
 	struct vmt *vmt;
 
@@ -1501,9 +1512,15 @@ static void addvmt(struct class *class, struct vmt *parent_vmt,
 	vmt->origin = origin;
 	vmt->parent = parent_vmt;
 	vmt->modified = class == origin;
-	vmt->is_primary = primary_vmt == PRIMARY_VMT;
+	/* do not reuse virtual base class' vmt, is inefficient */
+	vmt->is_primary = class->vmt == NULL;
+	vmt->from_virtual = parent_virtual;
 	class->vmts.mem[class->vmts.num++] = vmt;
-	if (primary_vmt == PRIMARY_VMT)
+	if (parent_vmt) {
+		vmt->is_primary = vmt->is_primary && parent_vmt->is_primary && !parent_virtual;
+		vmt->from_virtual = vmt->from_virtual || parent_vmt->from_virtual;
+	}
+	if (vmt->is_primary)
 		class->vmt = vmt;
 }
 
@@ -1567,9 +1584,7 @@ static void import_parent(struct parser *parser, char *parsepos,
 		if (hasho_find(&class->ancestors, vmt->origin) != NULL)
 			continue;
 
-		/* do not reuse virtual base class' vmt, is inefficient */
-		addvmt(class, vmt, vmt->origin,
-			class->vmt == NULL && vmt->is_primary && !parent->is_virtual);
+		addvmt(class, vmt, vmt->origin, parent->is_virtual);
 	}
 
 	/* add parents after vmt duplication check */
@@ -1702,7 +1717,7 @@ static void print_vmt_type(struct parser *parser, struct class *class)
 			if (member->vmt->origin != vmt->origin)
 				continue;
 
-			thisclass = get_this_class(member);
+			thisclass = get_vmt_this_class(member);
 			outprintf(parser, "\t%s(*%s)(struct %s *this%s%s;\n",
 				member->rettype, member->name, thisclass->name,
 				member->paramstext[0] != ')' ? ", " : "",
@@ -1773,7 +1788,7 @@ static void print_func_decl(struct parser *parser, struct class *class,
 		func_prefix = name_insert = "";
 		func_body = ";";   /* no body */
 	}
-	thisclass = get_this_class(member);
+	thisclass = get_impl_this_class(member);
 	rootclass = member->is_root_constructor && class->rootclass ? "_root" : "";
 	outprintf(parser, "\n%s%s%s_%s%s(struct %s%s *this%s%s%s", func_prefix,
 		member->rettype, class->name, name_insert, member->name, thisclass->name,
@@ -2021,7 +2036,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 			/* new members need a primary vmt to put them in */
 			if (!memberprops.is_override && !class->vmt) {
 				class->need_root_constructor = 1;
-				addvmt(class, NULL, class, PRIMARY_VMT);
+				addvmt(class, NULL, class, LITERAL_PARENT);
 				/* flush to front of virtual function */
 				flush_until(parser, declbegin);
 				outputs(parser, "void *vmt;");
@@ -2477,7 +2492,7 @@ static void parse_function(struct parser *parser, char *next)
 				}
 			}
 			/* add this parameter, does it need offset? */
-			if (this_needs_offset(member)) {
+			if (impl_this_needs_offset(member)) {
 				this_ancestor = hasho_find(&class->ancestors,
 								member->vmt->origin);
 				thisclassname = member->origin->name;
@@ -2952,9 +2967,10 @@ static void print_root_constructor(struct parser *parser, struct class *class)
 
 static void print_vmts(struct parser *parser)
 {
-	struct class *class;
+	struct class *class, *origin;
 	struct member *member;
-	const char *vmt_name;
+	struct ancestor *ancestor;
+	const char *vmt_name, *rootsuffix;
 	struct vmt *vmt;
 	unsigned i, j;
 
@@ -2971,6 +2987,33 @@ static void print_vmts(struct parser *parser)
 			if (parser->pf.writepos != parser->pf.pos)
 				flush(parser);
 
+			rootsuffix = "";
+			if (vmt->from_virtual) {
+				rootsuffix = "_root";
+				origin = vmt->origin;
+				ancestor = hasho_find(&class->ancestors, origin);
+				for (j = 0; j < class->members_arr.num; j++) {
+					member = class->members_arr.mem[j];
+					if (member->vmt == NULL)
+						continue;
+					if (member->vmt->origin != origin)
+						continue;
+
+					outprintf(parser, "\n%s%s_root_%s(struct %s *__this, %s\n"
+						"{\tstruct %s_root *this = container_of("
+						  "__this, struct %s_root, %s);\n"
+						"\t%s%s_%s(&this->%s",
+						member->rettype, class->name,
+						member->name, origin->name, member->paramstext,
+						class->name, class->name, ancestor->path,
+						is_void_rettype(member->rettype) ? "" : "return ",
+						member->definition->name, member->name,
+						class->name);
+					print_param_names(parser, member->paramstext);
+					outprintf(parser, ");\n}\n");
+				}
+			}
+
 			/* TODO: for multiple inheritance, print wrappers to fix base address */
 			/* TODO: fix member-defined-in-class type, make it match */
 			vmt_name = get_vmt_name(vmt);
@@ -2982,8 +3025,8 @@ static void print_vmts(struct parser *parser)
 				if (member->vmt->origin != vmt->origin)
 					continue;
 
-				outprintf(parser, "\t%s_%s,\n",
-					member->definition->name, member->name);
+				outprintf(parser, "\t%s%s_%s,\n",
+					member->definition->name, rootsuffix, member->name);
 			}
 			outprintf(parser, "};\n");
 		}

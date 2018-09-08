@@ -168,50 +168,50 @@ void A_A(struct A *this)
 	this->a1 = -1;
 }
 
-void A_vfunc_a(struct A *this, int a2)
+void A_vfunc_a(struct A *this, int arg)
 {
-	printf("A::vfunc(%d)\n", a2);
+	printf("A::vfunc(%d), a1=%d\n", arg, this->a1);
 }
 
-void B_vfunc_a(struct B *this, int a2)
+void B_vfunc_a(struct B *this, int arg)
 {
-	printf("B::vfunc_a(), a2=%d, b1=%d\n", a2, this->b1);
+	printf("B::vfunc_a(%d), a1=%d, b1=%d\n", arg, this->A.a1, this->b1);
 }
 
-void B_vfunc_b(struct B *this, int b2)
+void B_vfunc_b(struct B *this, int arg)
 {
-	printf("B::vfunc_b(), b1=%d, b2=%d\n", this->b1, b2);
+	printf("B::vfunc_b(%d), a1=%d, b1=%d\n", arg, this->A.a1, this->b1);
 }
 
-void C_vfunc_a(struct C *this, int a2)
+void C_vfunc_a(struct C *this, int arg)
 {
-	printf("C::vfunc_a(), a1=%d a2=%d c1=%d\n", this->A->a1, a2, this->c1);
+	printf("C::vfunc_a(%d), a1=%d, c1=%d\n", arg, this->A->a1, this->c1);
 }
 
-void C_vfunc_c(struct C *this, int c2)
+void C_vfunc_c(struct C *this, int arg)
 {
-	printf("C::vfunc_c(), c1=%d c2=%d\n", this->c1, c2);
+	printf("C::vfunc_c(%d), a1=%d, c1=%d\n", arg, this->A->a1, this->c1);
 }
 
-void D_vfunc_a(struct D *this, int a2)
+void D_vfunc_a(struct D *this, int arg)
 {
-	printf("D::vfunc_a(), a2=%d b1=%d c1=%d d1=%d\n", a2, this->B.b1, this->C.c1, this->d1);
+	printf("D::vfunc_a(%d), a1=%d, b1=%d c1=%d d1=%d\n", arg, this->B.A.a1, this->B.b1, this->C.c1, this->d1);
 }
 
-void D_vfunc_b(struct D *this, int b2)
+void D_vfunc_b(struct D *this, int arg)
 {
-	printf("D::vfunc_b(), b1=%d, b2=%d, d1=%d\n", this->B.b1, b2, this->d1);
+	printf("D::vfunc_b(%d), a1=%d, b1=%d, d1=%d\n", arg, this->B.A.a1, this->B.b1, this->d1);
 }
 
-void D_vfunc_c(struct C *__this, int c2)
+void D_vfunc_c(struct C *__this, int arg)
 {	struct D *this = container_of(__this, struct D, C);
 
-	printf("D::vfunc_c(), b1=%d c1=%d c2=%d d1=%d\n", this->B.b1, this->C.c1, c2, this->d1);
+	printf("D::vfunc_c(%d), a1=%d, b1=%d c1=%d d1=%d\n", arg, this->B.A.a1, this->B.b1, this->C.c1, this->d1);
 }
 
 void D_vfunc_d(struct D *this, struct A *a, struct B *b)
 {
-	printf("D::vfunc_d(), b1=%d c1=%d d1=%d a.a1=%d b.b1=%d\n", this->B.b1, this->C.c1, this->d1, a->a1, b->b1);
+	printf("D::vfunc_d(a, b), a1=%d, b1=%d c1=%d d1=%d a->a1=%d b->b1=%d\n", this->B.A.a1, this->B.b1, this->C.c1, this->d1, a->a1, b->b1);
 }
 
 void D_D(struct D *this, struct A *a)
@@ -226,14 +226,15 @@ static void E_E(struct E *this)
 	D_D(&this->D, &this->D.B.A);
 }
 
-void E_vfunc_b(struct E *this, int b2)
+void E_vfunc_b(struct E *this, int arg)
 {
-	printf("E::vfunc_b(), b1=%d b2=%d d1=%d e1=%d\n", this->D.B.b1, b2, this->D.d1, this->e1);
+	printf("E::vfunc_b(%d), a1=%d, b1=%d d1=%d e1=%d\n", arg, this->D.B.A.a1, this->D.B.b1, this->D.d1, this->e1);
 }
 
 void E_vfunc_d(struct E *this, struct A *a, struct B *b)
 {
-	printf("E::vfunc_d(), b1=%d c1=%d d1=%d e1=%d a.a1=%d b.b1=%d\n", this->D.B.b1, this->D.C.c1, this->D.d1, this->e1, a->a1, b->b1);
+	printf("E::vfunc_d(a, b), a1=%d, b1=%d c1=%d d1=%d e1=%d a->a1=%d b->b1=%d\n",
+		this->D.B.A.a1, this->D.B.b1, this->D.C.c1, this->D.d1, this->e1, a->a1, b->b1);
 }
 
 int main(int argc, char **argv)
@@ -245,14 +246,14 @@ int main(int argc, char **argv)
 	struct D d; int db1;
 	struct E e;
 
-#line 152
+#line 153
 	A_A_root(&a); A_A_root(&a_a);
 	aa1 = a.a1;
 	B_B_root(&b);
 	C_C_root(&c);
 	D_D_root(&d, &(&c)->A); db1 = d.B.b1;
 	E_E_root(&e);
-#line 159
+#line 160
 	a.a1 = 10;
 	A_vmt_vfunc_a(&a, 11);
 
@@ -316,7 +317,7 @@ struct C_vmt C_vmt = {
 void C_C_root(struct C_root *this)
 {
 	this->C.A = &this->A;
-	this->A.vmt = &A_vmt;
+	this->A.vmt = &C_A_vmt;
 	this->C.vmt = &C_vmt;
 	A_A(&this->A);
 }

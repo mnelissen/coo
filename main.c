@@ -2925,8 +2925,8 @@ static void print_root_constructor(struct parser *parser, struct class *class)
 		outwrite(parser, ";\n", 2);
 	}
 	/* vmt inits */
-	for (i = 0; i < rootclass->vmts.num; i++) {
-		vmt = rootclass->vmts.mem[i];
+	for (i = 0; i < class->vmts.num; i++) {
+		vmt = class->vmts.mem[i];
 		find_vmt_path(rootclass, vmt, &vmtpath, &vmtaccess);
 		outprintf(parser, "\tthis->%s%svmt = &%s;\n",
 			vmtpath, vmtaccess, get_vmt_name(vmt));

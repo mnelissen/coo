@@ -80,49 +80,49 @@ void A::A(void)
 	a1 = -1;
 }
 
-void A::vfunc_a(int a2)
+void A::vfunc_a(int arg)
 {
-	printf("A::vfunc(%d)\n", a2);
+	printf("A::vfunc(%d), a1=%d\n", arg, a1);
 }
 
-void B::vfunc_a(int a2)
+void B::vfunc_a(int arg)
 {
-	printf("B::vfunc_a(), a2=%d, b1=%d\n", a2, b1);
+	printf("B::vfunc_a(%d), a1=%d, b1=%d\n", arg, a1, b1);
 }
 
-void B::vfunc_b(int b2)
+void B::vfunc_b(int arg)
 {
-	printf("B::vfunc_b(), b1=%d, b2=%d\n", b1, b2);
+	printf("B::vfunc_b(%d), a1=%d, b1=%d\n", arg, a1, b1);
 }
 
-void C::vfunc_a(int a2)
+void C::vfunc_a(int arg)
 {
-	printf("C::vfunc_a(), a1=%d a2=%d c1=%d\n", a1, a2, c1);
+	printf("C::vfunc_a(%d), a1=%d, c1=%d\n", arg, a1, c1);
 }
 
-void C::vfunc_c(int c2)
+void C::vfunc_c(int arg)
 {
-	printf("C::vfunc_c(), c1=%d c2=%d\n", c1, c2);
+	printf("C::vfunc_c(%d), a1=%d, c1=%d\n", arg, a1, c1);
 }
 
-void D::vfunc_a(int a2)
+void D::vfunc_a(int arg)
 {
-	printf("D::vfunc_a(), a2=%d b1=%d c1=%d d1=%d\n", a2, b1, c1, d1);
+	printf("D::vfunc_a(%d), a1=%d, b1=%d c1=%d d1=%d\n", arg, a1, b1, c1, d1);
 }
 
-void D::vfunc_b(int b2)
+void D::vfunc_b(int arg)
 {
-	printf("D::vfunc_b(), b1=%d, b2=%d, d1=%d\n", b1, b2, d1);
+	printf("D::vfunc_b(%d), a1=%d, b1=%d, d1=%d\n", arg, a1, b1, d1);
 }
 
-void D::vfunc_c(int c2)
+void D::vfunc_c(int arg)
 {
-	printf("D::vfunc_c(), b1=%d c1=%d c2=%d d1=%d\n", b1, c1, c2, d1);
+	printf("D::vfunc_c(%d), a1=%d, b1=%d c1=%d d1=%d\n", arg, a1, b1, c1, d1);
 }
 
 void D::vfunc_d(A *a, B *b)
 {
-	printf("D::vfunc_d(), b1=%d c1=%d d1=%d a.a1=%d b.b1=%d\n", b1, c1, d1, a->a1, b->b1);
+	printf("D::vfunc_d(a, b), a1=%d, b1=%d c1=%d d1=%d a->a1=%d b->b1=%d\n", a1, b1, c1, d1, a->a1, b->b1);
 }
 
 void D::D(A *a)
@@ -137,14 +137,15 @@ void E::E(void)
 	D(this);
 }
 
-void E::vfunc_b(int b2)
+void E::vfunc_b(int arg)
 {
-	printf("E::vfunc_b(), b1=%d b2=%d d1=%d e1=%d\n", b1, b2, d1, e1);
+	printf("E::vfunc_b(%d), a1=%d, b1=%d d1=%d e1=%d\n", arg, a1, b1, d1, e1);
 }
 
 void E::vfunc_d(A *a, B *b)
 {
-	printf("E::vfunc_d(), b1=%d c1=%d d1=%d e1=%d a.a1=%d b.b1=%d\n", b1, c1, d1, e1, a->a1, b->b1);
+	printf("E::vfunc_d(a, b), a1=%d, b1=%d c1=%d d1=%d e1=%d a->a1=%d b->b1=%d\n",
+		a1, b1, c1, d1, e1, a->a1, b->b1);
 }
 
 int main(int argc, char **argv)

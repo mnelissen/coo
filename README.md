@@ -111,15 +111,24 @@ just like in C++. E.g. suppose class C with constructor C::C(int x) then
 "C c(5);" declares a variable called "c" and calls its constructor with the
 value 5.
 
+## Call inherited functions
+
+In general member names and therefore function calls are unique. But when
+overriding an inherited method, it often makes sense to call the inherited
+function. Plain calling it would translate to a virtual method call, most
+likely causing a loop. Therefore, similar syntax to C++ is supported to
+call inherited functions with "class::function()" syntax. This syntax
+causes a hard call to be emitted, never via the VMT. Also other member
+functions may be called this way as an optimization if one is certain
+that the method is not overridden anyway.
+
 ## TODO
 
-* fixup class pointer in multiple inheritance virtual call
 * recognize global variables (searched, but never any added)
 * add syntax "new C" to dynamically allocate class C on heap
 * add syntax to zero-initialize a class automatically
 * add destructors, plus call them for stack variables
 * add virtual abstract = 0 syntax
-* add call inherited to call parent's overridden function
 * print line pragmas of output file if purely generated (e.g. vmt wrappers)
 
 ## License

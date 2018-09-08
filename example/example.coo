@@ -102,6 +102,7 @@ void C::vfunc_a(int arg)
 
 void C::vfunc_c(int arg)
 {
+	A::vfunc_a(arg);
 	printf("C::vfunc_c(%d), a1=%d, c1=%d\n", arg, a1, c1);
 }
 
@@ -144,6 +145,7 @@ void E::vfunc_b(int arg)
 
 void E::vfunc_d(A *a, B *b)
 {
+	D::vfunc_d(a, b);
 	printf("E::vfunc_d(a, b), a1=%d, b1=%d c1=%d d1=%d e1=%d a->a1=%d b->b1=%d\n",
 		a1, b1, c1, d1, e1, a->a1, b->b1);
 }

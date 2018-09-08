@@ -73,7 +73,8 @@ struct file_id {
 };
 
 enum parse_state {
-	FINDVAR, STMTSTART, DECLVAR, CONSTRUCT, CASTVAR, ACCESSMEMBER, EXPRUNARY
+	FINDVAR, STMTSTART, DECLVAR, CONSTRUCT, CASTVAR,
+	ACCESSMEMBER, ACCESSINHERITED, EXPRUNARY
 };
 
 struct dynarr {
@@ -292,6 +293,13 @@ static char *parser_strchrnul(struct parser *parser, char *str, int ch)
 	return (char*)str;
 }
 
+static char *strchrnul(char *str, int ch)
+{
+	while (*str && *str != ch)
+		str++;
+	return str;
+}
+
 static int islinespace(int ch)
 {
 	return ch == ' ' || ch == '\t';
@@ -395,6 +403,43 @@ static char *skip_whiteline(struct parser *parser, char *p)
 	if (*p == '\n') {
 		parser_nextline(parser, p);
 		p++;
+	}
+	return p;
+}
+
+/* assumes pos[0] == '/' was matched, starting a possible comment */
+static char *strskip_comment(char *pos)
+{
+	/* C style comment? */
+	if (pos[1] == '*') {
+		for (pos += 2;; pos++) {
+			pos = strchrnul(pos, '*');
+			if (pos[0] == 0)
+				return pos;
+			if (pos[1] == '/')
+				break;
+		}
+		return pos + 2;
+	}
+	/* C++ style comment? */
+	if (pos[1] == '/') {
+		pos = strchrnul(pos+2, '\n');
+		if (pos[0] == 0)
+			return pos;
+		return pos + 1;
+	}
+	return pos;
+}
+
+static char *strskip_whitespace(char *p)
+{
+	for (;;) {
+		if (isspace(*p))
+			p++;
+		else if (*p == '/')
+			p = strskip_comment(p);
+		else
+			break;
 	}
 	return p;
 }
@@ -737,6 +782,7 @@ static void flush_until(struct parser *parser, char *until)
 
 	if (parser->pf.writepos > until) {
 		fprintf(stderr, "internal error, flushing into past\n");
+		parser->num_errors++;
 		return;
 	}
 
@@ -844,14 +890,14 @@ static char *parse_parameters(struct parser *parser, char *params,
 	decl.pointerlevel = 0;
 	state = FINDVAR;
 	for (position = 0, next = params;;) {
-		curr = skip_whitespace(parser, next);
+		curr = strskip_whitespace(next);
 		if (curr[0] == 0)
 			return NULL;
 		if (strprefixcmp("const ", curr)) {
 			next = curr + 6;  /* "const " */
 			continue;
 		} else if (strprefixcmp("struct ", curr)) {
-			name = skip_whitespace(parser, curr + 7);  /* "struct " */
+			name = strskip_whitespace(curr + 7);  /* "struct " */
 			next = skip_word(name);
 			if (state == DECLVAR) {
 				/* grammar error, ignore */
@@ -1014,6 +1060,13 @@ static void parse_parameters_to(struct parser *parser,
 		*params_out = insert_implicit_structs(parser, params, paramsend);
 }
 
+static char is_void_params(char *params)
+{
+	if (strprefixcmp("void", params) == NULL)
+		return 0;
+	return *strskip_whitespace(params + 4) == ')';
+}
+
 static char is_void_rettype(char *rettype)
 {
 	char *end = strprefixcmp("void", rettype);
@@ -1047,8 +1100,12 @@ static struct member *addmember(struct parser *parser, struct class *class,
 	member->props = props;
 	member->retclassptr = *retclassptr;
 	member->rettype = stredup(rettype, retend);
-	if (params)
-		parse_parameters_to(parser, params, &member->paramstext, &member->params);
+	if (params) {
+		if (is_void_params(params))
+			member->paramstext = ")";
+		else
+			parse_parameters_to(parser, params, &member->paramstext, &member->params);
+	}
 	if (props.is_function || props.is_static) {
 		vmt_insert = props.is_virtual ? "vmt_" : "";
 		member->funcinsert = aprintf("%s_%s", class->name, vmt_insert);
@@ -2194,15 +2251,12 @@ static struct member *parse_member(struct parser *parser, char *exprstart, char 
 	continue_at = NULL;
 	add_this = !exprstart && !member->props.is_static;
 	if (member->props.is_function) {
-		args = scan_token(parser, nameend, "/\n(;");
-		if (args != NULL && *args == ';')
-			args = NULL;
-		if (args != NULL)
-			args = skip_whitespace(parser, args+1);
-		if (args == NULL)
-			goto out;   /* end of file? escape */
+		for (args = nameend; *args == ' '; args++)
+			;
+		if (*args != '(')
+			goto out;
 
-		continue_at = args;
+		continue_at = ++args;
 		if (add_this) {
 			flush_until = args;
 			if (member->parentname) {
@@ -2274,6 +2328,46 @@ out:
 	*retclassptr = member->retclassptr;
 	*retparams = &member->params;
 	return member;
+}
+
+static char *access_inherited(struct parser *parser, struct class *thisclass,
+		struct class *tgtclass, char *name, char *next, struct dynarr **retparams)
+{
+	struct member *member;
+	struct ancestor *ancestor;
+	struct insert **afterpos;
+	char *thistext, *thispos;
+
+	member = find_member_e(thisclass, name, next);
+	if (!member)
+		return next;
+
+	if (tgtclass != thisclass) {
+		ancestor = hasho_find(&thisclass->ancestors, tgtclass);
+		if (ancestor == NULL)
+			return next;
+		if (ancestor->parent->is_virtual)
+			thistext = "this->";
+		else
+			thistext = "&this->";
+	} else {
+		thistext = "this";
+		ancestor = NULL;
+	}
+
+	next = skip_whitespace(parser, next);
+	if (*next != '(')
+		return next;
+
+	thispos = next + 1;
+	afterpos = addinsert(parser, NULL, thispos, thistext, thispos);
+	if (ancestor)
+		afterpos = addinsert(parser, afterpos, thispos, ancestor->path, thispos);
+	if (member->paramstext[0] != ')')
+		addinsert(parser, afterpos, thispos, ", ", thispos);
+
+	*retparams = &member->params;
+	return next;
 }
 
 static void parse_typedef(struct parser *parser, char *declend)
@@ -2648,13 +2742,17 @@ static void parse_function(struct parser *parser, char *next)
 						expr->class, expr->pointerlevel, name, next,
 						expr, &targetparams[parenlevel].params);
 				break;
+			case ACCESSINHERITED:
+				next = access_inherited(parser, class, immdecl.class,
+					name, next, &targetparams[parenlevel].params);
+				break;
 			default:
 				/* maybe it's a local (stack) variable? */
 				tgtparams = &targetparams[parenlevel].params;
 				if (find_local_e_class(parser, name, next,
 						&immdecl, tgtparams) >= 0)
 					break;
-				/* maybe it's a member field? */
+				/* maybe it's a member field? "this" has pointerlevel 1 */
 				member = parse_member(parser, NULL, NULL,
 						class, 1, name, next, &immdecl, tgtparams);
 				if (member != NULL) {
@@ -2699,7 +2797,7 @@ static void parse_function(struct parser *parser, char *next)
 						decl.class = NULL;
 						nextstate = CASTVAR;
 						break;
-					} else {
+					} else if (*next != ':' || next[1] != ':') {
 						/* grammar error, ignore */
 						decl.class = NULL;
 					}
@@ -2844,6 +2942,25 @@ static void parse_function(struct parser *parser, char *next)
 			exprend = curr;
 			numwords--;    /* for declaration detection, merge x->y words */
 			curr++;
+		} else if (*curr == ':' && curr[1] == ':') {
+			if (member && member->is_constructor) {
+				immdecl.class = member->definition;
+				immdecl.pointerlevel = 1;
+				/* parent constructor call already inserted class_ */
+				parser->inserts_arr.num--;
+				goto accessinherited;
+			} else if (decl.class) {
+				immdecl = decl;
+				decl.class = NULL;
+			  accessinherited:
+				/* convert "class::func" to "class_func" */
+				next = curr + 2;
+				addinsert(parser, NULL, curr, "_", next);
+				state = ACCESSINHERITED;
+				numwords--;    /* for declaration detection, merge x->y words */
+			} else {
+				pr_err(curr, "unexpected '::' encountered");
+			}
 		} else if (*curr == ';') {
 			parser->inserts = &parser->inserts_arr;
 			print_inserts(parser, parser->inserts);
@@ -2871,6 +2988,7 @@ static void parse_function(struct parser *parser, char *next)
 			state = FINDVAR;
 
 		/* advance for most of the operator/separator cases */
+		member = NULL;
 		if (next <= curr)
 			next = curr+1;
 	}
@@ -2902,13 +3020,8 @@ static void print_root_constructor(struct parser *parser, struct class *class)
 		return;
 
 	rootclass = class->rootclass ? &class->rootclass->class : class;
-	if (class->root_constructor->params.num) {
-		sep_or_end = ", ";
-		paramstext = class->root_constructor->paramstext;
-	} else {
-		sep_or_end = "";
-		paramstext = ")";
-	}
+	paramstext = class->root_constructor->paramstext;
+	sep_or_end = paramstext[0] != ')' ? ", " : "";
 	/* root constructor function signature */
 	outprintf(parser, "\nvoid %s_%s_root(struct %s *this%s%s\n{\n",
 		class->name, class->name, rootclass->name, sep_or_end, paramstext);

@@ -107,6 +107,7 @@ struct class {
 	struct rootclass *rootclass; /* root class for missing virtual base(s), if any */
 	struct hash_entry node;
 	unsigned num_parents;        /* number of direct parent classes */
+	char is_abstract;            /* has abstract virtual methods */
 	char is_interface;
 	char is_implemented;         /* have seen class implementation */
 	char void_constructor;       /* constructor has return type void (can't fail) */
@@ -1347,7 +1348,7 @@ struct classptr parse_type(struct parser *parser, char *pos, char **retnext)
 		if (strprefixcmp("struct ", pos)) {
 			name = skip_whitespace(parser, pos + 7);  /* "struct " */
 			next = skip_word(name);
-			decl.class = find_class_e(parser, pos, next);
+			decl.class = find_class_e(parser, name, next);
 			decl.pointerlevel = 0;
 			break;
 		} else {
@@ -1367,6 +1368,15 @@ struct classptr parse_type(struct parser *parser, char *pos, char **retnext)
 		decl.pointerlevel++;
 	*retnext = next;
 	return decl;
+}
+
+static int is_abstract(struct parser *parser, char **pos)
+{
+	*pos = skip_whitespace(parser, *pos + 1);
+	if (**pos != '0')
+		return 0;
+	*pos = skip_whitespace(parser, *pos + 1);
+	return **pos == ';';
 }
 
 static struct member *inheritmember(struct parser *parser, char *parsepos,
@@ -1710,6 +1720,9 @@ static void print_root_classes(struct parser *parser, struct class *class)
 	struct class *parentclass, *rootclass;
 	struct parent *parent;
 	char *name;
+
+	if (class->is_abstract)
+		return;
 
 	rootclass = NULL;
 	hasho_foreach(entry, &class->ancestors) {
@@ -2070,9 +2083,17 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		if (*params == '(') {
 			/* scan forward, once, to prevent lineno mistakes */
 			params = skip_whitespace(parser, params+1);
-			declend = scan_token(parser, params, "/\n;");
+			declend = scan_token(parser, params, "/\n=;");
 			if (declend == NULL)
 				return NULL;
+			if (*declend == '=') {
+ 				if (is_abstract(parser, &declend)) {
+					class->is_abstract = 1;
+				} else {
+					pr_err(declend, "expected ';' after declaration");
+					declend = scan_token(parser, declend, "/\n;");
+				}
+			}
 		} else
 			params = NULL;
 
@@ -2125,15 +2146,21 @@ static struct class *parse_struct(struct parser *parser, char *next)
 				pr_err(params, "no parameters allowed for override");
 		} else {
 			retclassptr = parse_type(parser, declbegin, &retnext);
-			addmember(parser, class, &retclassptr, declbegin, retend, membername,
-				nameend, params, memberprops);
+			if (retclassptr.pointerlevel == 0
+					&& retclassptr.class && retclassptr.class->is_abstract) {
+				pr_err(membername, "cannot instantiate abstract "
+					"class %s", retclassptr.class->name);
+			} else {
+				addmember(parser, class, &retclassptr, declbegin, retend,
+					membername, nameend, params, memberprops);
+			}
 		}
 
 		declbegin = NULL;
 	}
 
 	/* add root constructor if needed and user did not define one */
-	if (class->need_root_constructor && !class->root_constructor) {
+	if (!class->is_abstract && class->need_root_constructor && !class->root_constructor) {
 		/* copy user's constructor signature if defined */
 		struct memberprops constructorprops = {0,};
 		char namebuf[128];
@@ -2158,7 +2185,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	}
 
 	/* if we don't need a root constructor, then use the normal constructor */
-	if (!class->root_constructor && class->constructor) {
+	if (!class->is_abstract && !class->root_constructor && class->constructor) {
 		class->root_constructor = class->constructor;
 		class->void_root_constructor = class->void_constructor;
 	}
@@ -2728,11 +2755,16 @@ static void parse_function(struct parser *parser, char *next)
 			case DECLVAR:
 				declvar = addvariable(parser, blocklevel, &decl,
 					exprdecl[0].pointerlevel, name, next, NULL, NULL);
-				if (exprdecl[0].pointerlevel == 0 && decl.pointerlevel == 0 &&
-						decl.class && decl.class->root_constructor) {
-					nextstate = CONSTRUCT;
-					initializer = addinitializer(parser,
-						decl.class, declvar->name, next);
+				if (exprdecl[0].pointerlevel == 0 && decl.pointerlevel == 0
+						&& decl.class) {
+					if (decl.class->is_abstract) {
+						pr_err(name, "cannot instantiate "
+							"abstract class %s", decl.class->name);
+					} else if (decl.class->root_constructor) {
+						nextstate = CONSTRUCT;
+						initializer = addinitializer(parser,
+							decl.class, declvar->name, next);
+					}
 				}
 				break;
 			case ACCESSMEMBER:
@@ -3088,7 +3120,7 @@ static void print_vmts(struct parser *parser)
 	unsigned i, j;
 
 	hash_foreach(class, &parser->classes) {
-		if (!class->is_implemented)
+		if (class->is_abstract || !class->is_implemented)
 			continue;
 
 		for (i = 0; i < class->vmts.num; i++) {

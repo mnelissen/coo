@@ -35,6 +35,7 @@ coo_inline void A_vmt_vfunc_a(struct A *this, int a2)
 struct B {
 	struct A A;
 	int b1;
+	struct A a_local;
 };
 
 extern struct B_vmt {
@@ -44,13 +45,14 @@ extern struct B_vmt {
 
 void B_vfunc_a(struct B *this, int a2);
 void B_vfunc_b(struct B *this, int b2);
+void B_B(struct B *this);
 void B_B_root(struct B *this);
 coo_inline void B_vmt_vfunc_b(struct B *this, int b2)
 {
 	((struct B_vmt*)this->A.vmt)->vfunc_b(this, b2);
 }
 
-#line 16
+#line 18
 struct C {
 	struct A *A;
 	int c1;
@@ -78,7 +80,7 @@ coo_inline void C_vmt_vfunc_c(struct C *this, int c2)
 	((struct C_vmt*)this->vmt)->vfunc_c(this, c2);
 }
 
-#line 22
+#line 24
 struct D {
 	struct B B;
 	struct C C;
@@ -106,7 +108,7 @@ coo_inline void D_vmt_vfunc_d(struct D *this, struct A* a, struct B *b)
 	((struct D_vmt*)this->B.A.vmt)->vfunc_d(this, a, b);
 }
 
-#line 31
+#line 33
 struct E {
 	struct D D;
 	int e1;
@@ -121,7 +123,7 @@ extern struct E_vmt {
 void E_vfunc_b(struct E *this, int b2);
 void E_vfunc_d(struct E *this, struct A* a, struct B *b);
 void E_E_root(struct E *this);
-#line 37
+#line 39
 static void C_test_c(struct C *this)
 {
 	printf("%d %d\n", this->A->a1, this->c1);
@@ -173,6 +175,12 @@ void A_vfunc_a(struct A *this, int arg)
 	printf("A::vfunc(%d), a1=%d\n", arg, this->a1);
 }
 
+void B_B(struct B *this)
+{
+	A_A(&this->A);
+	A_A_root(&this->a_local);
+}
+
 void B_vfunc_a(struct B *this, int arg)
 {
 	printf("B::vfunc_a(%d), a1=%d, b1=%d\n", arg, this->A.a1, this->b1);
@@ -218,7 +226,7 @@ void D_vfunc_d(struct D *this, struct A *a, struct B *b)
 void D_D(struct D *this, struct A *a)
 {
 	this->B.b1 = -5;
-	A_A(&this->B.A);
+	B_B(&this->B);
 }
 
 static void E_E(struct E *this)
@@ -248,14 +256,14 @@ int main(int argc, char **argv)
 	struct D d; int db1;
 	struct E e;
 
-#line 155
+#line 163
 	A_A_root(&a); A_A_root(&a_a);
 	aa1 = a.a1;
 	B_B_root(&b);
 	C_C_root(&c);
 	D_D_root(&d, &(&c)->A); db1 = d.B.b1;
 	E_E_root(&e);
-#line 162
+#line 170
 	a.a1 = 10;
 	A_vmt_vfunc_a(&a, 11);
 
@@ -332,6 +340,7 @@ struct B_vmt B_vmt = {
 void B_B_root(struct B *this)
 {
 	this->A.vmt = &B_vmt;
+	B_B(this);
 }
 
 struct A_vmt A_vmt = {

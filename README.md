@@ -128,7 +128,7 @@ that the method is not overridden anyway.
 * add syntax "new C" to dynamically allocate class C on heap
 * add syntax to zero-initialize a class automatically
 * add destructors, plus call them for stack variables
-* check whether literal class variables all initialized in constructor
+* check whether all virtual base classes constructed in custom root constructor
 * print line pragmas of output file if purely generated (e.g. vmt wrappers)
 
 ## License

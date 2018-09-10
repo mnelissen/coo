@@ -105,8 +105,9 @@ struct class {
 	struct member *root_constructor;  /* root constructor defined for this class */
 	struct class *missing_root;  /* missing root constructor because of non-void ... */
 	struct rootclass *rootclass; /* root class for missing virtual base(s), if any */
-	struct hash_entry node;
-	unsigned num_parents;        /* number of direct parent classes */
+	struct hash_entry node;      /* node in parser.classes hash */
+	unsigned num_parent_constr;  /* number of parent constructors */
+	unsigned num_init_vars;      /* number of members needing root construction call */
 	char is_abstract;            /* has abstract virtual methods */
 	char is_interface;
 	char is_implemented;         /* have seen class implementation */
@@ -202,6 +203,7 @@ struct insert {   /* an insert, to insert some text in the output */
 	char *flush_until;   /* flush output until here (expression start) */
 	char *insert_text;   /* text to insert: e.g. 'this->' or 'vt->' */
 	char *continue_at;   /* where to continue writing (perhaps skip something) */
+	int continue_after;  /* later-insert before or after this insert? */
 };
 
 struct initializer {
@@ -1179,44 +1181,53 @@ static struct variable *addvariable(struct parser *parser, unsigned blocklevel,
 	return variable;
 }
 
-static struct insert **addinsert(struct parser *parser, struct insert **after_pos,
-		char *flush_until, char *insert_text, char *continue_at)
+/* compatible with struct insert.continue_after */
+enum insert_continue { INSERT_BEFORE, CONTINUE_AFTER };
+
+static int addinsert(struct parser *parser, int insert_index,
+		char *flush_until, char *insert_text, char *continue_at,
+		enum insert_continue insert_continue)
 {
-	struct insert *insert, **end_pos;
+	struct insert *insert, **before_pos, **end_pos;
 
 	if (grow_dynarr(parser->inserts) < 0)
-		return NULL;
+		return -1;
 
 	end_pos = (struct insert **)&parser->inserts->mem[parser->inserts->num];
 	insert = *end_pos;
 	if (!insert) {
 		insert = calloc(1, sizeof(*insert));
 		if (insert == NULL)
-			return NULL;
+			return -1;
 		*end_pos = insert;
 	}
 
 	insert->flush_until = flush_until;
 	insert->insert_text = insert_text;
 	insert->continue_at = continue_at;
+	insert->continue_after = insert_continue;
 	parser->inserts->num++;
-	if (!after_pos) {
+	if (insert_index < 0) {
 		/* check flush ordering to be incremental */
-		for (after_pos = end_pos - 1;; after_pos--) {
-			if ((void**)after_pos < parser->inserts->mem)
+		for (before_pos = end_pos;; before_pos--) {
+			if ((void**)before_pos == parser->inserts->mem)
 				break;
-			/* add new inserts after existing (so stop if equal) */
-			if ((*after_pos)->flush_until <= flush_until)
+			if (before_pos[-1]->continue_at < flush_until)
+				break;
+			if (before_pos[-1]->continue_at == flush_until
+					&& before_pos[-1]->continue_after)
 				break;
 		}
+	} else {
+		before_pos = (struct insert **)&parser->inserts->mem[insert_index];
 	}
 
-	after_pos++;
-	if (after_pos < end_pos) {
-		memmove(after_pos+1, after_pos, (char*)end_pos-(char*)after_pos);
-		*after_pos = insert;
+	if (before_pos < end_pos) {
+		memmove(before_pos+1, before_pos, (char*)end_pos-(char*)before_pos);
+		*before_pos = insert;
 	}
-	return after_pos;
+	/* return index of next entry to insert before */
+	return (void**)before_pos + 1 - parser->inserts->mem;
 }
 
 static void addinsert_implicit_struct(struct parser *parser,
@@ -1227,7 +1238,7 @@ static void addinsert_implicit_struct(struct parser *parser,
 	if (!classtype->implicit)
 		return;
 
-	addinsert(parser, NULL, position, "struct ", position);
+	addinsert(parser, -1, position, "struct ", position, INSERT_BEFORE);
 }
 
 static struct initializer *addinitializer(struct parser *parser,
@@ -1606,11 +1617,15 @@ static void import_parent(struct parser *parser, char *parsepos,
 	for (i = 0; i < parentmembers->num; i++) {
 		parentmember = parentmembers->mem[i];
 		/* hide grand-parent constructors behind parent constructor */
-		if (parentmember->parent_constructor && class->constructor)
+		if (parentmember->parent_constructor && parentclass->constructor)
 			continue;
 		/* skip root constructors, they are specific for their own class */
 		if (parentmember->is_root_constructor)
 			continue;
+		/* count parent constructors to be called, skip constructors for virtual
+		   base classes, those are to be called from root constructor */
+		class->num_parent_constr +=
+			parentmember->is_constructor && !parentmember->props.from_virtual;
 		origin = parentmember->origin;
 		if (origin == ignoreorigin)
 			goto merge;
@@ -1640,7 +1655,6 @@ static void import_parent(struct parser *parser, char *parsepos,
 	}
 
 	/* only add class after origin checks */
-	class->num_parents++;
 	if (grow_dynarr(&parentclass->descendants) < 0)
 		return;
 
@@ -1913,7 +1927,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	struct classptr decl, retclassptr;
 	char *declbegin, *retend, *membername, *nameend, *params, *declend, *nextdecl;
 	char *classname, *classnameend, *parentname, *retnext, *prevdeclend, *prevnext;
-	int level, is_typedef, parent_primary, parent_virtual;
+	int level, is_typedef, parent_primary, parent_virtual, is_lit_var;
 	int first_virtual_warn, first_vmt_warn, empty_line;
 	struct classtype *parentclasstype;
 	struct parent *parent, *firstparent;
@@ -2146,13 +2160,15 @@ static struct class *parse_struct(struct parser *parser, char *next)
 				pr_err(params, "no parameters allowed for override");
 		} else {
 			retclassptr = parse_type(parser, declbegin, &retnext);
-			if (retclassptr.pointerlevel == 0
-					&& retclassptr.class && retclassptr.class->is_abstract) {
+			is_lit_var = retclassptr.pointerlevel == 0 && retclassptr.class;
+			if (is_lit_var && retclassptr.class->is_abstract) {
 				pr_err(membername, "cannot instantiate abstract "
 					"class %s", retclassptr.class->name);
 			} else {
-				addmember(parser, class, &retclassptr, declbegin, retend,
-					membername, nameend, params, memberprops);
+				member = addmember(parser, class, &retclassptr, declbegin,
+					retend, membername, nameend, params, memberprops);
+				if (member && is_lit_var && retclassptr.class->root_constructor)
+					class->num_init_vars++;
 			}
 		}
 
@@ -2192,8 +2208,13 @@ static struct class *parse_struct(struct parser *parser, char *next)
 
 	/* if we don't have a constructor, then mark it void to avoid 'must define'
 	   errors later on in other classes trying to initiaize this one */
-	if (!class->constructor)
+	if (!class->constructor) {
 		class->void_constructor = 1;
+		/* class-literal members need their constructor called, and we
+		   do not auto-generate the constructor, require it from user */
+		if (class->num_init_vars)
+			pr_err(next, "must define constructor, for class-literal members");
+	}
 
 	/* check if multiple parents override same member, without final override */
 	if (class->has_duplicates) {
@@ -2252,14 +2273,14 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	return class;
 }
 
-static struct member *parse_member(struct parser *parser, char *exprstart, char *exprend,
-	struct class *class, int pointerlevel, char *name, char *nameend,
-	struct classptr *retclassptr, struct dynarr **retparams)
+static struct member *parse_member(struct parser *parser,
+	char *exprstart, char *exprend, struct class *class, int pointerlevel,
+	char *name, char *nameend, struct classptr *retclassptr, struct dynarr **retparams)
 {
 	struct member *member;
-	struct insert **after_pos = NULL;
 	char *args, *flush_until, *insert_text, *continue_at;
-	int add_this;
+	enum insert_continue insert_continue;
+	int add_this, insert_index = -1;
 
 	if (class == NULL)
 		return NULL;
@@ -2272,8 +2293,8 @@ static struct member *parse_member(struct parser *parser, char *exprstart, char 
 	}
 
 	if (member->funcinsert)
-		after_pos = addinsert(parser, after_pos,
-			exprstart ?: name, member->funcinsert, name);
+		insert_index = addinsert(parser, insert_index,
+			exprstart ?: name, member->funcinsert, name, INSERT_BEFORE);
 
 	continue_at = NULL;
 	add_this = !exprstart && !member->props.is_static;
@@ -2284,14 +2305,17 @@ static struct member *parse_member(struct parser *parser, char *exprstart, char 
 			goto out;
 
 		continue_at = ++args;
+		insert_continue = CONTINUE_AFTER;
 		if (add_this) {
 			flush_until = args;
 			if (member->parentname) {
-				after_pos = addinsert(parser, after_pos, args,
-					member->parent_virtual ? "this->" : "&this->", args);
+				insert_index = addinsert(parser, insert_index, args,
+					member->parent_virtual ? "this->" : "&this->",
+					args, CONTINUE_AFTER);
 				if (*args != ')') {
-					after_pos = addinsert(parser, after_pos,
-						args, member->parentname, args);
+					insert_index = addinsert(parser, insert_index,
+						args, member->parentname, args,
+						CONTINUE_AFTER);
 					insert_text = ", ";
 				} else
 					insert_text = member->parentname;
@@ -2312,20 +2336,21 @@ static struct member *parse_member(struct parser *parser, char *exprstart, char 
 				   we need to take address:
 				   (1) if plain (stack) variable as is
 				   (2) or taking substruct which is a virtual member */
-				addinsert(parser, after_pos, args,
+				addinsert(parser, insert_index, args,
 					( member->parentname && !member->parent_virtual) ||
 					(!member->parentname && pointerlevel == 0)
-					? "&" : "", exprstart);
+					? "&" : "", exprstart, CONTINUE_AFTER);
 				/* continue at end */
-				after_pos = (struct insert **)
-					&parser->inserts->mem[parser->inserts->num];
+				insert_index = parser->inserts->num;
 				if (member->parentname) {
-					after_pos = addinsert(parser, after_pos,
-						exprend, pointerlevel ? "->" : ".", args);
+					insert_index = addinsert(parser, insert_index,
+						exprend, pointerlevel ? "->" : ".",
+						args, CONTINUE_AFTER);
 					/* reuse empty insert_text if possible */
 					if (insert_text[0] != 0)
-						after_pos = addinsert(parser, after_pos,
-							args, member->parentname, args);
+						insert_index = addinsert(parser, insert_index,
+							args, member->parentname,
+							args, CONTINUE_AFTER);
 					else
 						insert_text = member->parentname;
 					flush_until = args;
@@ -2338,18 +2363,22 @@ static struct member *parse_member(struct parser *parser, char *exprstart, char 
 		flush_until = name;
 		continue_at = name;
 		insert_text = "this->";
+		insert_continue = INSERT_BEFORE;
 		if (member->nameinsert) {
-			after_pos = addinsert(parser, after_pos, name, insert_text, name);
+			insert_index = addinsert(parser, insert_index,
+				name, insert_text, name, INSERT_BEFORE);
 			insert_text = member->nameinsert;
 		}
 	} else if (member->nameinsert) {
 		flush_until = name;
 		continue_at = name;
 		insert_text = member->nameinsert;
+		insert_continue = CONTINUE_AFTER;
 	}
 
 	if (continue_at)
-		addinsert(parser, after_pos, flush_until, insert_text, continue_at);
+		addinsert(parser, insert_index,
+			flush_until, insert_text, continue_at, insert_continue);
 
 out:
 	*retclassptr = member->retclassptr;
@@ -2362,8 +2391,8 @@ static char *access_inherited(struct parser *parser, struct class *thisclass,
 {
 	struct member *member;
 	struct ancestor *ancestor;
-	struct insert **afterpos;
 	char *thistext, *thispos;
+	int insert_index;
 
 	member = find_member_e(thisclass, name, next);
 	if (!member)
@@ -2387,11 +2416,12 @@ static char *access_inherited(struct parser *parser, struct class *thisclass,
 		return next;
 
 	thispos = next + 1;
-	afterpos = addinsert(parser, NULL, thispos, thistext, thispos);
+	insert_index = addinsert(parser, -1, thispos, thistext, thispos, INSERT_BEFORE);
 	if (ancestor)
-		afterpos = addinsert(parser, afterpos, thispos, ancestor->path, thispos);
+		insert_index = addinsert(parser, insert_index,
+			thispos, ancestor->path, thispos, INSERT_BEFORE);
 	if (member->paramstext[0] != ')')
-		addinsert(parser, afterpos, thispos, ", ", thispos);
+		addinsert(parser, insert_index, thispos, ", ", thispos, INSERT_BEFORE);
 
 	*retparams = &member->params;
 	return next;
@@ -2498,7 +2528,7 @@ static void accessancestor(struct parser *parser,
 		struct classptr *target, struct classptr *expr)
 {
 	struct ancestor *ancestor;
-	struct insert **afterpos = NULL;
+	int insert_index = -1;
 	char *pre, *post;
 
 	ancestor = hasho_find(&expr->class->ancestors, target->class);
@@ -2514,9 +2544,10 @@ static void accessancestor(struct parser *parser,
 		post = expr->pointerlevel ? "->" : ".";
 	}
 	if (pre)
-		afterpos = addinsert(parser, afterpos, exprstart, pre, exprstart);
-	afterpos = addinsert(parser, afterpos, end, post, end);
-	addinsert(parser, afterpos, end, ancestor->path, end);
+		insert_index = addinsert(parser, insert_index,
+			exprstart, pre, exprstart, INSERT_BEFORE);
+	insert_index = addinsert(parser, insert_index, end, post, end, INSERT_BEFORE);
+	addinsert(parser, insert_index, end, ancestor->path, end, INSERT_BEFORE);
 }
 
 struct paramstate {
@@ -2546,7 +2577,7 @@ static void parse_function(struct parser *parser, char *next)
 	struct paramstate targetparams[MAX_PAREN_LEVELS];
 	struct dynarr **tgtparams, *constr_params;
 	struct classtype *classtype;
-	struct member *member;
+	struct member *member, *submember;
 	struct variable *declvar;
 	struct initializer *initializer;
 	struct ancestor *this_ancestor;
@@ -2557,8 +2588,8 @@ static void parse_function(struct parser *parser, char *next)
 	enum parse_funcvar_state funcvarstate;
 	enum parse_state state, nextstate;
 	int blocklevel, parenlevel, seqparen, numwords;
-	int is_constructor, num_constr_called, parents_inited;
-	unsigned i;
+	int is_constructor, num_constr_called;
+	unsigned i, num_constr;
 
 	funcname = NULL, classname = next;
 	for (; classname > parser->pf.pos && !isspace(*(classname-1)); classname--) {
@@ -2569,7 +2600,7 @@ static void parse_function(struct parser *parser, char *next)
 		}
 	}
 
-	is_constructor = num_constr_called = parents_inited = 0;
+	is_constructor = num_constr_called = num_constr = 0;
 	params = ++next;  /* advance after '(' */
 	next = param0 = skip_whitespace(parser, params);
 
@@ -2633,7 +2664,8 @@ static void parse_function(struct parser *parser, char *next)
 			addvariable(parser, 0, &decl, 0, name, nameend, NULL, NULL);
 			/* no parents means all are initialized */
 			is_constructor = member->is_constructor;
-			parents_inited = is_constructor && class->num_parents == 0;
+			num_constr = is_constructor
+				* (class->num_parent_constr + class->num_init_vars);
 		} else {
 			pr_err(classname, "class '%s' not declared", classname);
 		}
@@ -2769,10 +2801,26 @@ static void parse_function(struct parser *parser, char *next)
 				break;
 			case ACCESSMEMBER:
 				expr = immdecl.class ? &immdecl : &exprdecl[parenlevel];
-				if (expr->pointerlevel <= 1)
-					parse_member(parser, memberstart[parenlevel], exprend,
-						expr->class, expr->pointerlevel, name, next,
-						expr, &targetparams[parenlevel].params);
+				if (expr->pointerlevel <= 1) {
+					submember = parse_member(parser,
+						memberstart[parenlevel], exprend, expr->class,
+						expr->pointerlevel, name, next, expr,
+						&targetparams[parenlevel].params);
+					/* to check all literal class variables initialized */
+					if (is_constructor && submember
+							&& submember->is_root_constructor
+							&& submember->retclassptr.
+								pointerlevel == 0) {
+						if (!member->constructor_called) {
+							num_constr_called++;
+							member->constructor_called = 1;
+						} else {
+							pr_err(memberstart[parenlevel],
+								"duplicate call to member %s "
+								"root constructor", member->name);
+						}
+					}
+				}
 				break;
 			case ACCESSINHERITED:
 				next = access_inherited(parser, class, immdecl.class,
@@ -2792,8 +2840,6 @@ static void parse_function(struct parser *parser, char *next)
 						if (!member->constructor_called) {
 							num_constr_called++;
 							member->constructor_called = 1;
-							if (num_constr_called == class->num_parents)
-								parents_inited = 1;
 						} else {
 							pr_err(name, "duplicate call to parent "
 								"constructor %s", member->name);
@@ -2976,6 +3022,7 @@ static void parse_function(struct parser *parser, char *next)
 			curr++;
 		} else if (*curr == ':' && curr[1] == ':') {
 			if (member && member->is_constructor) {
+				/* inserting "this", has pointerlevel 1 */
 				immdecl.class = member->definition;
 				immdecl.pointerlevel = 1;
 				/* parent constructor call already inserted class_ */
@@ -2987,7 +3034,7 @@ static void parse_function(struct parser *parser, char *next)
 			  accessinherited:
 				/* convert "class::func" to "class_func" */
 				next = curr + 2;
-				addinsert(parser, NULL, curr, "_", next);
+				addinsert(parser, -1, curr, "_", next, CONTINUE_AFTER);
 				state = ACCESSINHERITED;
 				numwords--;    /* for declaration detection, merge x->y words */
 			} else {
@@ -2999,6 +3046,7 @@ static void parse_function(struct parser *parser, char *next)
 			immdecl.class = NULL;
 			decl.class = NULL;
 			declvar = NULL;
+			member = NULL;
 			numwords = 0;
 			seqparen = 0;
 			parenlevel = 0;
@@ -3016,21 +3064,30 @@ static void parse_function(struct parser *parser, char *next)
 					immdecl.class = NULL;
 				}
 			}
+			member = NULL;
 		} else
 			state = FINDVAR;
 
 		/* advance for most of the operator/separator cases */
-		member = NULL;
 		if (next <= curr)
 			next = curr+1;
 	}
 
-	if (is_constructor && !parents_inited) {
+	if (num_constr_called < num_constr) {
 		for (i = 0; i < class->members_arr.num; i++) {
 			member = class->members_arr.mem[i];
-			if (member->parent_constructor && !member->constructor_called) {
+			if (member->constructor_called)
+				continue;
+			if (member->parent_constructor) {
 				pr_err(curr, "missing parent constructor "
 					"%s call", member->name);
+			} else if (!member->props.is_function && member->retclassptr.class
+					&& member->retclassptr.pointerlevel == 0
+					&& member->origin == class
+					&& member->retclassptr.class->root_constructor) {
+				pr_err(curr, "missing member root constructor "
+					"call %s.%s_root()", member->name,
+					member->retclassptr.class->name);
 			}
 		}
 	}

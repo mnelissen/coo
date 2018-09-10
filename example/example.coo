@@ -11,6 +11,8 @@ struct B : A {
 	override vfunc_a;
 	virtual void vfunc_b(int b2);
 	int b1;
+	A a_local;
+	void B();
 };
 
 struct C : virtual A {
@@ -85,6 +87,12 @@ void A::vfunc_a(int arg)
 	printf("A::vfunc(%d), a1=%d\n", arg, a1);
 }
 
+void B::B()
+{
+	A();
+	a_local.A_root();
+}
+
 void B::vfunc_a(int arg)
 {
 	printf("B::vfunc_a(%d), a1=%d, b1=%d\n", arg, a1, b1);
@@ -129,7 +137,7 @@ void D::vfunc_d(A *a, B *b)
 void D::D(A *a)
 {
 	b1 = -5;
-	A();
+	B();
 }
 
 void E::E(void)

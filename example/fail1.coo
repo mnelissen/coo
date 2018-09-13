@@ -1,0 +1,30 @@
+#include <stdio.h>
+
+struct A {
+	int a1;
+	virtual void vfunc_a(int a2);
+	void A();
+} A;
+
+struct B : A {
+	override vfunc_a;
+	virtual void vfunc_b(int b2);
+	int b1;
+	A a_local;
+	void B();
+};
+
+void A::A(void)
+{
+	a1 = -1;
+}
+
+void A::vfunc_a(int arg)
+{
+	printf("A::vfunc(%d), a1=%d\n", arg, a1);
+}
+
+void B::B()
+{
+	a_local.A_root();
+}

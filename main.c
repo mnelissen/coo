@@ -298,7 +298,7 @@ static char *parser_strchrnul(struct parser *parser, char *str, int ch)
 		if (*str == ch)
 			break;
 	}
-	return (char*)str;
+	return str;
 }
 
 static char *strchrnul(char *str, int ch)

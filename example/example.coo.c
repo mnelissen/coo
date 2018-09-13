@@ -7,6 +7,7 @@ typedef struct A {
 	void *vmt;
 } A;
 
+#line 11 "example.coo.c"
 extern struct A_vmt {
 	void (*vfunc_a)(struct A *this, int a2);
 } A_vmt;
@@ -31,13 +32,14 @@ coo_inline void A_vmt_vfunc_a(struct A *this, int a2)
 	((struct A_vmt*)this->vmt)->vfunc_a(this, a2);
 }
 
-#line 10
+#line 10 "example.coo"
 struct B {
 	struct A A;
 	int b1;
 	struct A a_local;
 };
 
+#line 43 "example.coo.c"
 extern struct B_vmt {
 	void (*vfunc_a)(struct B *this, int a2);
 	void (*vfunc_b)(struct B *this, int b2);
@@ -52,13 +54,14 @@ coo_inline void B_vmt_vfunc_b(struct B *this, int b2)
 	((struct B_vmt*)this->A.vmt)->vfunc_b(this, b2);
 }
 
-#line 18
+#line 18 "example.coo"
 struct C {
 	struct A *A;
 	int c1;
 	void *vmt;
 };
 
+#line 65 "example.coo.c"
 struct C_root {
 	struct C C;
 	struct A A;
@@ -80,13 +83,14 @@ coo_inline void C_vmt_vfunc_c(struct C *this, int c2)
 	((struct C_vmt*)this->vmt)->vfunc_c(this, c2);
 }
 
-#line 24
+#line 24 "example.coo"
 struct D {
 	struct B B;
 	struct C C;
 	int d1;
 };
 
+#line 94 "example.coo.c"
 extern struct D_vmt {
 	void (*vfunc_a)(struct D *this, int a2);
 	void (*vfunc_b)(struct D *this, int b2);
@@ -108,12 +112,13 @@ coo_inline void D_vmt_vfunc_d(struct D *this, struct A* a, struct B *b)
 	((struct D_vmt*)this->B.A.vmt)->vfunc_d(this, a, b);
 }
 
-#line 33
+#line 33 "example.coo"
 struct E {
 	struct D D;
 	int e1;
 };
 
+#line 122 "example.coo.c"
 extern struct E_vmt {
 	void (*vfunc_a)(struct D *this, int a2);
 	void (*vfunc_b)(struct E *this, int b2);
@@ -123,7 +128,7 @@ extern struct E_vmt {
 void E_vfunc_b(struct E *this, int b2);
 void E_vfunc_d(struct E *this, struct A* a, struct B *b);
 void E_E_root(struct E *this);
-#line 39
+#line 39 "example.coo"
 static void C_test_c(struct C *this)
 {
 	printf("%d %d\n", this->A->a1, this->c1);
@@ -214,7 +219,6 @@ void D_vfunc_b(struct D *this, int arg)
 
 void D_vfunc_c(struct C *__this, int arg)
 {	struct D *this = container_of(__this, struct D, C);
-
 	printf("D::vfunc_c(%d), a1=%d, b1=%d c1=%d d1=%d\n", arg, this->B.A.a1, this->B.b1, this->C.c1, this->d1);
 }
 
@@ -302,6 +306,7 @@ int main(int argc, char **argv)
 	return 0;
 }
 
+#line 310 "example.coo.c"
 struct foo_vmt foo_vmt = {
 	foo_vfunc,
 };

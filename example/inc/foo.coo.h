@@ -10,6 +10,7 @@ struct foo {
 	unsigned int *z;
 };
 
+#line 14 "inc/foo.coo.h"
 extern struct foo_vmt {
 	void (*vfunc)(struct foo *this, int arg1, float *arg2);
 } foo_vmt;
@@ -38,4 +39,4 @@ coo_inline void foo_vmt_vfunc(struct foo *this, int arg1, float *arg2)
 }
 
 
-#line 17
+#line 17 "inc/foo.hoo"

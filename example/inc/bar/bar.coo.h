@@ -4,6 +4,7 @@ struct bar {
 	void *vmt;
 };
 
+#line 8 "inc/bar/bar.coo.h"
 extern struct bar_vmt {
 	void (*vbarf)(struct bar *this);
 } bar_vmt;
@@ -29,4 +30,4 @@ coo_inline void bar_vmt_vbarf(struct bar *this)
 	((struct bar_vmt*)this->vmt)->vbarf(this);
 }
 
-#line 7
+#line 7 "inc/bar/bar.hoo"

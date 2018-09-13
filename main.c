@@ -1065,6 +1065,9 @@ static void parse_parameters_to(struct parser *parser,
 
 static char is_void_params(char *params)
 {
+	params = strskip_whitespace(params);
+	if (*params == ')')
+		return 1;
 	if (strprefixcmp("void", params) == NULL)
 		return 0;
 	return *strskip_whitespace(params + 4) == ')';
@@ -2280,7 +2283,7 @@ static struct member *parse_member(struct parser *parser,
 	struct member *member;
 	char *args, *flush_until, *insert_text, *continue_at;
 	enum insert_continue insert_continue;
-	int add_this, insert_index = -1;
+	int add_this, has_arguments, insert_index = -1;
 
 	if (class == NULL)
 		return NULL;
@@ -2305,6 +2308,7 @@ static struct member *parse_member(struct parser *parser,
 			goto out;
 
 		continue_at = ++args;
+		has_arguments = *strskip_whitespace(args) != ')';
 		insert_continue = CONTINUE_AFTER;
 		if (add_this) {
 			flush_until = args;
@@ -2312,7 +2316,7 @@ static struct member *parse_member(struct parser *parser,
 				insert_index = addinsert(parser, insert_index, args,
 					member->parent_virtual ? "this->" : "&this->",
 					args, CONTINUE_AFTER);
-				if (*args != ')') {
+				if (has_arguments) {
 					insert_index = addinsert(parser, insert_index,
 						args, member->parentname, args,
 						CONTINUE_AFTER);
@@ -2320,16 +2324,10 @@ static struct member *parse_member(struct parser *parser,
 				} else
 					insert_text = member->parentname;
 			} else {
-				if (*args == ')')
-					insert_text = "this";
-				else
-					insert_text = "this, ";
+				insert_text = has_arguments ? "this, " : "this";
 			}
 		} else {
-			if (*args == ')')
-				insert_text = "";
-			else
-				insert_text = ", ";
+			insert_text = has_arguments ? ", " : "";
 			if (exprstart) {
 				/* after other->function(, need to jump to
 				   'other' expression and back to arguments
@@ -2464,7 +2462,7 @@ static void print_inserts(struct parser *parser, struct dynarr *inserts)
 
 static void print_initializers(struct parser *parser, char *position)
 {
-	char *linestart, *sep_or_end;
+	char *linestart, *params, *sep_or_end;
 	struct initializer *initializer;
 	struct class *class;
 	struct member *member;
@@ -2494,7 +2492,9 @@ static void print_initializers(struct parser *parser, char *position)
 		class = initializer->varclass;
 		if (class) {
 			if (initializer->params) {
-				sep_or_end = ", ";
+				/* print what user wrote here, might be a comment */
+				params = strskip_whitespace(initializer->params);
+				sep_or_end = *params != ')' ? ", ": "";
 				parser->pf.writepos = initializer->params;
 			} else {
 				sep_or_end = ")";
@@ -2854,11 +2854,17 @@ static void parse_function(struct parser *parser, char *next)
 				/* maybe it's a type, to declare variable, or a cast */
 				classtype = find_classtype_e(parser, name, next);
 				if (classtype != NULL) {
-					/* if we are in expression, not safe to print directly */
-					if (state == STMTSTART)
-						print_implicit_struct(parser, classtype, name);
-					else
-						addinsert_implicit_struct(parser, classtype, name);
+					/* we don't want implicit struct for class::func */
+					if (*next != ':') {
+						/* if we are in expression,
+						   not safe to print directly */
+						if (state == STMTSTART)
+							print_implicit_struct(
+								parser, classtype, name);
+						else
+							addinsert_implicit_struct(
+								parser, classtype, name);
+					}
 					decl = classtype->decl;
 				  decl_or_cast:
 					if (state == STMTSTART) {
@@ -3101,7 +3107,8 @@ static void print_root_constructor(struct parser *parser, struct class *class)
 	struct ancestor *ancestor, *literal_ancestor;
 	struct hasho_entry *entry;
 	struct class *parentclass, *rootclass;
-	char *name, *retstr, *thisname;
+	char *name, *retstr, *thisname, *sep;
+	struct member *member;
 	struct vmt *vmt;
 	unsigned i;
 
@@ -3152,6 +3159,7 @@ static void print_root_constructor(struct parser *parser, struct class *class)
 	/* class constructor call */
 	if (class->constructor) {
 		retstr = class->void_root_constructor ? "" : "return ";
+		/* no root class if no non-resolved virtual bases */
 		if (class->rootclass) {
 			thisname = "&this->";
 			name = class->name;
@@ -3163,6 +3171,31 @@ static void print_root_constructor(struct parser *parser, struct class *class)
 			class->name, class->name, thisname, name);
 		print_param_names(parser, paramstext);
 		outwrite(parser, ");\n", 3);
+	} else {
+		/* no constructor, need to call all parents here then */
+		for (i = 0; i < class->members_arr.num; i++) {
+			member = class->members_arr.mem[i];
+			if (!member->parent_constructor || member->props.from_virtual)
+				continue;
+
+			parentclass = member->origin;
+			retstr = parentclass->void_root_constructor ? "" : "if (!";
+			if (class->rootclass) {
+				name = class->name;
+				sep = ".";
+			} else {
+				name = sep = "";
+			}
+			outprintf(parser, "\t%s%s_%s(&this->%s%s%s", retstr,
+				parentclass->name, parentclass->name,
+				name, sep, member->parentname);
+			print_param_names(parser, paramstext);
+			if (member->origin->void_root_constructor)
+				retstr = ");\n";
+			else
+				retstr = "))\n\t\treturn NULL;\n";
+			outputs(parser, retstr);
+		}
 	}
 	outwrite(parser, "}\n", 2);
 }

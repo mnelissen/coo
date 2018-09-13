@@ -27,7 +27,7 @@ not available.
 
 ## Features
 
-* C compatible (any valid C program is a valid COO program)
+* C compatible, but see below (any valid C program is a valid COO program)
 * class methods
 * virtual methods
 * no runtime library required
@@ -42,6 +42,38 @@ Planned:
 * method instance pointers
 * typesafe containers
 * function overloading? (in some form)
+
+## C compatibility
+
+C compatible but following notes.
+
+### Stack variables with constructors
+
+You cannot declare function prototypes in functions that return a struct on stack
+and have a constructor. This means to construct a variable, not declare a function.
+As existing C programs never have a constructor those continue to work, but adding
+a constructor to that struct will change the meaning to construct a variable.
+Example, notice how similar the func_proto_A and var_B lines look:
+
+```
+struct A {
+  int x, y;
+  /* plain struct, no constructor here */
+};
+
+struct B {
+  int x, y;
+  void B(int a, int b);
+}
+
+int some_function(int a, int b)
+{
+  /* declare a function prototype, this still works */
+  A func_proto_A(int, int);
+  /* B has a constructor so following declares a variable to construct */
+  B var_B(a, b);
+}
+```
 
 ## Design
 
@@ -99,11 +131,12 @@ but if virtual base class constructors do not return void or take different
 arguments, then the user must define the root constructor themselves.
 
 Be careful calling virtual methods from a constructor as they will call
-up to the most descendent class implementing them, immediately. Even though
-that class' constructor might not have finished yet. On the other hand,
-this may allow some different design patterns. For this reason, COO allows
-you to call parent constructors anywhere in the constructor body, so you
-can initialize necessary member variables first (expecting a virtual call).
+up to the most descendent class implementing them, immediately. (So, even
+though that class' constructor might not have finished yet.) On the other
+hand, this may allow some different design patterns than what C++ allows.
+For this reason, COO allows you to call parent constructors anywhere in
+the constructor body, so you can initialize necessary member variables
+first (expecting a virtual call).
 
 When declaring class variables on the stack, their (root) constructor is
 called by adding the arguments between parentheses after the variable name,

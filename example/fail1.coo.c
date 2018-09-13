@@ -23,6 +23,7 @@ extern struct A_vmt {
   ((type *)((size_t)(ptr)-(size_t)(&((type *)0)->node_var)))
 #endif
 
+struct A *new_A();
 void A_vfunc_a(struct A *this, int a2);
 void A_A(struct A *this);
 void A_A_root(struct A *this);
@@ -38,12 +39,13 @@ struct B {
 	struct A a_local;
 };
 
-#line 42 "fail1.coo.c"
+#line 43 "fail1.coo.c"
 extern struct B_vmt {
 	void (*vfunc_a)(struct B *this, int a2);
 	void (*vfunc_b)(struct B *this, int b2);
 } B_vmt;
 
+struct B *new_B();
 void B_vfunc_a(struct B *this, int a2);
 void B_vfunc_b(struct B *this, int b2);
 void B_B(struct B *this);
@@ -69,7 +71,18 @@ void B_B(struct B *this)
 	A_A_root(&this->a_local);
 }
 
-#line 73 "fail1.coo.c"
+#line 75 "fail1.coo.c"
+struct B *new_B()
+{
+	struct B *this = malloc(sizeof(*this));
+	if (this == NULL) return NULL;
+	if (B_B_root(this, ) == NULL) {
+		free(this);
+		return NULL;
+	}
+	return this;
+}
+
 struct B_vmt B_vmt = {
 	B_vfunc_a,
 	B_vfunc_b,
@@ -79,6 +92,17 @@ void B_B_root(struct B *this)
 {
 	this->A.vmt = &B_vmt;
 	B_B(this);
+}
+
+struct A *new_A()
+{
+	struct A *this = malloc(sizeof(*this));
+	if (this == NULL) return NULL;
+	if (A_A_root(this, ) == NULL) {
+		free(this);
+		return NULL;
+	}
+	return this;
 }
 
 struct A_vmt A_vmt = {

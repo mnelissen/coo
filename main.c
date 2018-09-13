@@ -1215,7 +1215,7 @@ static struct variable *addvariable(struct parser *parser, unsigned blocklevel,
 }
 
 /* compatible with struct insert.continue_after */
-enum insert_continue { INSERT_BEFORE, CONTINUE_AFTER };
+enum insert_continue { CONTINUE_BEFORE, CONTINUE_AFTER };
 
 static int addinsert(struct parser *parser, int insert_index,
 		char *flush_until, char *insert_text, char *continue_at,
@@ -1271,7 +1271,7 @@ static void addinsert_implicit_struct(struct parser *parser,
 	if (!classtype->implicit)
 		return;
 
-	addinsert(parser, -1, position, "struct ", position, INSERT_BEFORE);
+	addinsert(parser, -1, position, "struct ", position, CONTINUE_BEFORE);
 }
 
 static struct initializer *addinitializer(struct parser *parser,
@@ -1944,6 +1944,13 @@ static void print_member_decls(struct parser *parser, struct class *class)
 		parser->pf.lines_coo += NUM_LINES_DEF_COO_INLINE + 1;
 	}
 
+	if (class->root_constructor) {
+		outprintf(parser, "\nstruct %s%s *new_%s(%s;", class->name,
+			class->rootclass ? "_root" : "",
+			class->name, class->root_constructor->paramstext);
+		parser->pf.lines_coo++;
+	}
+
 	for (i = 0; i < class->members_arr.num; i++) {
 		member = class->members_arr.mem[i];
 		/* don't print inherited members (that we did not override) */
@@ -2354,7 +2361,7 @@ static struct member *parse_member(struct parser *parser,
 
 	if (member->funcinsert)
 		insert_index = addinsert(parser, insert_index,
-			exprstart ?: name, member->funcinsert, name, INSERT_BEFORE);
+			exprstart ?: name, member->funcinsert, name, CONTINUE_BEFORE);
 
 	continue_at = NULL;
 	add_this = !exprstart && !member->props.is_static;
@@ -2418,10 +2425,10 @@ static struct member *parse_member(struct parser *parser,
 		flush_until = name;
 		continue_at = name;
 		insert_text = "this->";
-		insert_continue = INSERT_BEFORE;
+		insert_continue = CONTINUE_BEFORE;
 		if (member->nameinsert) {
 			insert_index = addinsert(parser, insert_index,
-				name, insert_text, name, INSERT_BEFORE);
+				name, insert_text, name, CONTINUE_BEFORE);
 			insert_text = member->nameinsert;
 		}
 	} else if (member->nameinsert) {
@@ -2471,12 +2478,12 @@ static char *access_inherited(struct parser *parser, struct class *thisclass,
 		return next;
 
 	thispos = next + 1;
-	insert_index = addinsert(parser, -1, thispos, thistext, thispos, INSERT_BEFORE);
+	insert_index = addinsert(parser, -1, thispos, thistext, thispos, CONTINUE_BEFORE);
 	if (ancestor)
 		insert_index = addinsert(parser, insert_index,
-			thispos, ancestor->path, thispos, INSERT_BEFORE);
+			thispos, ancestor->path, thispos, CONTINUE_BEFORE);
 	if (member->paramstext[0] != ')')
-		addinsert(parser, insert_index, thispos, ", ", thispos, INSERT_BEFORE);
+		addinsert(parser, insert_index, thispos, ", ", thispos, CONTINUE_BEFORE);
 
 	*retparams = &member->params;
 	return next;
@@ -2603,9 +2610,9 @@ static void accessancestor(struct parser *parser,
 	}
 	if (pre)
 		insert_index = addinsert(parser, insert_index,
-			exprstart, pre, exprstart, INSERT_BEFORE);
-	insert_index = addinsert(parser, insert_index, end, post, end, INSERT_BEFORE);
-	addinsert(parser, insert_index, end, ancestor->path, end, INSERT_BEFORE);
+			exprstart, pre, exprstart, CONTINUE_BEFORE);
+	insert_index = addinsert(parser, insert_index, end, post, end, CONTINUE_BEFORE);
+	addinsert(parser, insert_index, end, ancestor->path, end, CONTINUE_BEFORE);
 }
 
 struct paramstate {
@@ -2626,6 +2633,11 @@ static void select_next_param(struct paramstate *state, struct classptr *dest)
 
 /* state for detecting function variable: (*name)(.... */
 enum parse_funcvar_state { FV_NONE, FV_NAME, FV_PARENCLOSE };
+
+static int is_expr(enum parse_state state)
+{
+	 return state == STMTSTART || state == FINDVAR || state == EXPRUNARY;
+}
 
 static void parse_function(struct parser *parser, char *next)
 {
@@ -2820,7 +2832,24 @@ static void parse_function(struct parser *parser, char *next)
 					goto decl_or_cast;
 				}
 				continue;
-			}
+			} else if (is_expr(state) && strprefixcmp("new ", curr)) {
+				name = skip_whitespace(parser, curr + 4);  /* "new " */
+				next = skip_word(name);
+				classtype = find_classtype_e(parser, name, next);
+				if (classtype) {
+					if (!classtype->decl.pointerlevel) {
+						decl.class = classtype->decl.class;
+						decl.pointerlevel = 1;
+						immdecl = decl;
+						addinsert(parser, -1,
+							curr, "new_", name, CONTINUE_AFTER);
+						state = CONSTRUCT;
+					} else
+						pr_err(name, "'new type' cannot be pointer type");
+				} else
+					pr_err(name, "unknown class");
+				continue;
+ 			}
 
 			if (state == DECLVAR && decl.class && decl.class->rootclass
 					&& parenlevel == 0) {
@@ -2981,12 +3010,17 @@ static void parse_function(struct parser *parser, char *next)
 			if (*curr != '(' && constr_params->num) {
 				pr_err(curr, "missing call to constructor");
 				initializer = NULL;
-			} else if (!decl.class->void_root_constructor)
+			} else if (decl.pointerlevel == 0 && !decl.class->void_root_constructor)
 				pr_warn(curr, "non-void root constructor may fail");
-			if (*curr == '(' && initializer) {
-				/* skip parenthesis, need to add "this" parameter */
-				initializer->params = curr + 1;
+			if (*curr == '(') {
+				if (initializer) {
+					/* skip parenthesis, need to add "this" parameter */
+					initializer->params = curr + 1;
+				}
 				targetparams[parenlevel].params = constr_params;
+			} else if (decl.pointerlevel) {
+				/* allocation with 'new class', needs function call */
+				addinsert(parser, -1, curr, "()", curr, CONTINUE_AFTER);
 			}
 			state = FINDVAR;
 		}
@@ -3159,6 +3193,35 @@ static void parse_function(struct parser *parser, char *next)
 	parser->pf.pos = curr + 1;
 }
 
+static void print_class_alloc(struct parser *parser, struct class *class)
+{
+	struct member *rootconstr = class->root_constructor;
+	char *rootsuffix, *ifret, *callend;
+
+	if (!rootconstr)
+		return;
+
+	if (class->void_root_constructor) {
+		ifret = "";
+		callend = ");\n";
+	} else {
+		ifret = "if (";
+		callend = ") == NULL) {\n"
+			"\t\tfree(this);\n"
+			"\t\treturn NULL;\n\t}\n";
+	}
+	rootsuffix = class->rootclass ? "_root" : "";
+	outprintf(parser, "\nstruct %s%s *new_%s(%s\n"
+		"{\n\tstruct %s%s *this = malloc(sizeof(*this));\n"
+		"\tif (this == NULL) return NULL;\n"
+		"\t%s%s_%s(this",
+		class->name, rootsuffix, class->name, rootconstr->paramstext,
+		class->name, rootsuffix, ifret, class->name, rootconstr->name);
+	print_param_names(parser, rootconstr->paramstext);
+	outprintf(parser, "%s\treturn this;\n}\n", callend);
+	/* no need to count lines_coo here, end of input */
+}
+
 static void print_root_constructor(struct parser *parser, struct class *class)
 {
 	char *vmtpath, *vmtaccess, *sep_or_end, *paramstext;
@@ -3275,15 +3338,15 @@ static void print_vmts(struct parser *parser)
 		if (class->is_abstract || !class->is_implemented)
 			continue;
 
+		if (parser->pf.writepos != parser->pf.pos) {
+			flush(parser);
+			switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
+		}
+
 		for (i = 0; i < class->vmts.num; i++) {
 			vmt = class->vmts.mem[i];
 			if (!vmt->modified)
 				continue;
-
-			if (parser->pf.writepos != parser->pf.pos) {
-				flush(parser);
-				switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
-			}
 
 			rootsuffix = "";
 			if (vmt->from_virtual) {
@@ -3330,6 +3393,7 @@ static void print_vmts(struct parser *parser)
 			/* no need to count lines_coo here, end of input */
 		}
 
+		print_class_alloc(parser, class);
 		print_root_constructor(parser, class);
 	}
 }

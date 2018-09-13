@@ -158,10 +158,8 @@ that the method is not overridden anyway.
 ## TODO
 
 * recognize global variables (searched, but never any added)
-* add syntax "new C" to dynamically allocate class C on heap
 * add syntax to zero-initialize a class automatically
 * add destructors, plus call them for stack variables
-* check whether all virtual base classes constructed in custom root constructor
 
 ## License
 

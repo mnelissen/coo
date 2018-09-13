@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <foo.hoo>
 
 typedef struct A {
@@ -165,7 +166,7 @@ int main(int argc, char **argv)
 	B b;
 	C c;
 	D d(&c); int db1 = d.b1;
-	E e;
+	E e, *p_e;
 
 	a.a1 = 10;
 	a.vfunc_a(11);
@@ -198,6 +199,18 @@ int main(int argc, char **argv)
 	e.vfunc_b(56);
 	e.vfunc_c(57);
 	e.vfunc_d(&e, &e);
+
+	new E->vfunc_a(-1);
+	p_e = new E;
+	p_e->a1 = 60;
+	p_e->b1 = 61;
+	p_e->c1 = 62;
+	p_e->d1 = 63;
+	p_e->e1 = 64;
+	p_e->vfunc_a(65);
+	p_e->vfunc_b(66);
+	p_e->vfunc_c(67);
+	p_e->vfunc_d(&e, &e);
 
 	/* silence warnings */
 	printf("%d %d\n", aa1, db1);

@@ -27,6 +27,7 @@ extern struct foo_vmt {
   ((type *)((size_t)(ptr)-(size_t)(&((type *)0)->node_var)))
 #endif
 
+struct foo *new_foo();
 char foo_func(struct foo *this);
 float foo_func1(struct foo *this, void *p);
 int *foo_func2(struct foo *this, char a, int b);

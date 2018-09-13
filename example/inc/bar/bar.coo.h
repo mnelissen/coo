@@ -21,6 +21,7 @@ extern struct bar_vmt {
   ((type *)((size_t)(ptr)-(size_t)(&((type *)0)->node_var)))
 #endif
 
+struct bar *new_bar();
 int *bar_barf(struct bar *this, char a, int b);
 void *bar_get_bar(struct bar *this, int a);
 void bar_vbarf(struct bar *this);

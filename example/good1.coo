@@ -1,0 +1,53 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+struct A {
+	virtual void vfunc_a(int arg) = 0;
+};
+
+struct B : A {
+	override vfunc_a;
+	virtual void vfunc_b(int arg);
+};
+
+struct C : A {
+	override vfunc_a;
+};
+
+struct D : B, C {
+	void D();
+	override vfunc_a;
+};
+
+void A::vfunc_a(int arg)
+{
+	printf("A::vfunc_a(%d)\n", arg);
+}
+
+void B::vfunc_a(int arg)
+{
+	printf("B::vfunc_a(%d)\n", arg);
+}
+
+void B::vfunc_b(int arg)
+{
+	printf("B::vfunc_b(%d)\n", arg);
+}
+
+void D::vfunc_a(int arg)
+{
+	printf("D::vfunc_a(%d)\n", arg);
+}
+
+void D::D(void)
+{
+}
+
+int main(void)
+{
+	D *d = new D;
+	d->vfunc_a(3);
+	d->vfunc_b(4);
+	return 0;
+}
+

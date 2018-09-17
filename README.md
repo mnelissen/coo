@@ -30,8 +30,8 @@ not available.
 * C compatible, but see below (any valid C program is a valid COO program)
 * class methods
 * virtual methods
+* inheritance
 * no runtime library required
-* inheritance (add more tests)
 
 Planned:
 
@@ -55,7 +55,7 @@ As existing C programs never have a constructor those continue to work, but addi
 a constructor to that struct will change the meaning to construct a variable.
 Example, notice how similar the func_proto_A and var_B lines look:
 
-```
+``` c
 struct A {
   int x, y;
   /* plain struct, no constructor here */
@@ -83,24 +83,12 @@ struct types (calls them classes), and declared variables of these class types.
 Tokens are always single characters. It finds the ';', '{', etc delimiters and
 acts from there.
 
-### Functionality
+Class functions are translated to C functions with class name and function
+name separated with an underscore.
 
-* recognize function declarations in struct definitions
-  * declare as global functions with classname prepended with underscore
-* recognize "virtual" function declarations in struct definitions
-  * add a field called "vmt" pointing to the virtual method table
-  * define an inline function wrapper that will call via the vmt
-* recognize "class::function()" syntax to declare functions in classes
-  * adds a "this" parameter automatically
-  * recognize member variables, replace with this-\>variable
-  * recognize member functions, replace with class function call with this
-* recognize declarations of variables of struct (classes)
-  * recognize member functions, replace with class function call with that var
-* recognize #include statements and recursively parse those header files
-* recognize inheritance, add ':' after 'struct name' with names of classes
-  to be inherited.
-  * multiple inheritance is allowed, but not duplicated
-  * recognize 'virtual parentname' to declare virtual inheritance (like C++)
+Virtual functions in classes cause a field called 'vmt' to be declared. The
+virtual function themselves generate a VMT struct (table) together with wrapper
+functions to call the functions in the table.
 
 ## Include files
 
@@ -114,7 +102,110 @@ diagnostic purpose though, a commandline option '-xi' is available to filter
 what files (the ones with given extension) should be processed. If in this case
 an include file is not found, then an error _is_ printed.
 
-## Constructors
+## Classes
+
+Classes are an extension of C struct types. They can have functions defined
+in them, and these functions can be virtual. It is possible to declare
+variables of class types on the stack and also to create them dynamically
+using keyword 'new'. See also [Constructors](#Constructors).
+
+Implementing functions in classes also uses same syntax as in C++. Inside the
+class function implementation you can access member variables. E.g.:
+
+``` cpp
+struct A {
+  int x;
+  void somefunc(void);
+};
+
+void A::somefunc(void)
+{
+  printf("%d", a);
+}
+```
+
+### Inheritance
+
+Classes can inherit other classes by listing them after a colon. All
+member variable and function names have to be unique. It is not necessary
+to specify 'public' (or private etc.) when inheriting a class. The
+inheritance is always public.
+
+#### Virtual functions
+
+Function declarations can start with 'virtual' to make them virtual
+methods. These methods can be dynamically overridden by descendant classes.
+Syntax is same as in C++. See next example in [Multiple inheritance](#multiple-inheritance).
+
+Also abstract functions are recognized with the '= 0' syntax like in C++.
+This means the function is not implemented at all (different from C++),
+and no prototype for it is emitted. It is also not allowed to create
+classes that have abstract methods or do not implement all of their
+parents' abstract methods (same as in C++). Variables of these class types
+cannot be declared on the stack or created with operator new.
+
+#### Multiple inheritance
+
+Multiple inheritance is allowed, but classes that have member variables
+can only be inherited once (directly or indirectly). (But see [Virtual inheritance](#Virtual-inheritance) below.) This rule is to prevent ambiguity when
+referencing their (base) member variables in the class implementation.
+
+Classes that define only (virtual) functions can be used as an interface.
+This means they do not have any member variables defined, and therefore they
+pose no ambiguity.
+
+``` cpp
+struct Intf1 {
+  virtual void vfunc1(void);
+};
+
+struct Intf2 : Intf1 {
+  virtual void vfunc2(void);
+}
+
+struct Base {
+  int a1;
+};
+
+struct Left : Base, Intf1 {
+  int b1;
+  override vfunc1;
+};
+
+struct Right : Base {
+  int c1;
+};
+
+/* this an error */
+struct Bottom : Left, Right {
+  int bottom;
+};
+
+/* this is okay, vfunc1 implemented by Left */
+struct Left2 : Left, Intf2 {
+  int i2;
+  override vfunc2;
+}
+```
+
+#### Virtual inheritance
+
+Also virtual inheritance is supported, same as in C++. Put the keyword
+'virtual' in front of the class name to inherit from, to inherit
+virtually from it. This means that the implementation does not know the
+exact offset to this base class (it is an extra pointer indirection).
+The final class has exactly one occurance of this (virtual) base class
+in its memory space.
+
+Virtual inheritance allows the designer to inherit from a base class
+multiple times even if that base class has member variables. COO allows
+inheriting (literally, that is, non-virtually) from a base class once
+plus any number of times virtually. In this case the virtual base
+references are resolved to the one literal case. In C++ this would
+lead to two copies of that base class in the final class: one for all
+of the virtual references, and one for the literal.
+
+### Constructors
 
 A function defined in a struct that has the same name as the struct is the
 constructor. Let it return void if it cannot fail. This will allow usage as
@@ -144,7 +235,7 @@ just like in C++. E.g. suppose class C with constructor C::C(int x) then
 "C c(5);" declares a variable called "c" and calls its constructor with the
 value 5.
 
-## Call inherited functions
+### Call inherited functions
 
 In general member names and therefore function calls are unique. But when
 overriding an inherited method, it often makes sense to call the inherited
@@ -160,6 +251,7 @@ that the method is not overridden anyway.
 * recognize global variables (searched, but never any added)
 * add syntax to zero-initialize a class automatically
 * add destructors, plus call them for stack variables
+* remove class->virtual_ancestors? bad optimization
 
 ## License
 

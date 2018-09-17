@@ -1,0 +1,151 @@
+#line 1 "good1.coo"
+#include <stdio.h>
+#include <stdlib.h>
+
+struct A {
+	void *vmt;
+};
+
+#line 10 "good1.coo.c"
+extern struct A_vmt {
+	void (*vfunc_a)(struct A *this, int arg);
+} A_vmt;
+
+#ifndef coo_inline
+#ifdef _MSC_VER
+#define coo_inline __forceinline
+#else
+#define coo_inline extern inline __attribute__((always_inline)) __attribute__((gnu_inline))
+#endif
+#endif
+#ifndef container_of
+#define container_of(ptr, type, node_var) \
+  ((type *)((size_t)(ptr)-(size_t)(&((type *)0)->node_var)))
+#endif
+
+coo_inline void A_vmt_vfunc_a(struct A *this, int arg)
+{
+	((struct A_vmt*)this->vmt)->vfunc_a(this, arg);
+}
+
+#line 8 "good1.coo"
+struct B {
+	struct A A;
+};
+
+#line 37 "good1.coo.c"
+extern struct B_vmt {
+	void (*vfunc_a)(struct B *this, int arg);
+	void (*vfunc_b)(struct B *this, int arg);
+} B_vmt;
+
+struct B *new_B();
+void B_vfunc_a(struct B *this, int arg);
+void B_vfunc_b(struct B *this, int arg);
+void B_B_root(struct B *this);
+coo_inline void B_vmt_vfunc_b(struct B *this, int arg)
+{
+	((struct B_vmt*)this->A.vmt)->vfunc_b(this, arg);
+}
+
+#line 13 "good1.coo"
+struct C {
+	struct A A;
+};
+
+#line 57 "good1.coo.c"
+extern struct C_vmt {
+	void (*vfunc_a)(struct C *this, int arg);
+} C_vmt;
+
+struct C *new_C();
+void C_vfunc_a(struct C *this, int arg);
+void C_C_root(struct C *this);
+#line 17 "good1.coo"
+struct D {
+	struct B B;
+	struct C C;
+};
+
+#line 71 "good1.coo.c"
+extern struct D_vmt {
+	void (*vfunc_a)(struct D *this, int arg);
+	void (*vfunc_b)(struct B *this, int arg);
+} D_vmt;
+
+struct D *new_D();
+void D_vfunc_a(struct D *this, int arg);
+void D_D(struct D *this);
+void D_D_root(struct D *this);
+#line 22 "good1.coo"
+void A_vfunc_a(struct A *this, int arg)
+{
+	printf("A::vfunc_a(%d)\n", arg);
+}
+
+void B_vfunc_a(struct B *this, int arg)
+{
+	printf("B::vfunc_a(%d)\n", arg);
+}
+
+void B_vfunc_b(struct B *this, int arg)
+{
+	printf("B::vfunc_b(%d)\n", arg);
+}
+
+void D_vfunc_a(struct D *this, int arg)
+{
+	printf("D::vfunc_a(%d)\n", arg);
+}
+
+void D_D(struct D *this)
+{
+}
+
+int main(void)
+{
+	struct D *d = new_D();
+	A_vmt_vfunc_a(&d->B.A, 3);
+	B_vmt_vfunc_b(&d->B, 4);
+	return 0;
+}
+
+
+#line 115 "good1.coo.c"
+struct B_vmt B_vmt = {
+	B_vfunc_a,
+	B_vfunc_b,
+};
+
+struct B *new_B()
+{
+	struct B *this = malloc(sizeof(*this));
+	if (this == NULL) return NULL;
+	B_B_root(this);
+	return this;
+}
+
+void B_B_root(struct B *this)
+{
+	this->A.vmt = &B_vmt;
+}
+
+struct D_vmt D_vmt = {
+	D_vfunc_a,
+	B_vfunc_b,
+};
+
+struct D *new_D()
+{
+	struct D *this = malloc(sizeof(*this));
+	if (this == NULL) return NULL;
+	D_D_root(this);
+	return this;
+}
+
+void D_D_root(struct D *this)
+{
+	this->B.A.vmt = &D_vmt;
+	this->C.A.vmt = &D_vmt;
+	D_D(this);
+}

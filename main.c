@@ -86,6 +86,7 @@ struct dynarr {
 
 struct memberprops {
 	unsigned char is_virtual:1;
+	unsigned char is_abstract:1;
 	unsigned char is_override:1;
 	unsigned char is_function:1;
 	unsigned char is_static:1;
@@ -109,7 +110,7 @@ struct class {
 	struct hash_entry node;      /* node in parser.classes hash */
 	unsigned num_parent_constr;  /* number of parent constructors */
 	unsigned num_init_vars;      /* number of members needing root construction call */
-	char is_abstract;            /* has abstract virtual methods */
+	unsigned num_abstract;       /* number of abstract virtual methods */
 	char is_interface;
 	char is_implemented;         /* have seen class implementation */
 	char void_constructor;       /* constructor has return type void (can't fail) */
@@ -135,6 +136,7 @@ struct parent {
 
 struct ancestor {   /* link to parent, or parent of parent, etc.. */
 	struct parent *parent;
+	struct ancestor *next;     /* alternate path to same origin (interface) */
 	unsigned from_virtual;
 	char path[];   /* full path to ancestor */
 };
@@ -684,7 +686,7 @@ static void *read_file(FILE *fp, char *buffer)
 
 /*** dynamic array ***/
 
-static int grow_dynarr_to(struct dynarr *dynarr, int minimum)
+static int grow_dynarr_to(struct dynarr *dynarr, unsigned minimum)
 {
 	if (minimum >= dynarr->max) {
 		unsigned newmax = minimum > dynarr->max ? minimum : dynarr->max;
@@ -716,7 +718,7 @@ static void print_message(struct parser *parser,
 	if (parser->num_errors == MAX_USER_ERRORS)
 		return;
 
-	parser->num_errors++;
+	parser->num_errors += severity[0] == 'e';
 	va_start(va_args, message);
 	vsnprintf(msgbuf, sizeof(msgbuf), message, va_args);
 	va_end(va_args);
@@ -813,6 +815,9 @@ static void print_implicit_struct(struct parser *parser,
 	   in this case the C compiler does not know it, so we need to add "struct " */
 	if (!classtype->implicit)
 		return;
+	/* in structs, skip return types of functions that we don't print anyway */
+	if (parser->pf.writepos > position)
+		return;
 
 	parser->pf.pos = position;
 	flush(parser);
@@ -869,7 +874,7 @@ static struct class *initclass(struct parser *parser, struct class *class)
 {
 	strhash_init(&class->members, 8, member);
 	hasho_init(&class->ancestors, 8);
-	if (hash_insert(&parser->classes, &class->node, strhash(class->name)) < 0) {
+	if (hash_insert(&parser->classes, &class->node, strhash(class->name))) {
 		/* already exists */
 		free(class);
 		class = NULL;
@@ -899,7 +904,7 @@ static struct classtype *addclasstype(struct parser *parser, char *typename,
 
 	type->decl = *decl;
 	type->implicit = implicit;
-	if (strhash_insert(&parser->classtypes, type) < 0) {
+	if (strhash_insert(&parser->classtypes, type)) {
 		/* already exists */
 		free(type);
 		type = NULL;
@@ -982,7 +987,7 @@ static int insertmember(struct class *class, struct member *member)
 	if (grow_dynarr(&class->members_arr) < 0)
 		return -1;
 	/* check already exists */
-	if (strhash_insert(&class->members, member) < 0)
+	if (strhash_insert(&class->members, member))
 		return -1;
 
 	class->members_arr.mem[class->members_arr.num] = member;
@@ -1034,7 +1039,7 @@ static void save_implicit_insert(struct parser *parser, char *position)
 
 static void save_param_class(struct parser *parser, int position,
 		struct classptr *decl, char *name, char *next)
-{
+{	(void)name; (void)next;
 	struct dynarr *dynarr = &parser->param_classes;
 	struct classptr *newclassptr;
 
@@ -1117,7 +1122,7 @@ static char is_void_rettype(char *rettype)
 }
 
 static struct member *addmember(struct parser *parser, struct class *class,
-		struct classptr *retclassptr, char *rettype, char *retend,
+		struct classtype *rettype, char *retstr, char *retend,
 		char *membername, char *nameend, char *params, struct memberprops props)
 {
 	struct member *member;
@@ -1134,8 +1139,16 @@ static struct member *addmember(struct parser *parser, struct class *class,
 	member->origin = class;
 	member->definition = class;
 	member->props = props;
-	member->retclassptr = *retclassptr;
-	member->rettype = stredup(rettype, retend);
+	if (props.is_abstract)
+		class->num_abstract++;
+	member->retclassptr = rettype->decl;
+	if (rettype->decl.class && rettype->implicit) {
+		member->rettype = malloc(retend - retstr + 8);  /* "struct " + null-term */
+		memcpy(member->rettype, "struct ", 7);
+		memcpy(member->rettype + 7, retstr, retend - retstr);
+		member->rettype[7 + retend - retstr] = 0;
+	} else
+		member->rettype = stredup(retstr, retend);
 	if (params) {
 		if (is_void_params(params))
 			member->paramstext = ")";
@@ -1165,7 +1178,7 @@ static struct member *addmember(struct parser *parser, struct class *class,
 			/* don't bother anymore, prevent problems */
 			class->need_root_constructor = 0;
 		} else {
-			void_ret = is_void_rettype(rettype);
+			void_ret = is_void_rettype(retstr);
 			if (member->is_constructor) {
 				class->void_constructor = void_ret;
 				class->constructor = member;
@@ -1183,8 +1196,8 @@ static struct member *addmember(struct parser *parser, struct class *class,
 }
 
 static struct variable *addvariable(struct parser *parser, unsigned blocklevel,
-		struct classptr *decl, int extraptr, char *membername, char *nameend,
-		char *params, char *paramsend)
+		struct classptr *decl, int extraptr,
+		char *membername, char *nameend, char *params)
 {
 	struct dynarr *dynarr = &parser->nested_locals;
 	struct variable *variable;
@@ -1198,7 +1211,7 @@ static struct variable *addvariable(struct parser *parser, unsigned blocklevel,
 		return NULL;
 
 	dynarr->mem[dynarr->num] = variable;
-	if (strhash_insert(&parser->locals, variable) < 0) {
+	if (strhash_insert(&parser->locals, variable)) {
 		/* no need to free variable, ref stored in dynarr */
 		return NULL;
 	}
@@ -1331,7 +1344,7 @@ static struct parse_file *addfilestack(struct parser *parser)
 	return parse_file;
 }
 
-static void remove_locals(struct parser *parser, int blocklevel)
+static void remove_locals(struct parser *parser, unsigned blocklevel)
 {
 	struct variable *var;
 	unsigned j;
@@ -1376,13 +1389,14 @@ static int find_local_e_class(struct parser *parser, char *name, char *nameend,
 	return 0;
 }
 
-struct classptr parse_type(struct parser *parser, char *pos, char **retnext)
+void parse_type(struct parser *parser, char *pos,
+		char **retnext, struct classtype *rettype)
 {
-	struct classptr decl;
 	struct classtype *classtype;
 	char *name, *next;
 
-	for (decl.class = NULL;; pos = skip_whitespace(parser, pos)) {
+	rettype->implicit = 0;
+	for (rettype->decl.class = NULL;; pos = skip_whitespace(parser, pos)) {
 		if (strprefixcmp("const ", pos) != NULL) {
 			pos += 6;  /* const */
 			continue;
@@ -1394,15 +1408,16 @@ struct classptr parse_type(struct parser *parser, char *pos, char **retnext)
 		if (strprefixcmp("struct ", pos)) {
 			name = skip_whitespace(parser, pos + 7);  /* "struct " */
 			next = skip_word(name);
-			decl.class = find_class_e(parser, name, next);
-			decl.pointerlevel = 0;
+			rettype->decl.class = find_class_e(parser, name, next);
+			rettype->decl.pointerlevel = 0;
 			break;
 		} else {
 			if (isalpha(*pos)) {
 				next = skip_word(pos);
 				if ((classtype = find_classtype_e(parser, pos, next)) != NULL) {
 					print_implicit_struct(parser, classtype, pos);
-					decl = classtype->decl;
+					rettype->decl = classtype->decl;
+					rettype->implicit = classtype->implicit;
 				}
 			} else
 				next = pos;
@@ -1411,9 +1426,8 @@ struct classptr parse_type(struct parser *parser, char *pos, char **retnext)
 	}
 
 	for (next = skip_whitespace(parser, next); *next == '*'; next++)
-		decl.pointerlevel++;
+		rettype->decl.pointerlevel++;
 	*retnext = next;
-	return decl;
 }
 
 static int is_abstract(struct parser *parser, char **pos)
@@ -1442,6 +1456,8 @@ static struct member *inheritmember(struct parser *parser, char *parsepos,
 	member->props.from_primary &= parent->is_primary;
 	member->props.from_virtual |= parent->is_virtual;
 	member->parent_constructor = parentmember->is_constructor;
+	if (member->props.is_abstract)
+		class->num_abstract++;
 	if (parentmember->parentname) {
 		member->parentname = aprintf("%s%s%s", parent->class->name,
 			parent->is_virtual ? "->" : ".",
@@ -1465,7 +1481,7 @@ static void addmember_to_children(struct parser *parser, char *parsepos,
 		struct class *class, struct member *member)
 {
 	struct parent *parent;
-	int i;
+	unsigned i;
 
 	for (i = 0; i < class->descendants.num; i++) {
 		parent = class->descendants.mem[i];
@@ -1499,7 +1515,7 @@ static void mergemember(struct parser *parser, struct class *class, struct membe
 	nameend = parentmember->name + strlen(parentmember->name);
 	member = find_member_e(class, parentmember->name, nameend);
 	if (member == NULL) {
-	fprintf(stderr, "internal error, cannot find member %s in"
+		fprintf(stderr, "internal error, cannot find member %s in"
 			"class %s for merging\n", parentmember->name, class->name);
 		parser->num_errors++;
 		return;
@@ -1512,6 +1528,10 @@ static void mergemember(struct parser *parser, struct class *class, struct membe
 	} else {
 		/* did not override yet, use new parent's definition */
 		member->definition = parentmember->definition;
+		if (member->props.is_abstract) {
+			member->props.is_abstract = 0;
+			class->num_abstract--;
+		}
 	}
 }
 
@@ -1520,7 +1540,7 @@ static void add_ancestor(struct class *class, int from_virtual,
 		char *via_class_name, char *link, char *path)
 {
 	struct hasho_entry *orig_entry;
-	struct ancestor *ancestor;
+	struct ancestor *ancestor, *orig_ancestor;
 
 	/* allocate struct and printf path in one alloc */
 	ancestor = (void*)aprintf("%*s%s%s%s", (int)offsetof(struct ancestor, path),
@@ -1528,6 +1548,7 @@ static void add_ancestor(struct class *class, int from_virtual,
 	if (ancestor == NULL)
 		return;
 
+	ancestor->next = NULL;
 	ancestor->parent = origin_parent;
 	ancestor->from_virtual = from_virtual;
 	if (origin_parent->is_virtual && grow_dynarr(&class->virtual_ancestors) == 0)
@@ -1536,9 +1557,17 @@ static void add_ancestor(struct class *class, int from_virtual,
 	if (hasho_insert_exists(&class->ancestors, origin_parent->class,
 			ancestor, orig_entry)) {
 		/* store primary base, not the virtual one */
+		orig_ancestor = orig_entry->value;
 		if (!origin_parent->is_virtual) {
-			/* replace with new literal one */
-			orig_entry->value = ancestor;
+			if (orig_ancestor->parent->is_virtual) {
+				/* replace with new literal one */
+				orig_entry->value = ancestor;
+			} else {
+				/* both literal, keep first ancestor first, rest don't care
+				   need all primary ancestors to print root constructor */
+				ancestor->next = orig_ancestor->next;
+				orig_ancestor->next = ancestor;
+			}
 		}
 	}
 }
@@ -1642,13 +1671,14 @@ static void import_parent(struct parser *parser, char *parsepos,
 {
 	struct member *parentmember;
 	struct dynarr *parentmembers;
-	struct class *origin, *currorigin, *ignoreorigin;
+	struct class *origin, *currorigin, *ignoreorigin, *intforigin, *mergeorigin;
 	struct class *parentclass = parent->class;
 	struct vmt *vmt;
-	int i, ret;
+	unsigned i;
+	int ret;
 
 	parentmembers = &parentclass->members_arr;
-	currorigin = ignoreorigin = NULL;
+	currorigin = mergeorigin = ignoreorigin = NULL;
 	for (i = 0; i < parentmembers->num; i++) {
 		parentmember = parentmembers->mem[i];
 		/* hide grand-parent constructors behind parent constructor */
@@ -1657,12 +1687,16 @@ static void import_parent(struct parser *parser, char *parsepos,
 		/* skip root constructors, they are specific for their own class */
 		if (parentmember->is_root_constructor)
 			continue;
+		origin = parentmember->origin;
+		if (origin == ignoreorigin)
+			continue;
+		if (origin == intforigin)
+			goto check_intf;
 		/* count parent constructors to be called, skip constructors for virtual
 		   base classes, those are to be called from root constructor */
 		class->num_parent_constr +=
 			parentmember->is_constructor && !parentmember->props.from_virtual;
-		origin = parentmember->origin;
-		if (origin == ignoreorigin)
+		if (origin == mergeorigin)
 			goto merge;
 		if (origin != currorigin) {
 			currorigin = origin;
@@ -1671,22 +1705,40 @@ static void import_parent(struct parser *parser, char *parsepos,
 			   the members again (prevent duplicates) */
 			ret = is_virtual_base(origin, class);
 			if (ret == 1 || (ret == 0 && parentmember->props.from_virtual)) {
-				ignoreorigin = origin;
+				mergeorigin = origin;
 				goto merge;
 			}
-			/* on the other hand, might both be non-virtual */
-			if (ret == 0 && !parentmember->props.from_virtual) {
-				/* class inherited indirectly, e.g. B:A, C:A, D:B,C */
-				pr_err(parsepos, "inherit duplicate class %s", origin->name);
-				ignoreorigin = origin;
+			/* class inherited indirectly, e.g. B:A, C:A, D:B,C */
+			if (ret == 0) {
+				/* potentially an interface, prepare and check */
+				intforigin = origin;
+				goto check_intf;
 			}
 		}
 
 		inheritmember(parser, parsepos, class, parent, parentmember);
 		/* write to output later, when opening brace '{' parsed */
 		continue;
+	  check_intf:
+		if (!parentmember->props.is_function) {
+			/* statics have global lifetime, accept and skip them */
+			if (parentmember->props.is_static)
+				continue;
+			/* duplicate member fields are unacceptable */
+			goto err_duplicate;
+		}
+		/* for virtual methods, check where overridden */
+		if (parentmember->props.is_virtual)
+			goto merge;
+		/* normal methods we already have, skip them */
+		continue;
 	  merge:
 		mergemember(parser, class, parentmember);
+		continue;
+	  err_duplicate:
+		pr_err(parsepos, "inherit duplicate class %s, non-virtual field %s",
+				origin->name, parentmember->name);
+		ignoreorigin = origin;
 	}
 
 	/* only add class after origin checks */
@@ -1697,7 +1749,7 @@ static void import_parent(struct parser *parser, char *parsepos,
 	for (i = 0; i < parentclass->vmts.num; i++) {
 		vmt = parentclass->vmts.mem[i];
 		/* if we already have this origin, then also its vmt: skip it */
-		if (hasho_find(&class->ancestors, vmt->origin) != NULL)
+		if (hasho_find(&class->ancestors, vmt->origin))
 			continue;
 
 		addvmt(class, vmt, vmt->origin, parent->is_virtual);
@@ -1729,6 +1781,10 @@ static struct member *implmember(struct parser *parser, char *parsepos,
 
 	member->definition = class;
 	vmt_origin = member->vmt->origin;
+	if (member->props.is_abstract) {
+		member->props.is_abstract = 0;
+		class->num_abstract--;
+	}
 	/* find same vmt in this class (same origin) */
 	for (i = 0;; i++) {
 		if (i == class->vmts.num) {
@@ -1770,7 +1826,7 @@ static void print_root_classes(struct parser *parser, struct class *class)
 	struct parent *parent;
 	char *name;
 
-	if (class->is_abstract)
+	if (class->num_abstract)
 		return;
 
 	rootclass = NULL;
@@ -1826,7 +1882,7 @@ static void print_vmt_type(struct parser *parser, struct class *class)
 	struct class *thisclass;
 	struct member *member;
 	struct vmt *vmt;
-	int i, j;
+	unsigned i, j;
 
 	for (i = 0; i < class->vmts.num; i++) {
 		vmt = class->vmts.mem[i];
@@ -1855,17 +1911,20 @@ static void print_vmt_type(struct parser *parser, struct class *class)
 	}
 }
 
-static void find_vmt_path(struct class *class, struct vmt *vmt,
+static struct ancestor *find_vmt_path(struct class *class, struct vmt *vmt,
 			char **ret_vmtpath, char **ret_vmtaccess)
 {
 	struct ancestor *ancestor;
 
 	ancestor = hasho_find(&class->ancestors, vmt->origin);
-	if (ancestor) {
-		*ret_vmtpath = ancestor->path;
-		*ret_vmtaccess = ancestor->parent->is_virtual ? "->" : ".";
-	} else
+	if (!ancestor) {
 		*ret_vmtpath = *ret_vmtaccess = "";
+		return NULL;
+	}
+
+	*ret_vmtpath = ancestor->path;
+	*ret_vmtaccess = ancestor->parent->is_virtual ? "->" : ".";
+	return ancestor->next;
 }
 
 static void print_param_names(struct parser *parser, char *params)
@@ -1956,6 +2015,8 @@ static void print_member_decls(struct parser *parser, struct class *class)
 		/* don't print inherited members (that we did not override) */
 		if (member->definition != class)
 			continue;
+		if (member->props.is_abstract)
+			continue;
 
 		switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
 		if (member->props.is_function) {
@@ -1982,12 +2043,12 @@ static struct class *parse_struct(struct parser *parser, char *next)
 {
 	struct class *class, *parentclass;
 	struct memberprops memberprops;
-	struct classptr decl, retclassptr;
+	struct classptr decl;
 	char *declbegin, *retend, *membername, *nameend, *params, *declend, *nextdecl;
 	char *classname, *classnameend, *parentname, *retnext, *prevdeclend, *prevnext;
 	int level, is_typedef, parent_primary, parent_virtual, is_lit_var;
 	int first_virtual_warn, first_vmt_warn, empty_line;
-	struct classtype *parentclasstype;
+	struct classtype *parentclasstype, rettype;
 	struct parent *parent, *firstparent;
 	struct member *member;
 	unsigned i;
@@ -2153,6 +2214,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		}
 
 		/* next is either '(' or ';', but declend must be at ';' */
+		memberprops.is_abstract = 0;
 		if (*params == '(') {
 			/* scan forward, once, to prevent lineno mistakes */
 			params = skip_whitespace(parser, params+1);
@@ -2161,7 +2223,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 				return NULL;
 			if (*declend == '=') {
  				if (is_abstract(parser, &declend)) {
-					class->is_abstract = 1;
+					memberprops.is_abstract = 1;
 				} else {
 					pr_err(declend, "expected ';' after declaration");
 					declend = scan_token(parser, declend, "/\n;");
@@ -2220,15 +2282,23 @@ static struct class *parse_struct(struct parser *parser, char *next)
 			if (params)
 				pr_err(params, "no parameters allowed for override");
 		} else {
-			retclassptr = parse_type(parser, declbegin, &retnext);
-			is_lit_var = retclassptr.pointerlevel == 0 && retclassptr.class;
-			if (is_lit_var && retclassptr.class->is_abstract) {
-				pr_err(membername, "cannot instantiate abstract "
-					"class %s", retclassptr.class->name);
+			/* for constructor, parse_type detects rettype wrong */
+			if (retend > declbegin) {
+				parse_type(parser, declbegin, &retnext, &rettype);
 			} else {
-				member = addmember(parser, class, &retclassptr, declbegin,
+				pr_warn(declbegin, "specify return type");
+				rettype.decl.class = NULL;
+				rettype.decl.pointerlevel = 0;
+				rettype.implicit = 0;
+			}
+			is_lit_var = rettype.decl.pointerlevel == 0 && rettype.decl.class;
+			if (is_lit_var && rettype.decl.class->num_abstract) {
+				pr_err(membername, "cannot instantiate abstract "
+					"class %s", rettype.decl.class->name);
+			} else {
+				member = addmember(parser, class, &rettype, declbegin,
 					retend, membername, nameend, params, memberprops);
-				if (member && is_lit_var && retclassptr.class->root_constructor)
+				if (member && is_lit_var && rettype.decl.class->root_constructor)
 					class->num_init_vars++;
 			}
 		}
@@ -2237,32 +2307,33 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	}
 
 	/* add root constructor if needed and user did not define one */
-	if (!class->is_abstract && class->need_root_constructor && !class->root_constructor) {
+	if (!class->num_abstract && class->need_root_constructor && !class->root_constructor) {
 		/* copy user's constructor signature if defined */
 		struct memberprops constructorprops = {0,};
 		char namebuf[128];
 		int len;
 		constructorprops.is_function = 1;
+		rettype.implicit = 0;
 		if (class->constructor) {
-			retclassptr = class->constructor->retclassptr;
+			rettype.decl = class->constructor->retclassptr;
 			declbegin = class->constructor->rettype;
 			retend = declbegin + strlen(declbegin);
 			params = class->constructor->paramstext;
 		} else {
-			retclassptr.class = NULL;
-			retclassptr.pointerlevel = 0;
+			rettype.decl.class = NULL;
+			rettype.decl.pointerlevel = 0;
 			declbegin = "void ";
 			retend = declbegin + 5;   /* "void " */
 			params = ")";
 		}
 		len = snprintf(namebuf, sizeof(namebuf), "%s_root", class->name);
-		addmember(parser, class, &retclassptr, declbegin,
+		addmember(parser, class, &rettype, declbegin,
 			retend, namebuf, namebuf + len, params, constructorprops);
 		class->gen_root_constructor = 1;
 	}
 
 	/* if we don't need a root constructor, then use the normal constructor */
-	if (!class->is_abstract && !class->root_constructor && class->constructor) {
+	if (!class->num_abstract && !class->root_constructor && class->constructor) {
 		class->root_constructor = class->constructor;
 		class->void_root_constructor = class->void_constructor;
 	}
@@ -2491,26 +2562,26 @@ static char *access_inherited(struct parser *parser, struct class *thisclass,
 
 static void parse_typedef(struct parser *parser, char *declend)
 {
-	struct classptr decl;
+	struct classtype type;
 	char *next;
 
 	/* check if a class is aliased to a new name */
-	decl = parse_type(parser, parser->pf.pos, &next);
-	if (decl.class == NULL)
+	parse_type(parser, parser->pf.pos, &next, &type);
+	if (type.decl.class == NULL)
 		return;
 
 	/* note: after next cannot be '{', as in 'typedef struct X {'
 	   it is handled by calling parse_struct in caller */
 	parser->pf.pos = skip_whitespace(parser, next);
 	next = skip_word(parser->pf.pos);
-	addclasstype(parser, parser->pf.pos, next, &decl, TYPEDEF_EXPLICIT);
+	addclasstype(parser, parser->pf.pos, next, &type.decl, TYPEDEF_EXPLICIT);
 	parser->pf.pos = declend + 1;
 }
 
 static void print_inserts(struct parser *parser, struct dynarr *inserts)
 {
 	struct insert *insert;
-	int j;
+	unsigned j;
 
 	if (inserts->num == 0)
 		return;
@@ -2584,8 +2655,8 @@ static void print_initializers(struct parser *parser, char *position)
 
 static void param_to_variable(struct parser *parser, int position,
 		struct classptr *decl, char *name, char *next)
-{
-	addvariable(parser, 0, decl, 0, name, next, NULL, NULL);
+{	(void)position;
+	addvariable(parser, 0, decl, 0, name, next, NULL);
 }
 
 static void accessancestor(struct parser *parser,
@@ -2617,7 +2688,7 @@ static void accessancestor(struct parser *parser,
 
 struct paramstate {
 	struct dynarr *params;
-	int index;
+	unsigned index;
 };
 
 static void select_next_param(struct paramstate *state, struct classptr *dest)
@@ -2643,10 +2714,10 @@ static void parse_function(struct parser *parser, char *next)
 {
 	struct class *class;
 	struct classptr exprdecl[MAX_PAREN_LEVELS], targetdecl[MAX_PAREN_LEVELS];
-	struct classptr retclassptr, decl, immdecl, *target, *expr;
+	struct classptr decl, immdecl, *target, *expr;
 	struct paramstate targetparams[MAX_PAREN_LEVELS];
 	struct dynarr **tgtparams, *constr_params;
-	struct classtype *classtype;
+	struct classtype *classtype, rettype;
 	struct member *member, *submember;
 	struct variable *declvar;
 	struct initializer *initializer;
@@ -2657,9 +2728,8 @@ static void parse_function(struct parser *parser, char *next)
 	char *thisprefix, *thisclassname;
 	enum parse_funcvar_state funcvarstate;
 	enum parse_state state, nextstate;
-	int blocklevel, parenlevel, seqparen, numwords;
-	int is_constructor, num_constr_called;
-	unsigned i, num_constr;
+	int is_constructor, blocklevel, parenlevel, seqparen, numwords;
+	unsigned i, num_constr_called, num_constr;
 
 	funcname = NULL, classname = next;
 	for (; classname > parser->pf.pos && !isspace(*(classname-1)); classname--) {
@@ -2691,10 +2761,10 @@ static void parse_function(struct parser *parser, char *next)
 				flush(parser);
 				outputs(parser, "static ");
 				/* add as member so others can call from further down */
-				retclassptr = parse_type(parser, parser->pf.pos, &curr);
+				parse_type(parser, parser->pf.pos, &curr, &rettype);
 				props.is_function = 1;
 				props.seen = 1;
-				member = addmember(parser, class, &retclassptr, parser->pf.pos,
+				member = addmember(parser, class, &rettype, parser->pf.pos,
 					classname, funcname, nameend, params, props);
 			}
 			/* replace :: with _ */
@@ -2731,7 +2801,7 @@ static void parse_function(struct parser *parser, char *next)
 			decl.pointerlevel = 1;
 			name = "this";
 			nameend = name + 4;  /* "this" */
-			addvariable(parser, 0, &decl, 0, name, nameend, NULL, NULL);
+			addvariable(parser, 0, &decl, 0, name, nameend, NULL);
 			/* no parents means all are initialized */
 			is_constructor = member->is_constructor;
 			num_constr = is_constructor
@@ -2846,8 +2916,7 @@ static void parse_function(struct parser *parser, char *next)
 						state = CONSTRUCT;
 					} else
 						pr_err(name, "'new type' cannot be pointer type");
-				} else
-					pr_err(name, "unknown class");
+				}
 				continue;
  			}
 
@@ -2873,10 +2942,10 @@ static void parse_function(struct parser *parser, char *next)
 			switch (state) {
 			case DECLVAR:
 				declvar = addvariable(parser, blocklevel, &decl,
-					exprdecl[0].pointerlevel, name, next, NULL, NULL);
+					exprdecl[0].pointerlevel, name, next, NULL);
 				if (exprdecl[0].pointerlevel == 0 && decl.pointerlevel == 0
 						&& decl.class) {
-					if (decl.class->is_abstract) {
+					if (decl.class->num_abstract) {
 						pr_err(name, "cannot instantiate "
 							"abstract class %s", decl.class->name);
 					} else if (decl.class->root_constructor) {
@@ -2896,7 +2965,7 @@ static void parse_function(struct parser *parser, char *next)
 					/* to check all literal class variables initialized */
 					if (is_constructor && submember
 							&& submember->is_root_constructor
-							&& submember->retclassptr.
+							&& member->retclassptr.
 								pointerlevel == 0) {
 						if (!member->constructor_called) {
 							num_constr_called++;
@@ -2996,7 +3065,7 @@ static void parse_function(struct parser *parser, char *next)
 				if (*next == ')')
 					addvariable(parser, blocklevel, &decl,
 						exprdecl[0].pointerlevel, funcvarname,
-						funcvarnameend, curr+1, next);
+						funcvarnameend, curr+1);
 			}
 		}
 
@@ -3258,9 +3327,17 @@ static void print_root_constructor(struct parser *parser, struct class *class)
 	/* vmt inits */
 	for (i = 0; i < class->vmts.num; i++) {
 		vmt = class->vmts.mem[i];
-		find_vmt_path(rootclass, vmt, &vmtpath, &vmtaccess);
-		outprintf(parser, "\tthis->%s%svmt = &%s;\n",  /* coo newline counted above */
-			vmtpath, vmtaccess, get_vmt_name(vmt));
+		ancestor = find_vmt_path(rootclass, vmt, &vmtpath, &vmtaccess);
+		for (;;) {
+			outprintf(parser, "\tthis->%s%svmt = &%s;\n",  /* coo newline counted above */
+				vmtpath, vmtaccess, get_vmt_name(vmt));
+			/* loop though duplicates for this origin (literal bases) */
+			if (!ancestor)
+				break;
+			vmtpath = ancestor->path;
+			vmtaccess = ancestor->parent->is_virtual ? "->" : ".";
+			ancestor = ancestor->next;
+		}
 	}
 	/* construct classes that are used as virtual bases only */
 	hasho_foreach(entry, &class->ancestors) {
@@ -3335,7 +3412,7 @@ static void print_vmts(struct parser *parser)
 	unsigned i, j;
 
 	hash_foreach(class, &parser->classes) {
-		if (class->is_abstract || !class->is_implemented)
+		if (class->num_abstract || !class->is_implemented)
 			continue;
 
 		if (parser->pf.writepos != parser->pf.pos) {
@@ -3429,7 +3506,7 @@ static FILE *locate_include_file(struct parser *parser, char *dir, char *nameend
 	if (get_file_id(fp_inc, file_id) < 0)
 		goto err_fp;
 	if (hash_insert(&parser->files_seen, &file_id->node,
-			uint64hash(file_id->file_id)) < 0)
+			uint64hash(file_id->file_id)))
 		goto err_hash;
 	parser->newfilename_end = p;
 	return fp_inc;
@@ -3629,6 +3706,7 @@ static int parse_source_size(struct parser *parser, char *filename,
 		FILE *in, size_t size, char *ext_out)
 {
 	char *buffer, *outfilename, *outfilename_file, *p;
+	int prev_num_errors, new_errors;
 	size_t commonlen, outnamelen;
 	FILE *fp_dest;
 
@@ -3680,8 +3758,11 @@ static int parse_source_size(struct parser *parser, char *filename,
 			parser->pf.newfilename_file = p+1;
 
 	/* start parsing! */
+	prev_num_errors = parser->num_errors;
 	parse(parser);
-	print_vmts(parser);
+	new_errors = parser->num_errors > prev_num_errors;
+	if (!new_errors)
+		print_vmts(parser);
 	/* if no syntax added by coo parser, then can keep original filename in #include */
 	if (parser->pf.writepos == buffer) {
 		/* if parsing included file, and nothing changed, do not write any output */
@@ -3709,8 +3790,16 @@ static int parse_source_size(struct parser *parser, char *filename,
 		parser->pf.out = NULL;
 		/* rename temporary output filename to final filename
 		 * might not be present in case of stdout output */
-		if (parser->pf.outfilename)
-			rename(parser->pf.outfilename, parser->pf.newfilename_path);
+		if (parser->pf.outfilename) {
+			if (!new_errors)
+				rename(parser->pf.outfilename, parser->pf.newfilename_path);
+			else
+				unlink(parser->pf.outfilename);
+		}
+	}
+	if (parser->pf.outfilename && new_errors) {
+		/* delete output filename, might already exist, but out-of-date now */
+		unlink(parser->pf.newfilename_path);
 	}
 
 	return OUTPUT_FILE_WRITTEN;

@@ -47,6 +47,10 @@ Planned:
 
 C compatible but following notes.
 
+### Keywords
+
+The keywords 'virtual', 'override', and 'new' are introduced.
+
 ### Stack variables with constructors
 
 You cannot declare function prototypes in functions that return a struct on stack
@@ -135,7 +139,12 @@ inheritance is always public.
 
 Function declarations can start with 'virtual' to make them virtual
 methods. These methods can be dynamically overridden by descendant classes.
-Syntax is same as in C++. See next example in [Multiple inheritance](#multiple-inheritance).
+See next example in [Multiple inheritance](#multiple-inheritance).
+
+Although declaring a virtual function uses same syntax as C++, overriding
+a virtual function is different. Override a virtual function using just
+the keyword 'override' and the function name you want to override. Do
+not specify a parameter list, there is no function overloading anyway.
 
 Also abstract functions are recognized with the '= 0' syntax like in C++.
 This means the function is not implemented at all (different from C++),
@@ -251,7 +260,6 @@ that the method is not overridden anyway.
 * recognize global variables (searched, but never any added)
 * add syntax to zero-initialize a class automatically
 * add destructors, plus call them for stack variables
-* remove class->virtual_ancestors? bad optimization
 
 ## License
 

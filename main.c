@@ -99,7 +99,6 @@ struct class {
 	struct hash members;
 	struct dynarr members_arr;
 	struct hasho ancestors;      /* class => ancestor, all classes inherited from */
-	struct dynarr virtual_ancestors;  /* struct ancestor *, all virtual ancestors */
 	struct dynarr vmts;          /* struct vmt *, all applicable vmts */
 	struct dynarr descendants;   /* struct parent *, inheriting from this class */
 	struct vmt *vmt;             /* from primary parent (or new here)  */
@@ -1551,23 +1550,21 @@ static void add_ancestor(struct class *class, int from_virtual,
 	ancestor->next = NULL;
 	ancestor->parent = origin_parent;
 	ancestor->from_virtual = from_virtual;
-	if (origin_parent->is_virtual && grow_dynarr(&class->virtual_ancestors) == 0)
-		class->virtual_ancestors.mem[class->virtual_ancestors.num++] = ancestor;
 	/* duplicates may occur for virtual bases */
 	if (hasho_insert_exists(&class->ancestors, origin_parent->class,
 			ancestor, orig_entry)) {
 		/* store primary base, not the virtual one */
 		orig_ancestor = orig_entry->value;
-		if (!origin_parent->is_virtual) {
-			if (orig_ancestor->parent->is_virtual) {
-				/* replace with new literal one */
-				orig_entry->value = ancestor;
-			} else {
-				/* both literal, keep first ancestor first, rest don't care
-				   need all primary ancestors to print root constructor */
-				ancestor->next = orig_ancestor->next;
-				orig_ancestor->next = ancestor;
-			}
+		if (!origin_parent->is_virtual && orig_ancestor->parent->is_virtual) {
+			/* replace old virtual one with new literal one */
+			ancestor->next = orig_entry->value;
+			orig_entry->value = ancestor;
+		} else {
+			/* either new one virtual or both literal, keep first literal
+			   ancestor first, rest don't care; need all primary and all
+			   virtual ancestors to print root constructor */
+			ancestor->next = orig_ancestor->next;
+			orig_ancestor->next = ancestor;
 		}
 	}
 }
@@ -1582,9 +1579,12 @@ static void add_ancestors(struct class *class, struct parent *parent)
 	add_ancestor(class, parent->is_virtual, parent, parentclass->name, "", "");
 	hasho_foreach(ancestor_entry, &parentclass->ancestors) {
 		ancestor = ancestor_entry->value;
-		from_virtual = ancestor->from_virtual | parent->is_virtual;
-		add_ancestor(class, from_virtual, ancestor->parent,
-			parentclass->name, parent->is_virtual ? "->" : ".", ancestor->path);
+		do {
+			from_virtual = ancestor->from_virtual | parent->is_virtual;
+			add_ancestor(class, from_virtual, ancestor->parent, parentclass->name,
+				parent->is_virtual ? "->" : ".", ancestor->path);
+			ancestor = ancestor->next;
+		} while (ancestor);
 	}
 }
 
@@ -3297,7 +3297,7 @@ static void print_root_constructor(struct parser *parser, struct class *class)
 	struct ancestor *ancestor, *literal_ancestor;
 	struct hasho_entry *entry;
 	struct class *parentclass, *rootclass;
-	char *name, *retstr, *thisname, *sep;
+	char *name, *rootprefix, *retstr, *thisname, *sep;
 	struct member *member;
 	struct vmt *vmt;
 	unsigned i;
@@ -3305,7 +3305,14 @@ static void print_root_constructor(struct parser *parser, struct class *class)
 	if (!class->gen_root_constructor)
 		return;
 
-	rootclass = class->rootclass ? &class->rootclass->class : class;
+	if (class->rootclass) {
+		rootclass = &class->rootclass->class;
+		rootprefix = class->name;
+		sep = ".";
+	} else {
+		rootclass = class;
+		rootprefix = sep = "";
+	}
 	paramstext = class->root_constructor->paramstext;
 	sep_or_end = paramstext[0] != ')' ? ", " : "";
 	/* root constructor function signature */
@@ -3313,25 +3320,38 @@ static void print_root_constructor(struct parser *parser, struct class *class)
 		class->name, class->name, rootclass->name, sep_or_end, paramstext);
 	/* no need to update lines_coo here, at end of input */
 	/* virtual inits */
-	for (i = 0; i < rootclass->virtual_ancestors.num; i++) {
-		ancestor = rootclass->virtual_ancestors.mem[i];
-		parentclass = ancestor->parent->class;
-		outprintf(parser, "\tthis->%s = &this->", ancestor->path);
-		literal_ancestor = hasho_find(&rootclass->ancestors, parentclass);
-		if (!literal_ancestor || literal_ancestor->parent->is_virtual)
-			outputs(parser, parentclass->name);
-		else
-			outprintf(parser, "%s", literal_ancestor->path);
-		outwrite(parser, ";\n", 2);  /* coo newline counted above */
+	hasho_foreach(entry, &class->ancestors) {
+		ancestor = entry->value;
+		do {
+			if (ancestor->parent->is_virtual) {
+				parentclass = ancestor->parent->class;
+				outprintf(parser, "\tthis->%s%s%s = &this->",
+					rootprefix, sep, ancestor->path);
+				literal_ancestor = hasho_find(&rootclass->ancestors, parentclass);
+				if (!literal_ancestor || literal_ancestor->parent->is_virtual)
+					outputs(parser, parentclass->name);
+				else
+					outprintf(parser, "%s", literal_ancestor->path);
+				outwrite(parser, ";\n", 2);
+				/* no update lines_coo, input end */
+			}
+			ancestor = ancestor->next;
+		} while (ancestor);
 	}
 	/* vmt inits */
 	for (i = 0; i < class->vmts.num; i++) {
 		vmt = class->vmts.mem[i];
 		ancestor = find_vmt_path(rootclass, vmt, &vmtpath, &vmtaccess);
 		for (;;) {
-			outprintf(parser, "\tthis->%s%svmt = &%s;\n",  /* coo newline counted above */
+			outprintf(parser, "\tthis->%s%svmt = &%s;\n",
 				vmtpath, vmtaccess, get_vmt_name(vmt));
+			/* no update lines_coo, input end */
 			/* loop though duplicates for this origin (literal bases) */
+			for (; ancestor; ancestor = ancestor->next) {
+				/* virtual parents also exist somewhere as literal, skip */
+				if (!ancestor->parent->is_virtual)
+					break;
+			}
 			if (!ancestor)
 				break;
 			vmtpath = ancestor->path;
@@ -3381,15 +3401,9 @@ static void print_root_constructor(struct parser *parser, struct class *class)
 
 			parentclass = member->origin;
 			retstr = parentclass->void_root_constructor ? "" : "if (!";
-			if (class->rootclass) {
-				name = class->name;
-				sep = ".";
-			} else {
-				name = sep = "";
-			}
 			outprintf(parser, "\t%s%s_%s(&this->%s%s%s", retstr,
 				parentclass->name, parentclass->name,
-				name, sep, member->parentname);
+				rootprefix, sep, member->parentname);
 			print_param_names(parser, paramstext);
 			if (member->origin->void_root_constructor)
 				retstr = ");\n";

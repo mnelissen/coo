@@ -20,6 +20,7 @@ struct C : virtual A {
 	int c1;
 	override vfunc_a;
 	virtual void vfunc_c(int c2);
+	virtual void vfunc_c3(int c3);
 };
 
 struct D : B, C {
@@ -27,7 +28,7 @@ struct D : B, C {
 	int d1;
 	override vfunc_a;
 	override vfunc_b;
-	override vfunc_c;
+	override vfunc_c3;
 	virtual void vfunc_d(A* a, B *b);
 };
 
@@ -115,6 +116,12 @@ void C::vfunc_c(int arg)
 	printf("C::vfunc_c(%d), a1=%d, c1=%d\n", arg, a1, c1);
 }
 
+void C::vfunc_c3(int arg)
+{
+	A::vfunc_a(arg);
+	printf("C::vfunc_c3(%d), a1=%d, c1=%d\n", arg, a1, c1);
+}
+
 void D::vfunc_a(int arg)
 {
 	printf("D::vfunc_a(%d), a1=%d, b1=%d c1=%d d1=%d\n", arg, a1, b1, c1, d1);
@@ -125,9 +132,9 @@ void D::vfunc_b(int arg)
 	printf("D::vfunc_b(%d), a1=%d, b1=%d, d1=%d\n", arg, a1, b1, d1);
 }
 
-void D::vfunc_c(int arg)
+void D::vfunc_c3(int arg)
 {
-	printf("D::vfunc_c(%d), a1=%d, b1=%d c1=%d d1=%d\n", arg, a1, b1, c1, d1);
+	printf("D::vfunc_c3(%d), a1=%d, b1=%d c1=%d d1=%d\n", arg, a1, b1, c1, d1);
 }
 
 void D::vfunc_d(A *a, B *b)
@@ -198,6 +205,7 @@ int main(int argc, char **argv)
 	e.vfunc_a(55);
 	e.vfunc_b(56);
 	e.vfunc_c(57);
+	e.vfunc_c3(58);
 	e.vfunc_d(&e, &e);
 
 	new E->vfunc_a(-1);

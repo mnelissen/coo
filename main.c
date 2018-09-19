@@ -151,7 +151,6 @@ struct vmt {
 	struct vmt *parent;          /* pointer to same origin vmt in parent */
 	unsigned char modified;      /* any method overriden by class */
 	unsigned char is_primary;    /* is this the primary vmt for this class? */
-	unsigned char from_virtual;  /* vmt inherited from a virtual base? */
 	char *name;                  /* vmt struct type and variable name */
 };
 
@@ -1656,12 +1655,9 @@ static void addvmt(struct class *class, struct vmt *parent_vmt,
 	vmt->modified = class == origin;
 	/* do not reuse virtual base class' vmt, is inefficient */
 	vmt->is_primary = class->vmt == NULL;
-	vmt->from_virtual = parent_virtual;
 	class->vmts.mem[class->vmts.num++] = vmt;
-	if (parent_vmt) {
+	if (parent_vmt)
 		vmt->is_primary = vmt->is_primary && parent_vmt->is_primary && !parent_virtual;
-		vmt->from_virtual = vmt->from_virtual || parent_vmt->from_virtual;
-	}
 	if (vmt->is_primary)
 		class->vmt = vmt;
 }
@@ -2339,7 +2335,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	}
 
 	/* if we don't have a constructor, then mark it void to avoid 'must define'
-	   errors later on in other classes trying to initiaize this one */
+	   errors later on in other classes trying to initialize this class */
 	if (!class->constructor) {
 		class->void_constructor = 1;
 		/* class-literal members need their constructor called, and we
@@ -2755,6 +2751,11 @@ static void parse_function(struct parser *parser, char *next)
 			member = find_member_e(class, funcname, nameend);
 			if (member != NULL) {
 				class->is_implemented = 1;
+				if (member->props.is_virtual && member->definition != class) {
+					pr_warn(funcname, "overriding virtual method without "
+						"override in class declaration, is "
+						"invisible to descendent classes");
+				}
 			} else {
 				struct memberprops props = {0,};
 				/* undeclared, so it's private, include static */
@@ -3439,11 +3440,16 @@ static void print_vmts(struct parser *parser)
 			if (!vmt->modified)
 				continue;
 
+			/* print trampoline functions for virtual functions
+			   inherited from virtual base classes, where implementation
+			   cannot see literal base therefore cannot translate 'this' */
+			/* note that this implies a root class for this class: if the
+			   base is (also) present as a literal base, that vmt is used */
 			rootsuffix = "";
-			if (vmt->from_virtual) {
+			origin = vmt->origin;
+			ancestor = hasho_find(&class->ancestors, origin);
+			if (ancestor && ancestor->from_virtual) {
 				rootsuffix = "_root";
-				origin = vmt->origin;
-				ancestor = hasho_find(&class->ancestors, origin);
 				for (j = 0; j < class->members_arr.num; j++) {
 					member = class->members_arr.mem[j];
 					if (member->vmt == NULL)
@@ -3467,7 +3473,7 @@ static void print_vmts(struct parser *parser)
 				}
 			}
 
-			/* TODO: fix member-defined-in-class type, make it match */
+			/* print vmt itself */
 			vmt_name = get_vmt_name(vmt);
 			outprintf(parser, "\nstruct %s %s = {\n", vmt_name, vmt_name);
 			for (j = 0; j < class->members_arr.num; j++) {

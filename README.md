@@ -260,6 +260,7 @@ that the method is not overridden anyway.
 * recognize global variables (searched, but never any added)
 * add syntax to zero-initialize a class automatically
 * add destructors, plus call them for stack variables
+* add "final" classes to not need override, and suppress warning?
 
 ## License
 

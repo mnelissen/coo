@@ -104,7 +104,9 @@ struct class {
 	struct vmt *vmt;             /* from primary parent (or new here)  */
 	struct member *constructor;  /* regular constructor defined for this class */
 	struct member *root_constructor;  /* root constructor defined for this class */
+	struct member *destructor;   /* destructor defined for this class */
 	struct class *missing_root;  /* missing root constructor because of non-void ... */
+	struct class *prim_parent;   /* primary parent to mimic constructor of */
 	struct rootclass *rootclass; /* root class for missing virtual base(s), if any */
 	struct hash_entry node;      /* node in parser.classes hash */
 	unsigned num_parent_constr;  /* number of parent constructors */
@@ -112,12 +114,15 @@ struct class {
 	unsigned num_abstract;       /* number of abstract virtual methods */
 	char is_interface;
 	char is_implemented;         /* have seen class implementation */
+	char has_duplicates;         /* multiple parents override same member */
 	char void_constructor;       /* constructor has return type void (can't fail) */
 	char void_root_constructor;  /* root constructor has return type void */
 	char need_root_constructor;  /* has virtual bases or vmts to initialize */
+	char gen_constructor;
 	char gen_root_constructor;   /* need root constructor and not user defined */
-	char has_duplicates;         /* multiple parents override same member */
-	char name[];
+	char gen_destructor;         /* need destructor and not user defined */
+	char name[];                 /* class name, keep behind gen_destructor */
+	                             /* temp.use name[-1] to add gen.destructor */
 };
 
 struct classptr {
@@ -155,6 +160,7 @@ struct vmt {
 };
 
 struct member {
+	struct hash_entry node;    /* entry in class->members */
 	char *rettype;
 	struct classptr retclassptr;
 	struct class *origin;      /* origin class where member was defined */
@@ -170,15 +176,17 @@ struct member {
 	char *nameinsert;   /* this member is inherited, insert this in front */
 	  /* for this class: NULL or empty string
 	     for inherited: field1 ==> parent.field1 */
+	char *implprefix;         /* prefix for implementation name (destructor) */
+	char *implname;           /* implementation name (destructor different) */
 	struct memberprops props;
 	char duplicate_pr;  /* to prevent spam, already printed duplicated message */
 	char parent_virtual;      /* member inherited from a virtual base class */
 	char is_constructor;      /* is the constructor for this class */
 	char is_root_constructor; /* is the root constructor for this class */
+	char is_destructor;       /* is the destructor for this class */
 	char parent_constructor;  /* is the constructor for a parent class */
 	char constructor_called;  /* is a parent constructor and has been called */
-	struct hash_entry node;
-	char name[];
+	char name[];              /* declared name */
 };
 
 DEFINE_STRHASH_FIND_E(class, members, member, member)
@@ -217,6 +225,12 @@ struct initializer {
 	int lineno;             /* source line number where expression appeared */
 };
 
+struct disposer {
+	struct class *class;    /* class to call destructor of */
+	char *name;		/* name of variable */
+	unsigned blocklevel;    /* { } nesting level to destuct at */
+};
+
 enum line_pragma_mode { LINE_PRAGMA_INPUT, LINE_PRAGMA_OUTPUT };
 
 struct parse_file {
@@ -250,6 +264,7 @@ struct parser {
 	struct hash globals;          /* struct variable pointers */
 	struct hash locals;           /* struct variable pointers */
 	struct dynarr initializers;   /* struct initializer pointers */
+	struct dynarr disposers;      /* struct disposer pointers */
 	struct dynarr nested_locals;  /* struct variable pointers */
 	struct dynarr inserts_arr;    /* struct insert pointers (outer layer) */
 	struct dynarr includepaths;   /* char pointers */
@@ -705,6 +720,28 @@ static int grow_dynarr(struct dynarr *dynarr)
 	return grow_dynarr_to(dynarr, dynarr->num);
 }
 
+void *allocdynitem_size(struct dynarr *dynarr, size_t itemsize)
+{
+	void *item;
+
+	if (grow_dynarr(dynarr) < 0)
+		return NULL;
+
+	item = dynarr->mem[dynarr->num];
+	if (item == NULL) {
+		item = malloc(itemsize);
+		if (item == NULL)
+			return NULL;
+
+		dynarr->mem[dynarr->num] = item;
+	}
+
+	dynarr->num++;
+	return item;
+}
+
+#define allocdynitem(arr, pp_item) *(pp_item) = allocdynitem_size(arr, sizeof(**(pp_item)))
+
 /*** print helpers ***/
 
 static void print_message(struct parser *parser,
@@ -712,6 +749,7 @@ static void print_message(struct parser *parser,
 {
 	char msgbuf[256];
 	va_list va_args;
+	int colnr;
 
 	if (parser->num_errors == MAX_USER_ERRORS)
 		return;
@@ -720,8 +758,12 @@ static void print_message(struct parser *parser,
 	va_start(va_args, message);
 	vsnprintf(msgbuf, sizeof(msgbuf), message, va_args);
 	va_end(va_args);
+	if (pos > parser->pf.linestart && pos < parser->pf.bufend)
+		colnr = (int)(pos - parser->pf.linestart);
+	else
+		colnr = 1;
 	fprintf(stderr, "%s:%d:%d: %s: %s\n", parser->pf.filename,
-		parser->pf.lineno, (int)(pos - parser->pf.linestart), severity, msgbuf);
+		parser->pf.lineno, colnr, severity, msgbuf);
 }
 
 #define pr_err(pos, ...) print_message(parser, pos, "error", __VA_ARGS__)
@@ -1000,6 +1042,14 @@ static struct member *allocmember_e(struct class *class, char *membername, char 
 	member = alloc_namestruct(struct member, membername, nameend);
 	if (member == NULL)
 		return NULL;
+	/* translate destructor ~ character */
+	member->implname = member->name;
+	if (membername[0] == '~') {
+		member->implprefix = "d_";
+		member->implname++;
+	} else {
+		member->implprefix = "";
+	}
 	if (insertmember(class, member) < 0)
 		goto err;
 	return member;
@@ -1166,24 +1216,29 @@ static struct member *addmember(struct parser *parser, struct class *class,
 		member->is_constructor = *end != '_' && !isalnum(*end);
 		end = strprefixcmp("_root", end);
 		member->is_root_constructor = end ? !isalnum(*end) : 0;
-	} else {
-		member->is_constructor = 0;
-		member->is_root_constructor = 0;
-	}
-	if (member->is_constructor || member->is_root_constructor) {
-		if (!props.is_function) {
-			pr_err(membername, "constructor must be a function");
-			/* don't bother anymore, prevent problems */
-			class->need_root_constructor = 0;
-		} else {
-			void_ret = is_void_rettype(retstr);
-			if (member->is_constructor) {
-				class->void_constructor = void_ret;
-				class->constructor = member;
+		if (member->is_constructor || member->is_root_constructor) {
+			if (!props.is_function) {
+				pr_err(membername, "constructor must be a function");
+				/* don't bother anymore, prevent problems */
+				class->need_root_constructor = 0;
 			} else {
-				class->void_root_constructor = void_ret;
-				class->root_constructor = member;
+				void_ret = is_void_rettype(retstr);
+				if (member->is_constructor) {
+					class->void_constructor = void_ret;
+					class->constructor = member;
+				} else {
+					class->void_root_constructor = void_ret;
+					class->root_constructor = member;
+				}
 			}
+		}
+	} else if (member->name[0] == '~') {
+		if (!strcmp(class->name, &member->name[1])) {
+			member->is_destructor = 1;
+			class->destructor = member;
+		} else {
+			pr_err(membername, "invalid member name, "
+				"did you mean ~%s?", class->name);
 		}
 	}
 
@@ -1191,6 +1246,31 @@ static struct member *addmember(struct parser *parser, struct class *class,
 	   insert into classes inheriting from this class as well */
 	addmember_to_children(parser, membername, class, member);
 	return member;
+}
+
+void addgenmember(struct parser *parser, struct class *class,
+		struct member *mimic, char *name, char *nameend)
+{
+	struct memberprops constructorprops = {0,};
+	char *rettypestr, *retend, *params;
+	struct classtype rettype;
+
+	constructorprops.is_function = 1;
+	rettype.implicit = 0;
+	if (mimic) {
+		rettype.decl = mimic->retclassptr;
+		rettypestr = mimic->rettype;
+		retend = rettypestr + strlen(rettypestr);
+		params = mimic->paramstext;
+	} else {
+		rettype.decl.class = NULL;
+		rettype.decl.pointerlevel = 0;
+		rettypestr = "void ";
+		retend = rettypestr + 5;   /* "void " */
+		params = ")";
+	}
+	addmember(parser, class, &rettype, rettypestr, retend,
+		name, nameend, params, constructorprops);
 }
 
 static struct variable *addvariable(struct parser *parser, unsigned blocklevel,
@@ -1290,17 +1370,9 @@ static struct initializer *addinitializer(struct parser *parser,
 {
 	struct initializer *initializer;
 
-	if (grow_dynarr(&parser->initializers) < 0)
+	allocdynitem(&parser->initializers, &initializer);
+	if (initializer == NULL)
 		return NULL;
-
-	initializer = parser->initializers.mem[parser->initializers.num];
-	if (initializer == NULL) {
-		initializer = malloc(sizeof(*initializer));
-		if (initializer == NULL)
-			return NULL;
-
-		parser->initializers.mem[parser->initializers.num] = initializer;
-	}
 
 	initializer->lineno = parser->pf.lineno;
 	initializer->varclass = varclass;
@@ -1308,8 +1380,25 @@ static struct initializer *addinitializer(struct parser *parser,
 	initializer->name = name;
 	initializer->start = start;
 	parser->inserts = &initializer->inserts;
-	parser->initializers.num++;
 	return initializer;
+}
+
+static struct disposer *adddisposer(struct parser *parser,
+		struct class *class, char *name, unsigned blocklevel)
+{
+	struct disposer *disposer;
+
+	if (!class->destructor)
+		return NULL;
+
+	allocdynitem(&parser->disposers, &disposer);
+	if (disposer == NULL)
+		return NULL;
+
+	disposer->class = class;
+	disposer->name = name;
+	disposer->blocklevel = blocklevel;
+	return disposer;
 }
 
 static int addincludepath(struct parser *parser, char *path)
@@ -1798,6 +1887,37 @@ static struct member *implmember(struct parser *parser, char *parsepos,
 	return member;
 }
 
+static void print_func_header(struct parser *parser,
+		struct class *class, struct member *member)
+{
+	char *paramstext, *sep_or_end;
+
+	paramstext = member->paramstext;
+	sep_or_end = paramstext[0] != ')' ? ", " : "";
+	outprintf(parser, "\n%s%s_%s%s(struct %s *this%s%s\n{\n",
+		member->rettype, class->name, member->implprefix, member->implname,
+		class->name, sep_or_end, paramstext);
+}
+
+static int is_member_lit_var(struct class *class, struct member *member)
+{
+	return !member->props.is_function && member->retclassptr.class
+		&& member->retclassptr.pointerlevel == 0
+		&& member->origin == class;
+}
+
+static int member_needs_init(struct class *class, struct member *member)
+{
+	return is_member_lit_var(class, member)
+		&& member->retclassptr.class->root_constructor;
+}
+
+static int member_needs_dispose(struct class *class, struct member *member)
+{
+	return is_member_lit_var(class, member)
+		&& member->retclassptr.class->destructor;
+}
+
 static struct rootclass *addrootclass(struct parser *parser, struct class *parentclass)
 {
 	struct rootclass *class;
@@ -1897,9 +2017,9 @@ static void print_vmt_type(struct parser *parser, struct class *class)
 				continue;
 
 			thisclass = get_vmt_this_class(member);
-			outprintf(parser, "\t%s(*%s)(struct %s *this%s%s;\n",
-				member->rettype, member->name, thisclass->name,
-				member->paramstext[0] != ')' ? ", " : "",
+			outprintf(parser, "\t%s(*%s%s)(struct %s *this%s%s;\n",
+				member->rettype, member->implprefix, member->implname,
+				thisclass->name, member->paramstext[0] != ')' ? ", " : "",
 				member->paramstext);
 			parser->pf.lines_coo++;
 		}
@@ -1973,14 +2093,15 @@ static void print_func_decl(struct parser *parser, struct class *class,
 	}
 	thisclass = get_impl_this_class(member);
 	rootclass = member->is_root_constructor && class->rootclass ? "_root" : "";
-	outprintf(parser, "\n%s%s%s_%s%s(struct %s%s *this%s%s%s", func_prefix,
-		member->rettype, class->name, name_insert, member->name, thisclass->name,
-		rootclass, empty ? "" : ", ", member->paramstext, func_body);
+	outprintf(parser, "\n%s%s%s_%s%s%s(struct %s%s *this%s%s%s", func_prefix,
+		member->rettype, class->name, name_insert,
+		member->implprefix, member->implname, thisclass->name, rootclass,
+		empty ? "" : ", ", member->paramstext, func_body);
 	parser->pf.lines_coo++;
 	if (emittype == VIRTUAL_WRAPPER) {
 		find_vmt_path(class, member->vmt, &vmtpath, &vmtaccess);
-		outprintf(parser, "\n\t((struct %s_vmt*)this->%s%svmt)->%s(this",
-			class->name, vmtpath, vmtaccess, member->name);
+		outprintf(parser, "\n\t((struct %s_vmt*)this->%s%svmt)->%s%s(this",
+			class->name, vmtpath, vmtaccess, member->implprefix, member->implname);
 		print_param_names(parser, member->paramstext);
 		outprintf(parser, ");\n}\n");
 		parser->pf.lines_coo += 4;  /* 1 in func_body, 3 here */
@@ -2043,7 +2164,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	char *declbegin, *retend, *membername, *nameend, *params, *declend, *nextdecl;
 	char *classname, *classnameend, *parentname, *retnext, *prevdeclend, *prevnext;
 	int level, is_typedef, parent_primary, parent_virtual, is_lit_var;
-	int first_virtual_warn, first_vmt_warn, empty_line;
+	int first_virtual_warn, first_vmt_warn, empty_line, need_destructor;
 	struct classtype *parentclasstype, rettype;
 	struct parent *parent, *firstparent;
 	struct member *member;
@@ -2148,6 +2269,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 
 	level = 1;  /* next is at opening brace '{' */
 	declbegin = NULL;
+	need_destructor = 0;
 	membername = retend = next;  /* make compiler happy */
 	for (;;) {
 		/* search (sub)struct or end of variable or function prototype */
@@ -2294,8 +2416,12 @@ static struct class *parse_struct(struct parser *parser, char *next)
 			} else {
 				member = addmember(parser, class, &rettype, declbegin,
 					retend, membername, nameend, params, memberprops);
-				if (member && is_lit_var && rettype.decl.class->root_constructor)
-					class->num_init_vars++;
+				if (member && is_lit_var) {
+					if (rettype.decl.class->root_constructor)
+						class->num_init_vars++;
+					if (rettype.decl.class->destructor)
+						need_destructor = 1;
+				}
 			}
 		}
 
@@ -2305,27 +2431,24 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	/* add root constructor if needed and user did not define one */
 	if (!class->num_abstract && class->need_root_constructor && !class->root_constructor) {
 		/* copy user's constructor signature if defined */
-		struct memberprops constructorprops = {0,};
 		char namebuf[128];
-		int len;
-		constructorprops.is_function = 1;
-		rettype.implicit = 0;
-		if (class->constructor) {
-			rettype.decl = class->constructor->retclassptr;
-			declbegin = class->constructor->rettype;
-			retend = declbegin + strlen(declbegin);
-			params = class->constructor->paramstext;
-		} else {
-			rettype.decl.class = NULL;
-			rettype.decl.pointerlevel = 0;
-			declbegin = "void ";
-			retend = declbegin + 5;   /* "void " */
-			params = ")";
-		}
-		len = snprintf(namebuf, sizeof(namebuf), "%s_root", class->name);
-		addmember(parser, class, &rettype, declbegin,
-			retend, namebuf, namebuf + len, params, constructorprops);
+		int len = snprintf(namebuf, sizeof(namebuf), "%s_root", class->name);
+		addgenmember(parser, class, class->constructor, namebuf, namebuf+len);
 		class->gen_root_constructor = 1;
+	}
+
+	/* add constructor if there are literal class variables with root constructor */
+	if (class->num_init_vars && !class->constructor) {
+		member = class->prim_parent ? class->prim_parent->constructor : NULL;
+		addgenmember(parser, class, member, classname, classnameend);
+		class->gen_constructor = 1;
+	}
+	/* add destructor if there are literal class variables with destructor */
+	if (need_destructor && !class->destructor) {
+		class->name[-1] = '~';  /* &name[-1] == &gen_destructor */
+		addgenmember(parser, class, NULL, &class->name[-1],
+			&class->name[classnameend-classname]);
+		class->gen_destructor = 1;
 	}
 
 	/* if we don't need a root constructor, then use the normal constructor */
@@ -2591,7 +2714,7 @@ static void print_inserts(struct parser *parser, struct dynarr *inserts)
 	inserts->num = 0;
 }
 
-static void print_initializers(struct parser *parser, char *position)
+static void print_initializers(struct parser *parser, char *position, unsigned blocklevel)
 {
 	char *linestart, *params, *sep_or_end;
 	struct initializer *initializer;
@@ -2635,6 +2758,7 @@ static void print_initializers(struct parser *parser, char *position)
 			member = class->root_constructor;
 			outprintf(parser, "%s_%s(&%s%s", member->origin->name,
 				member->name, initializer->name, sep_or_end);
+			adddisposer(parser, class, initializer->name, blocklevel);
 		} else {
 			parser->pf.writepos = initializer->name;
 		}
@@ -2647,6 +2771,40 @@ static void print_initializers(struct parser *parser, char *position)
 	/* resync lineno in case there is an empty line between initialization section
 	   and statements; linestart is before line ending, so compare with lineno + 1 */
 	pr_lineno(parser, parser->pf.lineno);
+}
+
+static void print_disposers(struct parser *parser, char *position, unsigned blocklevel)
+{
+	struct disposer *disposer;
+	struct member *member;
+	char *linestart;
+	unsigned i;
+
+	if ((i = parser->disposers.num) == 0)
+		return;
+	if ((disposer = parser->disposers.mem[--i])->blocklevel < blocklevel)
+		return;
+
+	/* go back to start of line, so we can print full line statements
+	   copy the indentation to our added lines */
+	linestart = rev_lineend(parser->pf.writepos, position);
+	flush_until(parser, linestart);
+	switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
+	for (;; i--) {
+		outwrite(parser, linestart, position - linestart);
+		member = disposer->class->destructor;
+		outprintf(parser, "\t%s_%s%s(&%s);", member->origin->name,
+			member->implprefix, member->implname, disposer->name);
+		if (i == 0)
+			break;
+		disposer = parser->disposers.mem[i - 1];
+		if (disposer->blocklevel < blocklevel)
+			break;
+	}
+
+	parser->disposers.num = i;
+	parser->pf.writepos = linestart;
+	switch_line_pragma(parser, LINE_PRAGMA_INPUT);
 }
 
 static void param_to_variable(struct parser *parser, int position,
@@ -2770,8 +2928,13 @@ static void parse_function(struct parser *parser, char *next)
 			}
 			/* replace :: with _ */
 			flush_until(parser, dblcolonsep);
-			outwrite(parser, "_", 1);
 			parser->pf.writepos = funcname;
+			if (funcname[0] == '~') {
+				/* destructor, translate to valid C name */
+				outwrite(parser, "_d_", 3);
+				parser->pf.writepos++;
+			} else
+				outwrite(parser, "_", 1);
 			flush_until(parser, params);
 			/* check if there are parameters */
 			argsep = ", ";  /* start assumption: separate "this", rest params */
@@ -2863,7 +3026,7 @@ static void parse_function(struct parser *parser, char *next)
 		/* pending initializers and this looks like statement, then print */
 		if (parser->initializers.num && parenlevel == 0 &&
 				(*curr == '=' || *curr == '(' || *curr == '{') && numwords < 2)
-			print_initializers(parser, memberstart[0]);
+			print_initializers(parser, memberstart[0], blocklevel);
 
 		/* track block nesting level */
 		if (*curr == '{') {
@@ -2872,8 +3035,8 @@ static void parse_function(struct parser *parser, char *next)
 			continue;
 		}
 		if (*curr == '}') {
+			print_disposers(parser, curr, blocklevel);
 			remove_locals(parser, blocklevel);
-			print_initializers(parser, curr);
 			if (--blocklevel == 0)
 				break;
 			next = curr + 1;
@@ -3249,10 +3412,7 @@ static void parse_function(struct parser *parser, char *next)
 			if (member->parent_constructor) {
 				pr_err(curr, "missing parent constructor "
 					"%s call", member->name);
-			} else if (!member->props.is_function && member->retclassptr.class
-					&& member->retclassptr.pointerlevel == 0
-					&& member->origin == class
-					&& member->retclassptr.class->root_constructor) {
+			} else if (member_needs_init(class, member)) {
 				pr_err(curr, "missing member root constructor "
 					"call %s.%s_root()", member->name,
 					member->retclassptr.class->name);
@@ -3417,14 +3577,116 @@ static void print_root_constructor(struct parser *parser, struct class *class)
 	outwrite(parser, "}\n", 2);
 }
 
-static void print_vmts(struct parser *parser)
+static void print_constructor(struct parser *parser, struct class *class)
 {
-	struct class *class, *origin;
+	char *paramstext, *sep_or_end;
+	struct class *memberclass;
 	struct member *member;
+	unsigned i;
+
+	if (!class->gen_constructor)
+		return;
+
+	print_func_header(parser, class, class->constructor);
+	for (i = 0; i < class->members_arr.num; i++) {
+		member = class->members_arr.mem[i];
+		if (!member_needs_init(class, member))
+			continue;
+		paramstext = member->paramstext;
+		sep_or_end = paramstext[0] != ')' ? ", " : "";
+		memberclass = member->retclassptr.class;
+		outprintf(parser, "\t%s_%s(&this->%s%s",
+			memberclass->name, memberclass->root_constructor->name,
+			member->name, sep_or_end);
+		print_param_names(parser, paramstext);
+		outwrite(parser, ");\n", 3);
+	}
+	outwrite(parser, "}\n", 2);
+}
+
+static void print_destructor(struct parser *parser, struct class *class)
+{
+	struct class *memberclass;
+	struct member *member, *destructor;
+	unsigned i;
+
+	if (!class->gen_destructor)
+		return;
+
+	print_func_header(parser, class, class->destructor);
+	for (i = class->members_arr.num; i > 0; i--) {
+		member = class->members_arr.mem[i-1];
+		if (!member_needs_dispose(class, member))
+			continue;
+		memberclass = member->retclassptr.class;
+		destructor = memberclass->destructor;
+		outprintf(parser, "\t%s_%s%s(&this->%s);\n",
+			memberclass->name, destructor->implprefix,
+			destructor->implname, member->name);
+	}
+	outwrite(parser, "}\n", 2);
+}
+
+static void print_trampolines(struct parser *parser, struct class *class,
+		struct ancestor *ancestor, struct class *origin)
+{
+	struct member *member;
+	unsigned i;
+
+	for (i = 0; i < class->members_arr.num; i++) {
+		member = class->members_arr.mem[i];
+		if (member->vmt == NULL)
+			continue;
+		if (member->vmt->origin != origin)
+			continue;
+
+		outprintf(parser, "\n%s%s_root_%s%s(struct %s *__this, %s\n"
+			"{\tstruct %s_root *this = container_of("
+				"__this, struct %s_root, %s);\n"
+			"\t%s%s_%s%s(&this->%s",
+			member->rettype, class->name, member->implprefix,
+			member->implname, origin->name, member->paramstext,
+			class->name, class->name, ancestor->path,
+			is_void_rettype(member->rettype) ? "" : "return ",
+			member->definition->name, member->implprefix,
+			member->implname, class->name);
+		print_param_names(parser, member->paramstext);
+		outprintf(parser, ");\n}\n");
+		/* no need to count lines_coo here, end of input */
+	}
+}
+
+static void print_vmt(struct parser *parser, struct class *class,
+		struct vmt *vmt, const char *rootsuffix)
+{
+	struct member *member;
+	const char *vmt_name;
+	unsigned i;
+
+	vmt_name = get_vmt_name(vmt);
+	outprintf(parser, "\nstruct %s %s = {\n", vmt_name, vmt_name);
+	for (i = 0; i < class->members_arr.num; i++) {
+		member = class->members_arr.mem[i];
+		if (member->vmt == NULL)
+			continue;
+		if (member->vmt->origin != vmt->origin)
+			continue;
+
+		outprintf(parser, "\t%s%s_%s%s,\n",
+			member->definition->name, rootsuffix,
+			member->implprefix, member->implname);
+	}
+	outprintf(parser, "};\n");
+	/* no need to count lines_coo here, end of input */
+}
+
+static void print_class_impl(struct parser *parser)
+{
+	struct class *class, *vmt_origin;
 	struct ancestor *ancestor;
-	const char *vmt_name, *rootsuffix;
+	const char *rootsuffix;
 	struct vmt *vmt;
-	unsigned i, j;
+	unsigned i;
 
 	hash_foreach(class, &parser->classes) {
 		if (class->num_abstract || !class->is_implemented)
@@ -3444,54 +3706,23 @@ static void print_vmts(struct parser *parser)
 			   inherited from virtual base classes, where implementation
 			   cannot see literal base therefore cannot translate 'this' */
 			/* note that this implies a root class for this class: if the
-			   base is (also) present as a literal base, that vmt is used */
+			   base is present as a literal base, no need for root class */
 			rootsuffix = "";
-			origin = vmt->origin;
-			ancestor = hasho_find(&class->ancestors, origin);
+			vmt_origin = vmt->origin;
+			ancestor = hasho_find(&class->ancestors, vmt_origin);
 			if (ancestor && ancestor->from_virtual) {
 				rootsuffix = "_root";
-				for (j = 0; j < class->members_arr.num; j++) {
-					member = class->members_arr.mem[j];
-					if (member->vmt == NULL)
-						continue;
-					if (member->vmt->origin != origin)
-						continue;
-
-					outprintf(parser, "\n%s%s_root_%s(struct %s *__this, %s\n"
-						"{\tstruct %s_root *this = container_of("
-						  "__this, struct %s_root, %s);\n"
-						"\t%s%s_%s(&this->%s",
-						member->rettype, class->name,
-						member->name, origin->name, member->paramstext,
-						class->name, class->name, ancestor->path,
-						is_void_rettype(member->rettype) ? "" : "return ",
-						member->definition->name, member->name,
-						class->name);
-					print_param_names(parser, member->paramstext);
-					outprintf(parser, ");\n}\n");
-					/* no need to count lines_coo here, end of input */
-				}
+				print_trampolines(parser, class, ancestor, vmt_origin);
 			}
 
 			/* print vmt itself */
-			vmt_name = get_vmt_name(vmt);
-			outprintf(parser, "\nstruct %s %s = {\n", vmt_name, vmt_name);
-			for (j = 0; j < class->members_arr.num; j++) {
-				member = class->members_arr.mem[j];
-				if (member->vmt == NULL)
-					continue;
-				if (member->vmt->origin != vmt->origin)
-					continue;
-
-				outprintf(parser, "\t%s%s_%s,\n",
-					member->definition->name, rootsuffix, member->name);
-			}
-			outprintf(parser, "};\n");
-			/* no need to count lines_coo here, end of input */
+			print_vmt(parser, class, vmt, rootsuffix);
 		}
 
 		print_class_alloc(parser, class);
 		print_root_constructor(parser, class);
+		print_constructor(parser, class);
+		print_destructor(parser, class);
 	}
 }
 
@@ -3782,7 +4013,7 @@ static int parse_source_size(struct parser *parser, char *filename,
 	parse(parser);
 	new_errors = parser->num_errors > prev_num_errors;
 	if (!new_errors)
-		print_vmts(parser);
+		print_class_impl(parser);  /* vmt(s), alloc, constr. */
 	/* if no syntax added by coo parser, then can keep original filename in #include */
 	if (parser->pf.writepos == buffer) {
 		/* if parsing included file, and nothing changed, do not write any output */

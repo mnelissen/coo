@@ -113,8 +113,11 @@ in them, and these functions can be virtual. It is possible to declare
 variables of class types on the stack and also to create them dynamically
 using keyword 'new'. See also [Constructors](#Constructors).
 
-Implementing functions in classes also uses same syntax as in C++. Inside the
-class function implementation you can access member variables. E.g.:
+Implementing functions in classes also uses same syntax as in C++. It is
+allowed to define (implement) functions that were not declared for that
+class. These are automatically made 'static' in the traditional C sense
+of being scoped to this file. Inside the class function implementation
+you can access member variables. E.g.:
 
 ``` cpp
 struct A {
@@ -122,8 +125,15 @@ struct A {
   void somefunc(void);
 };
 
+void A::helperfunc(void)
+{
+  /* not declared in struct A, but is okay, now visible to this file */
+  printf("helperfunc\n");
+}
+
 void A::somefunc(void)
 {
+  helperfunc();
   printf("%d", a);
 }
 ```
@@ -259,7 +269,7 @@ that the method is not overridden anyway.
 
 * recognize global variables (searched, but never any added)
 * add syntax to zero-initialize a class automatically
-* add destructors, plus call them for stack variables
+* run destructors also when returning
 * add "final" classes to not need override, and suppress warning?
 
 ## License

@@ -254,6 +254,16 @@ just like in C++. E.g. suppose class C with constructor C::C(int x) then
 "C c(5);" declares a variable called "c" and calls its constructor with the
 value 5.
 
+### Destructors
+
+For stack variables, destructors run automatically at end of function.
+Return statements are translated into 'goto' statements that jump to a
+common point at the end of the function.
+
+When using goto, do not jump over declaring new variables. This will also
+skip their constructor calls. But at exit of function, the destructor
+will be called anyway likely leading to wrong behavior.
+
 ### Call inherited functions
 
 In general member names and therefore function calls are unique. But when
@@ -269,7 +279,6 @@ that the method is not overridden anyway.
 
 * recognize global variables (searched, but never any added)
 * add syntax to zero-initialize a class automatically
-* run destructors also when returning
 * add "final" classes to not need override, and suppress warning?
 
 ## License

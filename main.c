@@ -229,6 +229,7 @@ struct disposer {
 	struct class *class;    /* class to call destructor of */
 	char *name;		/* name of variable */
 	unsigned blocklevel;    /* { } nesting level to destuct at */
+	unsigned retblocknr;    /* block number for return goto(s), disposers */
 };
 
 enum line_pragma_mode { LINE_PRAGMA_INPUT, LINE_PRAGMA_OUTPUT };
@@ -355,27 +356,33 @@ static char *rev_lineend(const char *bufstart, char *position)
 }
 
 /* assumes pos[0] == '/' was matched, starting a possible comment */
-static char *skip_comment(struct parser *parser, char *pos)
+static int skip_comment(struct parser *parser, char **retpos)
 {
+	char *pos = *retpos;
 	/* C style comment? */
 	if (pos[1] == '*') {
 		for (pos += 2;; pos++) {
 			pos = parser_strchrnul(parser, pos, '*');
 			if (pos[0] == 0)
-				return pos;
+				goto moved;
 			if (pos[1] == '/')
 				break;
 		}
-		return pos + 2;
+		pos += 2;
+		goto moved;
 	}
 	/* C++ style comment? */
 	if (pos[1] == '/') {
 		pos = parser_strchrnul(parser, pos+2, '\n');
 		if (pos[0] == 0)
-			return pos;
-		return pos + 1;
+			goto moved;
+		pos++;
+		goto moved;
 	}
-	return pos;
+	return 0;
+moved:
+	*retpos = pos;
+	return 1;
 }
 
 static char *skip_whitespace(struct parser *parser, char *p)
@@ -384,9 +391,10 @@ static char *skip_whitespace(struct parser *parser, char *p)
 		if (isspace(*p)) {
 			parser_check_lineend(parser, p);
 			p++;
-		} else if (*p == '/')
-			p = skip_comment(parser, p);
-		else if (*p == '"') {
+		} else if (*p == '/') {
+			if (!skip_comment(parser, &p))
+				break;
+		} else if (*p == '"') {
 			for (;;) {
 				p = parser_strchrnul(parser, p + 1, '"');
 				if (*p == 0)
@@ -415,9 +423,10 @@ static char *skip_whiteline(struct parser *parser, char *p)
 	for (;;) {
 		if (islinespace(*p))
 			p++;
-		else if (*p == '/')
-			p = skip_comment(parser, p);
-		else
+		else if (*p == '/') {
+			if (!skip_comment(parser, &p))
+				break;
+		} else
 			break;
 	}
 	/* skip one line ending, not all */
@@ -431,27 +440,33 @@ static char *skip_whiteline(struct parser *parser, char *p)
 }
 
 /* assumes pos[0] == '/' was matched, starting a possible comment */
-static char *strskip_comment(char *pos)
+static int strskip_comment(char **retpos)
 {
+	char *pos = *retpos;
 	/* C style comment? */
 	if (pos[1] == '*') {
 		for (pos += 2;; pos++) {
 			pos = strchrnul(pos, '*');
 			if (pos[0] == 0)
-				return pos;
+				goto moved;
 			if (pos[1] == '/')
 				break;
 		}
-		return pos + 2;
+		pos += 2;
+		goto moved;
 	}
 	/* C++ style comment? */
 	if (pos[1] == '/') {
 		pos = strchrnul(pos+2, '\n');
 		if (pos[0] == 0)
-			return pos;
-		return pos + 1;
+			goto moved;
+		pos++;
+		goto moved;
 	}
-	return pos;
+	return 0;
+moved:
+	*retpos = pos;
+	return 1;
 }
 
 static char *strskip_whitespace(char *p)
@@ -459,9 +474,10 @@ static char *strskip_whitespace(char *p)
 	for (;;) {
 		if (isspace(*p))
 			p++;
-		else if (*p == '/')
-			p = strskip_comment(p);
-		else
+		else if (*p == '/') {
+			if (!strskip_comment(&p))
+				break;
+		} else
 			break;
 	}
 	return p;
@@ -474,13 +490,18 @@ static char *skip_word(char *p)
 	return p;
 }
 
+static char *skip_methodname(char *p)
+{
+	if (*p == '~')
+		p++;
+	return skip_word(p);
+}
+
 /* scan for character set, ignoring comments, include '/' and '\n' in set!
    if '/' is first in set, then skip '/' as a token
    if '\n' is second in set, then skip '\n' as token */
 static char *scan_token(struct parser *parser, char *pos, char *set)
 {
-	char *newpos;
-
 	for (;;) {
 		pos = strpbrk(pos, set);
 		if (pos == NULL)
@@ -494,17 +515,14 @@ static char *scan_token(struct parser *parser, char *pos, char *set)
 		}
 		if (pos[0] != '/')
 			return pos;
-		newpos = skip_comment(parser, pos);
-		if (newpos[0] == 0)
-			return NULL;
-		if (newpos == pos) {
+		if (!skip_comment(parser, &pos)) {
 			/* no comment detected, do we want this '/' as token? */
 			if (set[0] != '/')
 				return pos;
 			/* no, skip it */
-			newpos++;
-		}
-		pos = newpos;
+			pos++;
+		} else if (pos[0] == 0)
+			return NULL;
 	}
 }
 
@@ -1384,7 +1402,7 @@ static struct initializer *addinitializer(struct parser *parser,
 }
 
 static struct disposer *adddisposer(struct parser *parser,
-		struct class *class, char *name, unsigned blocklevel)
+		struct class *class, char *name, unsigned blocklevel, unsigned retblocknr)
 {
 	struct disposer *disposer;
 
@@ -1398,6 +1416,7 @@ static struct disposer *adddisposer(struct parser *parser,
 	disposer->class = class;
 	disposer->name = name;
 	disposer->blocklevel = blocklevel;
+	disposer->retblocknr = retblocknr;
 	return disposer;
 }
 
@@ -2051,9 +2070,10 @@ static void print_param_names(struct parser *parser, char *params)
 		last_word = NULL;
 		/* search for last word, assume it is parameter name */
 		while (*p != ')' && *p != ',') {
-			if (*p == '/')
-				p = skip_comment(parser, p);
-			else if (isalpha(*p)) {
+			if (*p == '/') {
+				if (!skip_comment(parser, &p))
+					p++;
+			} else if (isalpha(*p)) {
 				last_word = p;
 				last_end = p = skip_word(p);
 			} else
@@ -2320,7 +2340,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 				break;
 		}
 		/* find nameend and real params in case of function pointer variable */
-		nameend = skip_word(membername);
+		nameend = skip_methodname(membername);
 		if (params < nameend) {
 			params = scan_token(parser, nameend, "/\n(;");
 			if (!params)
@@ -2714,7 +2734,8 @@ static void print_inserts(struct parser *parser, struct dynarr *inserts)
 	inserts->num = 0;
 }
 
-static void print_initializers(struct parser *parser, char *position, unsigned blocklevel)
+static void print_initializers(struct parser *parser, char *position, unsigned blocklevel,
+		unsigned retblocknr, char *retvartype, char *retvartypeend)
 {
 	char *linestart, *params, *sep_or_end;
 	struct initializer *initializer;
@@ -2730,6 +2751,12 @@ static void print_initializers(struct parser *parser, char *position, unsigned b
 	   copy the indentation to our added lines */
 	linestart = rev_lineend(parser->pf.writepos, position);
 	flush_until(parser, linestart);
+	/* define a return variable if needed */
+	if (retvartype) {
+		outwrite(parser, linestart, position - linestart);
+		outwrite(parser, retvartype, retvartypeend - retvartype);
+		outwrite(parser, "__coo_ret;", 10);
+	}
 	lineno = 0;
 	for (i = 0; i < parser->initializers.num; i++) {
 		initializer = parser->initializers.mem[i];
@@ -2758,7 +2785,7 @@ static void print_initializers(struct parser *parser, char *position, unsigned b
 			member = class->root_constructor;
 			outprintf(parser, "%s_%s(&%s%s", member->origin->name,
 				member->name, initializer->name, sep_or_end);
-			adddisposer(parser, class, initializer->name, blocklevel);
+			adddisposer(parser, class, initializer->name, blocklevel, retblocknr);
 		} else {
 			parser->pf.writepos = initializer->name;
 		}
@@ -2773,35 +2800,55 @@ static void print_initializers(struct parser *parser, char *position, unsigned b
 	pr_lineno(parser, parser->pf.lineno);
 }
 
-static void print_disposers(struct parser *parser, char *position, unsigned blocklevel)
+static void print_disposers(struct parser *parser, char *position,
+		unsigned blocklevel, unsigned next_retblocknr, int need_retvar)
 {
 	struct disposer *disposer;
 	struct member *member;
 	char *linestart;
-	unsigned i;
+	unsigned i, retblocknr;
 
-	if ((i = parser->disposers.num) == 0)
-		return;
-	if ((disposer = parser->disposers.mem[--i])->blocklevel < blocklevel)
-		return;
+	if ((i = parser->disposers.num) == 0) {
+		/* only return if also no label to print */
+		if (next_retblocknr == 0)
+			return;
+		retblocknr = 0;
+	} else {
+		disposer = parser->disposers.mem[i-1];
+		if (disposer->blocklevel < blocklevel)
+			return;
+		retblocknr = disposer->retblocknr;
+	}
 
 	/* go back to start of line, so we can print full line statements
 	   copy the indentation to our added lines */
 	linestart = rev_lineend(parser->pf.writepos, position);
 	flush_until(parser, linestart);
 	switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
-	for (;; i--) {
+	for (;;) {
+		if (next_retblocknr != retblocknr) {
+			outprintf(parser, "\n__coo_out%d:", retblocknr);
+			next_retblocknr = retblocknr;
+			/* in case no disposers, just to print label */
+			if (i == 0)
+				break;
+		}
 		outwrite(parser, linestart, position - linestart);
 		member = disposer->class->destructor;
 		outprintf(parser, "\t%s_%s%s(&%s);", member->origin->name,
 			member->implprefix, member->implname, disposer->name);
-		if (i == 0)
+		if (--i == 0)
 			break;
 		disposer = parser->disposers.mem[i - 1];
 		if (disposer->blocklevel < blocklevel)
 			break;
+		retblocknr = disposer->retblocknr;
 	}
 
+	if (blocklevel == 1 && need_retvar) {
+		outwrite(parser, linestart, position - linestart);
+		outprintf(parser, "\treturn __coo_ret;");
+	}
 	parser->disposers.num = i;
 	parser->pf.writepos = linestart;
 	switch_line_pragma(parser, LINE_PRAGMA_INPUT);
@@ -2858,6 +2905,7 @@ static void select_next_param(struct paramstate *state, struct classptr *dest)
 
 /* state for detecting function variable: (*name)(.... */
 enum parse_funcvar_state { FV_NONE, FV_NAME, FV_PARENCLOSE };
+enum goto_return { GOTO_RET_NONE, GOTO_RET, GOTO_RET_BLOCK };
 
 static int is_expr(enum parse_state state)
 {
@@ -2879,14 +2927,18 @@ static void parse_function(struct parser *parser, char *next)
 	char *curr, *funcname, *nameend, *classname, *name, *argsep, *dblcolonsep;
 	char *exprstart[MAX_PAREN_LEVELS], *exprend, *params, *param0, *paramend;
 	char *memberstart[MAX_PAREN_LEVELS], *funcvarname, *funcvarnameend;
-	char *thisprefix, *thisclassname;
+	char *thisprefix, *thisclassname, *thisfuncret, *thisfuncretend;
 	enum parse_funcvar_state funcvarstate;
 	enum parse_state state, nextstate;
+	enum goto_return goto_ret;
 	int is_constructor, blocklevel, parenlevel, seqparen, numwords;
+	int have_retvar, need_retvar, used_retvar, void_retvar;
+	int retblocknr, next_retblocknr;
 	unsigned i, num_constr_called, num_constr;
 
+	thisfuncret = parser->pf.pos;
 	funcname = NULL, classname = next;
-	for (; classname > parser->pf.pos && !isspace(*(classname-1)); classname--) {
+	for (; classname > thisfuncret && !isspace(*(classname-1)); classname--) {
 		if (classname[0] == ':' && classname[1] == ':') {
 			dblcolonsep = classname;
 			classname[0] = 0;
@@ -2894,6 +2946,7 @@ static void parse_function(struct parser *parser, char *next)
 		}
 	}
 
+	thisfuncretend = classname;
 	is_constructor = num_constr_called = num_constr = 0;
 	params = ++next;  /* advance after '(' */
 	next = param0 = skip_whitespace(parser, params);
@@ -2905,7 +2958,7 @@ static void parse_function(struct parser *parser, char *next)
 	if (funcname) {   /* funcname assigned means there is a classname::funcname */
 		if ((class = find_class(parser, classname)) != NULL) {
 			/* lookup method name */
-			nameend = skip_word(funcname);
+			nameend = skip_methodname(funcname);
 			member = find_member_e(class, funcname, nameend);
 			if (member != NULL) {
 				class->is_implemented = 1;
@@ -2920,10 +2973,10 @@ static void parse_function(struct parser *parser, char *next)
 				flush(parser);
 				outputs(parser, "static ");
 				/* add as member so others can call from further down */
-				parse_type(parser, parser->pf.pos, &curr, &rettype);
+				parse_type(parser, thisfuncret, &curr, &rettype);
 				props.is_function = 1;
 				props.seen = 1;
-				member = addmember(parser, class, &rettype, parser->pf.pos,
+				member = addmember(parser, class, &rettype, thisfuncret,
 					classname, funcname, nameend, params, props);
 			}
 			/* replace :: with _ */
@@ -3011,11 +3064,14 @@ static void parse_function(struct parser *parser, char *next)
 
 	seqparen = parenlevel = exprdecl[0].pointerlevel = numwords = 0;
 	exprdecl[0].class = targetdecl[0].class = decl.class = immdecl.class = NULL;
+	have_retvar = need_retvar = used_retvar = void_retvar = 0;
 	exprstart[0] = memberstart[0] = exprend = NULL;
 	funcvarname = funcvarnameend = name = NULL;  /* make compiler happy */
+	retblocknr = next_retblocknr = 0;
 	parser->initializers.num = 0;
 	targetparams[0].params = NULL;
 	funcvarstate = FV_NONE;
+	goto_ret = GOTO_RET_NONE;
 	state = STMTSTART;
 	initializer = NULL;
 	for (;;) {
@@ -3025,8 +3081,12 @@ static void parse_function(struct parser *parser, char *next)
 			return;
 		/* pending initializers and this looks like statement, then print */
 		if (parser->initializers.num && parenlevel == 0 &&
-				(*curr == '=' || *curr == '(' || *curr == '{') && numwords < 2)
-			print_initializers(parser, memberstart[0], blocklevel);
+				(*curr == '=' || *curr == '(' || *curr == '{') && numwords < 2) {
+			print_initializers(parser, memberstart[0], blocklevel, next_retblocknr,
+				need_retvar && !have_retvar ? thisfuncret : NULL, thisfuncretend);
+			have_retvar = need_retvar;
+			retblocknr = next_retblocknr;
+		}
 
 		/* track block nesting level */
 		if (*curr == '{') {
@@ -3035,7 +3095,7 @@ static void parse_function(struct parser *parser, char *next)
 			continue;
 		}
 		if (*curr == '}') {
-			print_disposers(parser, curr, blocklevel);
+			print_disposers(parser, curr, blocklevel, next_retblocknr, need_retvar);
 			remove_locals(parser, blocklevel);
 			if (--blocklevel == 0)
 				break;
@@ -3065,6 +3125,34 @@ static void parse_function(struct parser *parser, char *next)
 					decl.pointerlevel = 0;
 					goto decl_or_cast;
 				}
+				continue;
+			} else if (strprefixcmp("return", curr) && !isalnum(curr[6])) {
+				next = curr + 7;  /* "return" */
+				if (need_retvar) {
+					if (!parser->inserts->num) {
+						flush_until(parser, curr);
+						if (state != STMTSTART)
+							outwrite(parser, "{ ", 2);
+						outwrite(parser, "__coo_ret = ", 12);
+						parser->pf.writepos = next;
+					} else {
+						addinsert(parser, -1, curr,
+							state == STMTSTART ? "__coo_ret = "
+								: "{ __coo_ret = ",
+							next, CONTINUE_AFTER);
+					}
+					next_retblocknr = retblocknr + 1;
+					goto_ret = state != STMTSTART ? GOTO_RET_BLOCK : GOTO_RET;
+				}
+				if (parser->disposers.num) {
+					struct disposer *disposer =
+						parser->disposers.mem[parser->disposers.num-1];
+					if (disposer->blocklevel > 1) {
+						pr_err(curr, "cannot return from nested "
+							"block with stack variables");
+					}
+				}
+				state = FINDVAR;
 				continue;
 			} else if (is_expr(state) && strprefixcmp("new ", curr)) {
 				name = skip_whitespace(parser, curr + 4);  /* "new " */
@@ -3114,6 +3202,11 @@ static void parse_function(struct parser *parser, char *next)
 							"abstract class %s", decl.class->name);
 					} else if (decl.class->root_constructor) {
 						nextstate = CONSTRUCT;
+						if (!need_retvar && !void_retvar &&
+								decl.class->destructor) {
+							void_retvar = is_void_rettype(thisfuncret);
+							need_retvar = !void_retvar;
+						}
 						initializer = addinitializer(parser,
 							decl.class, declvar->name, next);
 					}
@@ -3235,7 +3328,7 @@ static void parse_function(struct parser *parser, char *next)
 
 		if (state == CONSTRUCT) {
 			if (decl.class->missing_root) {
-				pr_err(parser->pf.pos, "must define root constructor for %s "
+				pr_err(curr, "must define root constructor for %s "
 					"due to non-void constructor %s",
 					decl.class->name, decl.class->missing_root->name);
 			}
@@ -3383,6 +3476,20 @@ static void parse_function(struct parser *parser, char *next)
 			parenlevel = 0;
 			state = STMTSTART;
 			exprdecl[0].pointerlevel = 0;
+			if (goto_ret) {
+				/* look ahead to see if function ends here */
+				next = skip_whitespace(parser, curr + 1);
+				/* if end of function reached, no goto necessary */
+				if (goto_ret != GOTO_RET || blocklevel > 1 || *next != '}') {
+					parser->pf.pos = curr + 1;
+					flush(parser);
+					outprintf(parser, " goto __coo_out%d;", retblocknr);
+					if (goto_ret == GOTO_RET_BLOCK)
+						outwrite(parser, " }", 2);
+					goto_ret = GOTO_RET_NONE;
+				}
+				continue;
+			}
 		} else if (*curr == '+' || *curr == '-' || *curr == '/' || *curr == '%'
 			|| *curr == '&' || *curr == '|' || *curr == '^' || *curr == '!'
 			|| *curr == '?' || *curr == ':') {

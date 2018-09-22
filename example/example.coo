@@ -154,6 +154,11 @@ void E::E(void)
 	D(this);
 }
 
+void E::~E(void)
+{
+	a1 = -7;
+}
+
 void E::vfunc_b(int arg)
 {
 	printf("E::vfunc_b(%d), a1=%d, b1=%d d1=%d e1=%d\n", arg, a1, b1, d1, e1);
@@ -182,7 +187,10 @@ int main(int argc, char **argv)
 	b.b1 = 21;
 	b.vfunc_a(22);
 	b.vfunc_b(23);
+	if (b.a1 < 10)
+		return -1;
 
+	E e2;
 	c.a1 = 30;
 	c.c1 = 31;
 	c.vfunc_a(32);
@@ -207,9 +215,11 @@ int main(int argc, char **argv)
 	e.vfunc_c(57);
 	e.vfunc_c3(58);
 	e.vfunc_d(&e, &e);
+	if (e.c1 < 33)
+		return -2;
 
 	new E->vfunc_a(-1);
-	p_e = new E;
+	p_e = &e2;
 	p_e->a1 = 60;
 	p_e->b1 = 61;
 	p_e->c1 = 62;

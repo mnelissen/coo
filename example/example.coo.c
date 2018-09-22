@@ -259,6 +259,11 @@ static void E_E(struct E *this)
 	D_D(&this->D, &this->D.B.A);
 }
 
+static void E_d_E(struct E *this)
+{
+	this->D.B.A.a1 = -7;
+}
+
 void E_vfunc_b(struct E *this, int arg)
 {
 	printf("E::vfunc_b(%d), a1=%d, b1=%d d1=%d e1=%d\n", arg, this->D.B.A.a1, this->D.B.b1, this->D.d1, this->e1);
@@ -280,14 +285,15 @@ int main(int argc, char **argv)
 	struct D d; int db1;
 	struct E e, *p_e;
 
-#line 171
+	int __coo_ret;
+#line 176
 	A_A_root(&a); A_A_root(&a_a);
 	aa1 = a.a1;
 	B_B_root(&b);
 	C_C_root(&c);
 	D_D_root(&d, &(&c)->A); db1 = d.B.b1;
 	E_E_root(&e);
-#line 178
+#line 183
 	a.a1 = 10;
 	A_vmt_vfunc_a(&a, 11);
 
@@ -295,7 +301,13 @@ int main(int argc, char **argv)
 	b.b1 = 21;
 	A_vmt_vfunc_a(&b.A, 22);
 	B_vmt_vfunc_b(&b, 23);
+	if (b.A.a1 < 10)
+		{ __coo_ret = -1; goto __coo_out0; }
 
+	struct E e2;
+#line 193
+	E_E_root(&e2);
+#line 194
 	c.A.a1 = 30;
 	c.C.c1 = 31;
 	A_vmt_vfunc_a(&c.A, 32);
@@ -320,9 +332,11 @@ int main(int argc, char **argv)
 	C_vmt_vfunc_c(&e.D.C, 57);
 	C_vmt_vfunc_c3(&e.D.C, 58);
 	D_vmt_vfunc_d(&e.D, &(&e)->D.B.A, &(&e)->D.B);
+	if (e.D.C.c1 < 33)
+		{ __coo_ret = -2; goto __coo_out1; }
 
 	A_vmt_vfunc_a(&new_E()->D.B.A, -1);
-	p_e = new_E();
+	p_e = &e2;
 	p_e->D.B.A.a1 = 60;
 	p_e->D.B.b1 = 61;
 	p_e->D.C.c1 = 62;
@@ -336,10 +350,17 @@ int main(int argc, char **argv)
 	/* silence warnings */
 	printf("%d %d\n", aa1, db1);
 
-	return 0;
+	__coo_ret = 0;
+#line 355 "example.coo.c"
+__coo_out1:
+	E_d_E(&e2);
+__coo_out0:
+	E_d_E(&e);
+	return __coo_ret;
+#line 237 "example.coo"
 }
 
-#line 343 "example.coo.c"
+#line 358 "example.coo.c"
 struct foo_vmt foo_vmt = {
 	foo_vfunc,
 };

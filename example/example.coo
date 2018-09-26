@@ -36,6 +36,8 @@ struct E : D {
 	int e1;
 	override vfunc_b;
 	override vfunc_d;
+	void E(void);
+	~E();
 };
 
 void C::test_c(void)
@@ -154,7 +156,7 @@ void E::E(void)
 	D(this);
 }
 
-void E::~E(void)
+E::~E(void)
 {
 	a1 = -7;
 }
@@ -218,7 +220,8 @@ int main(int argc, char **argv)
 	if (e.c1 < 33)
 		return -2;
 
-	new E->vfunc_a(-1);
+	(p_e = new E)->vfunc_a(-1);
+	delete p_e;
 	p_e = &e2;
 	p_e->a1 = 60;
 	p_e->b1 = 61;

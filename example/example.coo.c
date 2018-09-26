@@ -25,7 +25,7 @@ extern struct A_vmt {
   ((type *)((size_t)(ptr)-(size_t)(&((type *)0)->node_var)))
 #endif
 
-struct A *new_A();
+struct A *new_A(void);
 void A_vfunc_a(struct A *this, int a2);
 void A_A(struct A *this);
 void A_A_root(struct A *this);
@@ -47,7 +47,7 @@ extern struct B_vmt {
 	void (*vfunc_b)(struct B *this, int b2);
 } B_vmt;
 
-struct B *new_B();
+struct B *new_B(void);
 void B_vfunc_a(struct B *this, int a2);
 void B_vfunc_b(struct B *this, int b2);
 void B_B(struct B *this);
@@ -79,7 +79,7 @@ extern struct C_vmt {
 	void (*vfunc_c3)(struct C *this, int c3);
 } C_vmt;
 
-struct C_root *new_C();
+struct C *new_C(void);
 void C_vfunc_a(struct C *this, int a2);
 void C_vfunc_c(struct C *this, int c2);
 void C_vfunc_c3(struct C *this, int c3);
@@ -138,11 +138,14 @@ extern struct E_vmt {
 	void (*vfunc_d)(struct E *this, struct A* a, struct B *b);
 } E_vmt;
 
-struct E *new_E();
+struct E *new_E(void);
+void free_E(struct E *this);
 void E_vfunc_b(struct E *this, int b2);
 void E_vfunc_d(struct E *this, struct A* a, struct B *b);
+void E_E(struct E *this);
+void E_d_E(struct E *this);
 void E_E_root(struct E *this);
-#line 41 "example.coo"
+#line 43 "example.coo"
 static void C_test_c(struct C *this)
 {
 	printf("%d %d\n", this->A->a1, this->c1);
@@ -253,13 +256,13 @@ void D_D(struct D *this, struct A *a)
 	B_B(&this->B);
 }
 
-static void E_E(struct E *this)
+void E_E(struct E *this)
 {
 	this->D.B.A.a1 = -6;
 	D_D(&this->D, &this->D.B.A);
 }
 
-static void E_d_E(struct E *this)
+void E_d_E(struct E *this)
 {
 	this->D.B.A.a1 = -7;
 }
@@ -286,14 +289,14 @@ int main(int argc, char **argv)
 	struct E e, *p_e;
 
 	int __coo_ret;
-#line 176
+#line 178
 	A_A_root(&a); A_A_root(&a_a);
 	aa1 = a.a1;
 	B_B_root(&b);
 	C_C_root(&c);
 	D_D_root(&d, &(&c)->A); db1 = d.B.b1;
 	E_E_root(&e);
-#line 183
+#line 185
 	a.a1 = 10;
 	A_vmt_vfunc_a(&a, 11);
 
@@ -305,9 +308,9 @@ int main(int argc, char **argv)
 		{ __coo_ret = -1; goto __coo_out0; }
 
 	struct E e2;
-#line 193
+#line 195
 	E_E_root(&e2);
-#line 194
+#line 196
 	c.A.a1 = 30;
 	c.C.c1 = 31;
 	A_vmt_vfunc_a(&c.A, 32);
@@ -335,7 +338,8 @@ int main(int argc, char **argv)
 	if (e.D.C.c1 < 33)
 		{ __coo_ret = -2; goto __coo_out1; }
 
-	A_vmt_vfunc_a(&new_E()->D.B.A, -1);
+	A_vmt_vfunc_a(&(p_e = new_E())->D.B.A, -1);
+	free_E(p_e);
 	p_e = &e2;
 	p_e->D.B.A.a1 = 60;
 	p_e->D.B.b1 = 61;
@@ -351,21 +355,21 @@ int main(int argc, char **argv)
 	printf("%d %d\n", aa1, db1);
 
 	__coo_ret = 0;
-#line 355 "example.coo.c"
+#line 360 "example.coo.c"
 __coo_out1:
 	E_d_E(&e2);
 __coo_out0:
 	E_d_E(&e);
 	return __coo_ret;
-#line 237 "example.coo"
+#line 240 "example.coo"
 }
 
-#line 358 "example.coo.c"
+#line 368 "example.coo.c"
 struct foo_vmt foo_vmt = {
 	foo_vfunc,
 };
 
-struct foo *new_foo()
+struct foo *new_foo(void)
 {
 	struct foo *this = malloc(sizeof(*this));
 	if (this == NULL) return NULL;
@@ -392,12 +396,12 @@ struct C_vmt C_vmt = {
 	C_vfunc_c3,
 };
 
-struct C_root *new_C()
+struct C *new_C(void)
 {
 	struct C_root *this = malloc(sizeof(*this));
 	if (this == NULL) return NULL;
 	C_C_root(this);
-	return this;
+	return &this->C;
 }
 
 void C_C_root(struct C_root *this)
@@ -405,7 +409,7 @@ void C_C_root(struct C_root *this)
 	this->C.A = &this->A;
 	this->A.vmt = &C_A_vmt;
 	this->C.vmt = &C_vmt;
-	A_A(&this->A);
+	A_A(this->C.A);
 }
 
 struct B_vmt B_vmt = {
@@ -413,7 +417,7 @@ struct B_vmt B_vmt = {
 	B_vfunc_b,
 };
 
-struct B *new_B()
+struct B *new_B(void)
 {
 	struct B *this = malloc(sizeof(*this));
 	if (this == NULL) return NULL;
@@ -431,7 +435,7 @@ struct A_vmt A_vmt = {
 	A_vfunc_a,
 };
 
-struct A *new_A()
+struct A *new_A(void)
 {
 	struct A *this = malloc(sizeof(*this));
 	if (this == NULL) return NULL;
@@ -451,7 +455,7 @@ struct E_vmt E_vmt = {
 	E_vfunc_d,
 };
 
-struct E *new_E()
+struct E *new_E(void)
 {
 	struct E *this = malloc(sizeof(*this));
 	if (this == NULL) return NULL;
@@ -465,6 +469,12 @@ void E_E_root(struct E *this)
 	this->D.B.A.vmt = &E_vmt;
 	this->D.C.vmt = &D_C_vmt;
 	E_E(this);
+}
+
+void free_E(struct E *this)
+{
+	E_d_E(this);
+	free(this);
 }
 
 struct D_vmt D_vmt = {

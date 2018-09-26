@@ -39,7 +39,7 @@ extern struct B_vmt {
 	void (*vfunc_b)(struct B *this, int arg);
 } B_vmt;
 
-struct B *new_B();
+struct B *new_B(void);
 void B_vfunc_a(struct B *this, int arg);
 void B_vfunc_b(struct B *this, int arg);
 void B_B_root(struct B *this);
@@ -58,7 +58,7 @@ extern struct C_vmt {
 	void (*vfunc_a)(struct C *this, int arg);
 } C_vmt;
 
-struct C *new_C();
+struct C *new_C(void);
 void C_vfunc_a(struct C *this, int arg);
 void C_C_root(struct C *this);
 #line 17 "good1.coo"
@@ -73,7 +73,7 @@ extern struct D_vmt {
 	void (*vfunc_b)(struct B *this, int arg);
 } D_vmt;
 
-struct D *new_D();
+struct D *new_D(void);
 void D_vfunc_a(struct D *this, int arg);
 void D_D(struct D *this);
 void D_D_root(struct D *this);
@@ -117,7 +117,7 @@ struct B_vmt B_vmt = {
 	B_vfunc_b,
 };
 
-struct B *new_B()
+struct B *new_B(void)
 {
 	struct B *this = malloc(sizeof(*this));
 	if (this == NULL) return NULL;
@@ -135,7 +135,7 @@ struct D_vmt D_vmt = {
 	B_vfunc_b,
 };
 
-struct D *new_D()
+struct D *new_D(void)
 {
 	struct D *this = malloc(sizeof(*this));
 	if (this == NULL) return NULL;

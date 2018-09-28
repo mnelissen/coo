@@ -6,6 +6,7 @@
 
 #define hash_insert_exists(tbl, new_entry, h, resvar) \
         (resvar = hash_insert(tbl, new_entry, h)) != NULL && (int)(size_t)resvar != -1
+#define hash_insert_nomem(entry) ((size_t)entry == (size_t)-1)
 
 typedef struct hash_entry {
 	struct hash_entry *next;

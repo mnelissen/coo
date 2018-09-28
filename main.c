@@ -22,6 +22,9 @@ typedef uint32_t pid_t;
 #include "hash.h"
 #include "hasho.h"
 
+#define container_of(ptr, type, node_var) \
+  ((type *)((size_t)(ptr)-(size_t)(&((type *)0)->node_var)))
+
 #define NEWFN_MAX          8192            /* (stack)size for included dirs+filenames */
 #define OUTPR_MAX          256             /* maximum outprintf size we do */
 #define STDIN_BUFSIZE      (1024 * 1024)   /* size for inputbuffer when using stdin */
@@ -60,11 +63,13 @@ static int compare_prefix_strhash(void *user, void *key);
 	static struct itemtype *find_##nm##_e(struct c *c, char *name, char *end) \
 	{ return hash_find_custom(&c->h, memhash(name, end-name), \
 		compare_prefix_strhash, name); }
-#define strhash_init(h, tblsize, itemtype) \
-	hash_init(h, (hash_cmp_cb)strcmp, tblsize, \
+#define strhash_init(tbl, tblsize, itemtype) \
+	hash_init(tbl, (hash_cmp_cb)strcmp, tblsize, \
 		offsetof(struct itemtype, node), offsetof(struct itemtype, name))
-#define strhash_insert(h, item) \
-	hash_insert(h, &(item)->node, strhash((item)->name))
+#define strhash_insert(tbl, item) \
+	hash_insert(tbl, &(item)->node, strhash((item)->name))
+#define strhash_insert_exists(tbl, item, resvar) \
+	hash_insert_exists(tbl, &(item)->node, strhash((item)->name), resvar)
 
 struct file_id {
 	dev_t dev_id;
@@ -1049,20 +1054,27 @@ static char *parse_parameters(struct parser *parser, char *params,
 	}
 }
 
-static int insertmember(struct class *class, struct member *member)
+static int insertmember(struct class *class, struct member *member, struct member **dupmember)
 {
+	struct hash_entry *entry;
+
 	if (grow_dynarr(&class->members_arr) < 0)
 		return -1;
 	/* check already exists */
-	if (strhash_insert(&class->members, member))
+	if ((entry = strhash_insert(&class->members, member))) {
+		if (hash_insert_nomem(entry))
+			return -1;
+		*dupmember = container_of(entry, struct member, node);
 		return -1;
+	}
 
 	class->members_arr.mem[class->members_arr.num] = member;
 	class->members_arr.num++;
 	return 0;
 }
 
-static struct member *allocmember_e(struct class *class, char *membername, char *nameend)
+static struct member *allocmember_e(struct class *class,
+		char *membername, char *nameend, struct member **dupmember)
 {
 	struct member *member;
 
@@ -1077,7 +1089,7 @@ static struct member *allocmember_e(struct class *class, char *membername, char 
 	} else {
 		member->implprefix = "";
 	}
-	if (insertmember(class, member) < 0)
+	if (insertmember(class, member, dupmember) < 0)
 		goto err;
 	return member;
 err:
@@ -1085,7 +1097,8 @@ err:
 	return NULL;
 }
 
-static struct member *dupmemberto(struct class *class, struct member *parentmember)
+static struct member *dupmemberto(struct class *class,
+		struct member *parentmember, struct member **dupmember)
 {
 	int size = offsetof(struct member, name) + strlen(parentmember->name) + 1;
 	struct member *member;
@@ -1095,7 +1108,7 @@ static struct member *dupmemberto(struct class *class, struct member *parentmemb
 		return NULL;
 
 	memcpy(member, parentmember, size);
-	if (insertmember(class, member) < 0)
+	if (insertmember(class, member, dupmember) < 0)
 		goto err;
 
 	return member;
@@ -1200,14 +1213,17 @@ static struct member *addmember(struct parser *parser, struct class *class,
 		struct classtype *rettype, char *retstr, char *retend,
 		char *membername, char *nameend, char *params, struct memberprops props)
 {
-	struct member *member;
+	struct member *member, *dupmember;
 	char *vmt_insert, *end, void_ret;
 
-	member = allocmember_e(class, membername, nameend);
+	member = allocmember_e(class, membername, nameend, &dupmember);
 	if (member == NULL) {
 		*nameend = 0;
-		pr_err(membername, "duplicate member %s,"
-			" did you mean override?", membername);
+		if (dupmember) {
+			pr_err(membername, "duplicate member %s, inherited from %s,"
+				" did you mean override?", membername,
+				dupmember->origin->name);
+		}
 		return NULL;
 	}
 
@@ -1566,13 +1582,15 @@ static int is_abstract(struct parser *parser, char **pos)
 static struct member *inheritmember(struct parser *parser, char *parsepos,
 		struct class *class, struct parent *parent, struct member *parentmember)
 {
-	struct member *member;
+	struct member *member, *dupmember = NULL;
 
-	member = dupmemberto(class, parentmember);
+	member = dupmemberto(class, parentmember, &dupmember);
 	if (member == NULL) {
-		pr_err(parsepos, "duplicate member %s from parent "
-			"class %s to %s", parentmember->name,
-			parentmember->origin->name, class->name);
+		if (dupmember) {
+			pr_err(parsepos, "duplicate member %s from parent "
+				"class %s and %s", parentmember->name,
+				dupmember->origin->name, parent->class->name);
+		}
 		goto err;
 	}
 
@@ -2997,9 +3015,9 @@ static void parse_function(struct parser *parser, char *next)
 	struct classptr exprdecl[MAX_PAREN_LEVELS], targetdecl[MAX_PAREN_LEVELS];
 	struct classptr decl, immdecl, *target, *expr;
 	struct paramstate targetparams[MAX_PAREN_LEVELS];
-	struct dynarr **tgtparams, *constr_params;
+	struct dynarr **tgtparams;
 	struct classtype *classtype, rettype;
-	struct member *member, *submember;
+	struct member *member, *submember, *constr;
 	struct variable *declvar;
 	struct initializer *initializer;
 	struct ancestor *this_ancestor;
@@ -3430,20 +3448,23 @@ static void parse_function(struct parser *parser, char *next)
 					"due to non-void constructor %s",
 					decl.class->name, decl.class->missing_root->name);
 			}
-			constr_params = &decl.class->root_constructor->params;
-			if (*curr != '(' && constr_params->num) {
-				pr_err(curr, "missing call to constructor");
-				parser->initializers.num -= initializer != NULL;
-				initializer = NULL;
-			} else if (decl.pointerlevel == 0 && !decl.class->void_root_constructor)
-				pr_warn(curr, "non-void root constructor may fail");
-			if (*curr == '(') {
-				if (initializer) {
-					/* skip parenthesis, need to add "this" parameter */
-					initializer->params = curr + 1;
+			constr = decl.class->root_constructor;
+			if (constr) {
+				if (*curr == '(') {
+					if (initializer) {
+						/* skip parenthesis, need to add "this" parameter */
+						initializer->params = curr + 1;
+					}
+					targetparams[parenlevel].params = &constr->params;
+				} else if (constr->paramstext[0] != ')') {
+					pr_err(curr, "missing call to constructor");
+					parser->initializers.num -= initializer != NULL;
+					initializer = NULL;
 				}
-				targetparams[parenlevel].params = constr_params;
-			} else if (decl.pointerlevel) {
+				if (decl.pointerlevel == 0 && !decl.class->void_root_constructor)
+					pr_warn(curr, "non-void root constructor may fail");
+			}
+			if (*curr != '(' && decl.pointerlevel) {
 				/* allocation with 'new class', needs function call */
 				addinsert(parser, -1, curr, "()", curr, CONTINUE_AFTER);
 			}

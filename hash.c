@@ -116,17 +116,19 @@ static void insert(struct hash_entry **insertp, struct hash_entry *new)
 
 static int grow(struct hash *table)
 {
-	struct hash_entry **new_entries, **new_iter, **new_list[2], *entry;
+	struct hash_entry **new_entries, *entry;
+	struct hash_entry **new_iter_low, **new_iter_high, **new_list[2];
 	unsigned i, which, oldsize = table->mask + 1, size = oldsize * 2;
 
-	new_entries = realloc(table->entries, size);
+	new_entries = malloc(size * sizeof(*table->entries));
 	if (new_entries == NULL)
 		return -1;
 	/* use fact that new table is exactly twice as large, and effectively we
 	   use a single new bit in hash_value to determine new bucket
 	   [0] goes to [0..1], [1] goes to [2..3], etc. */
-	for (i = 0, new_iter = new_entries; i < oldsize; i++) {
-		new_list[0] = new_iter++, new_list[1] = new_iter++;
+	new_iter_low = new_entries, new_iter_high = new_entries + oldsize;
+	for (i = 0; i < oldsize; i++) {
+		new_list[0] = new_iter_low++, new_list[1] = new_iter_high++;
 		for (entry = table->entries[i]; entry; entry = entry->next) {
 			which = (entry->hash & oldsize) != 0;
 			*new_list[which] = entry;

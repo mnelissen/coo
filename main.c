@@ -1242,6 +1242,8 @@ static struct member *addmember(struct parser *parser, struct class *class,
 		memcpy(member->rettype, "struct ", 7);
 		memcpy(member->rettype + 7, retstr, retend - retstr);
 		member->rettype[7 + retend - retstr] = 0;
+	} else if (retend == retstr) {
+		member->rettype = "";
 	} else
 		member->rettype = stredup(retstr, retend);
 	if (params) {
@@ -1271,7 +1273,11 @@ static struct member *addmember(struct parser *parser, struct class *class,
 				/* don't bother anymore, prevent problems */
 				class->need_root_constructor = 0;
 			} else {
-				void_ret = is_void_rettype(retstr);
+				if (retstr == retend) {
+					member->rettype = "void ";
+					void_ret = 1;
+				} else
+					void_ret = is_void_rettype(retstr);
 				if (member->is_constructor) {
 					class->void_constructor = void_ret;
 					class->constructor = member;
@@ -1417,6 +1423,19 @@ static void addinsert_implicit_struct(struct parser *parser,
 		return;
 
 	addinsert(parser, -1, position, "struct ", position, CONTINUE_BEFORE);
+}
+
+static int insert_text(struct parser *parser, int insert_index,
+		char *pos, char *text, char *continue_at,
+		enum insert_continue insert_continue)
+{
+	if (parser->inserts->num)
+		return addinsert(parser, insert_index,
+			pos, text, continue_at, insert_continue);
+	flush_until(parser, pos);
+	outputs(parser, text);
+	parser->pf.writepos = continue_at;
+	return 0;
 }
 
 static struct initializer *addinitializer(struct parser *parser,
@@ -1831,7 +1850,7 @@ static void import_parent(struct parser *parser, char *parsepos,
 				&& !parentmember->props.from_virtual)
 			continue;
 		/* skip root constructors, they are specific for their own class */
-		if (parentmember->is_root_constructor)
+		if (parentmember->is_root_constructor && parentmember->origin->rootclass)
 			continue;
 		origin = parentmember->origin;
 		if (origin == ignoreorigin)
@@ -2175,6 +2194,8 @@ static void print_func_decl(struct parser *parser, struct class *class,
 
 static void print_member_decls(struct parser *parser, struct class *class)
 {
+	struct class* freer_class;
+	struct ancestor *ancestor;
 	struct member *member;
 	char *params;
 	unsigned i;
@@ -2194,11 +2215,21 @@ static void print_member_decls(struct parser *parser, struct class *class)
 			class->name, params);
 		parser->pf.lines_coo++;
 	}
-	if (class->freer_class == class) {
+	freer_class = class->freer_class;
+	if (freer_class == class) {
 		switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
 		outprintf(parser, "\nvoid free_%s(struct %s *this);",
 			class->name, class->name);
 		parser->pf.lines_coo++;
+	} else if (freer_class) {
+		ancestor = hasho_find(&class->ancestors, freer_class);
+		if (ancestor) {
+			switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
+			outprintf(parser, "\n#define free_%s(this) free_%s(%s(this)->%s)",
+				class->name, freer_class->name,
+				ancestor->parent->is_virtual ? "" : "&", ancestor->path);
+			parser->pf.lines_coo++;
+		}
 	}
 
 	for (i = 0; i < class->members_arr.num; i++) {
@@ -2361,8 +2392,8 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	}
 
 	level = 1;  /* next is at opening brace '{' */
-	declbegin = NULL;
-	membername = retend = next;  /* make compiler happy */
+	declbegin = retend = NULL;
+	membername = next;  /* make compiler happy */
 	for (;;) {
 		/* search (sub)struct or end of variable or function prototype */
 		prevnext = next + 1;
@@ -2374,7 +2405,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		/* remember last word before '(' or ';' => member name */
 		if (isalpha(*next) || *next == '*' || *next == '~')
 			membername = next;
-		if (!(next = scan_token(parser, next, "/{};( \r\n\t\v")))
+		if (!(next = scan_token(parser, next, "/{},;( \r\n\t\v")))
 			return NULL;
 
 		/* count substruct level */
@@ -2402,7 +2433,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		for (;; membername++) {
 			/* is it a pointer to function variable? */
 			if (*membername == '(') {
-				retend = membername;
+				retend = retend ?: membername;
 				memberprops.is_function = 0;
 				/* find real params */
 				membername++;
@@ -2414,14 +2445,14 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		/* find nameend and real params in case of function pointer variable */
 		nameend = skip_methodname(membername);
 		if (params < nameend) {
-			params = scan_token(parser, nameend, "/\n(;");
+			params = scan_token(parser, nameend, "/\n(,;");
 			if (!params)
 				return NULL;
-		} else {
-			/* params >= nameend means this is not function variable
-			   (in that case retend is already assigned above) */
-			retend = membername;
 		}
+
+		/* retend might have been assigned above, or even before,
+		   and this is second variable after a comma */
+		retend = retend ?: membername;
 
 		/* next is either '(' or ';', but declend must be at ';' */
 		memberprops.is_abstract = 0;
@@ -2496,8 +2527,6 @@ static struct class *parse_struct(struct parser *parser, char *next)
 			if (retend > declbegin) {
 				parse_type(parser, declbegin, &retnext, &rettype);
 			} else {
-				if (membername[0] != '~')
-					pr_warn(declbegin, "specify return type");
 				rettype.decl.class = NULL;
 				rettype.decl.pointerlevel = 0;
 				rettype.implicit = 0;
@@ -2518,7 +2547,8 @@ static struct class *parse_struct(struct parser *parser, char *next)
 			}
 		}
 
-		declbegin = NULL;
+		if (*declend == ';')
+			declbegin = retend = NULL;
 	}
 
 	/* add root constructor if needed and user did not define one */
@@ -3024,13 +3054,13 @@ static void parse_function(struct parser *parser, char *next)
 	char *curr, *funcname, *nameend, *classname, *name, *argsep, *dblcolonsep;
 	char *exprstart[MAX_PAREN_LEVELS], *exprend, *params, *param0, *paramend;
 	char *memberstart[MAX_PAREN_LEVELS], *funcvarname, *funcvarnameend;
-	char *thisprefix, *thisclassname, *thisfuncret, *thisfuncretend;
+	char *thisprefix, *thisclassname, *thisfuncret, *thisfuncretend, *str1, *str2;
 	enum parse_funcvar_state funcvarstate;
 	enum parse_state state, nextstate;
 	enum goto_return goto_ret;
 	int is_constructor, blocklevel, parenlevel, seqparen, numwords;
 	int have_retvar, need_retvar, used_retvar, void_retvar;
-	int retblocknr, next_retblocknr, in_delete;
+	int retblocknr, next_retblocknr, in_delete, insert_index;
 	unsigned i, num_constr_called, num_constr;
 
 	thisfuncret = parser->pf.pos;
@@ -3075,14 +3105,14 @@ static void parse_function(struct parser *parser, char *next)
 					classname, funcname, nameend, params, props);
 			}
 			class->is_implemented = 1;
-			if (member->is_constructor)
-				class->gen_constructor = 0;
-			if (member->is_root_constructor)
-				class->gen_root_constructor = 0;
-			if (member->is_destructor)
-				class->gen_destructor = 0;
-			/* no return type allowed for destructor in COO, add it now for C */
-			if (member->is_destructor) {
+			class->gen_constructor &= ~member->is_constructor;
+			class->gen_root_constructor &= ~member->is_root_constructor;
+			class->gen_destructor &= ~member->is_destructor;
+			/* if this is a constructor and no return type, default to void
+			   no return type allowed for destructor in COO, add it now for C */
+			if (((member->is_constructor || member->is_root_constructor)
+						&& thisfuncret == classname)
+					|| member->is_destructor) {
 				flush(parser);
 				outputs(parser, member->rettype);
 			}
@@ -3181,6 +3211,7 @@ static void parse_function(struct parser *parser, char *next)
 	goto_ret = GOTO_RET_NONE;
 	state = STMTSTART;
 	initializer = NULL;
+	declvar = NULL;
 	for (;;) {
 		curr = skip_whitespace(parser, next);
 		/* skip comments */
@@ -3236,18 +3267,10 @@ static void parse_function(struct parser *parser, char *next)
 			} else if (strprefixcmp("return", curr) && !isalnum(curr[6])) {
 				next = curr + 7;  /* "return" */
 				if (need_retvar) {
-					if (!parser->inserts->num) {
-						flush_until(parser, curr);
-						if (state != STMTSTART)
-							outwrite(parser, "{ ", 2);
-						outwrite(parser, "__coo_ret = ", 12);
-						parser->pf.writepos = next;
-					} else {
-						addinsert(parser, -1, curr,
-							state == STMTSTART ? "__coo_ret = "
-								: "{ __coo_ret = ",
-							next, CONTINUE_AFTER);
-					}
+					insert_text(parser, -1, curr,
+						state == STMTSTART ? "__coo_ret = "
+							: "{ __coo_ret = ",
+						next, CONTINUE_AFTER);
 					next_retblocknr = retblocknr + 1;
 					goto_ret = state != STMTSTART ? GOTO_RET_BLOCK : GOTO_RET;
 				}
@@ -3270,9 +3293,28 @@ static void parse_function(struct parser *parser, char *next)
 						decl.class = classtype->decl.class;
 						decl.pointerlevel = 1;
 						immdecl = decl;
-						addinsert(parser, -1,
-							curr, "new_", name, CONTINUE_AFTER);
-						state = CONSTRUCT;
+						if (decl.class->constructor) {
+							addinsert(parser, -1,
+								curr, "new_", name, CONTINUE_AFTER);
+							state = CONSTRUCT;
+						} else {
+							if (classtype->implicit) {
+								str1 = "(struct ";
+								str2 = "*)malloc(sizeof(struct ";
+							} else {
+								str1 = "(";
+								str2 = "*)malloc(sizeof(";
+							}
+							/* first print a cast to dest type */
+							insert_index = addinsert(parser, -1,
+								curr, str1, name, CONTINUE_AFTER);
+							/* second the malloc, go back to name */
+							insert_index = addinsert(parser,
+								insert_index, next, str2,
+								name, CONTINUE_AFTER);
+							addinsert(parser, insert_index, next,
+								"))", next, CONTINUE_AFTER);
+						}
 					} else
 						pr_err(name, "'new type' cannot be pointer type");
 				}
@@ -3588,7 +3630,11 @@ static void parse_function(struct parser *parser, char *next)
 			if (in_delete) {
 				expr = immdecl.class ? &immdecl : &exprdecl[0];
 				if (expr->class) {
-					outprintf(parser, "free_%s(", expr->class->name);
+					if (expr->class->destructor) {
+						outprintf(parser, "free_%s(", expr->class->name);
+					} else {
+						outputs(parser, "free(");
+					}
 				} else {
 					pr_err(curr, "unknown variable to delete");
 				}
@@ -3668,7 +3714,10 @@ static void print_class_alloc(struct parser *parser, struct class *class)
 {
 	struct member *rootconstr = class->root_constructor;
 	char *rootsuffix, *ifret, *callend, *params;
+	char *constr_addr, *constr_arrow, *constr_path;
 	char *retaddr, *retarrow, *retclassname;
+	struct class *constr_origin;
+	struct ancestor *ancestor;
 
 	if (!rootconstr)
 		return;
@@ -3682,20 +3731,32 @@ static void print_class_alloc(struct parser *parser, struct class *class)
 			"\t\tfree(this);\n"
 			"\t\treturn NULL;\n\t}\n";
 	}
+	constr_origin = rootconstr->origin;
+	rootsuffix = constr_addr = constr_arrow = constr_path = "";
+	retaddr = retarrow = retclassname = "";
 	if (class->rootclass) {
 		rootsuffix = "_root";
 		retaddr = "&";
 		retarrow = "->";
 		retclassname = class->name;
-	} else
-		rootsuffix = retaddr = retarrow = retclassname = "";
+	} else if (constr_origin != class) {
+		ancestor = hasho_find(&class->ancestors, constr_origin);
+		if (!ancestor) {
+			pr_err(NULL, "internal error, cannot find ancestor for class alloc");
+			return;
+		}
+		constr_addr = ancestor->parent->is_virtual ? "" : "&";
+		constr_arrow = "->";
+		constr_path = ancestor->path;
+	}
 	params = rootconstr->paramstext[0] == ')' ? "void)" : rootconstr->paramstext;
 	outprintf(parser, "\nstruct %s *new_%s(%s\n"
 		"{\n\tstruct %s%s *this = malloc(sizeof(*this));\n"
 		"\tif (this == NULL) return NULL;\n"
-		"\t%s%s_%s(this",
+		"\t%s%s_%s(%sthis%s%s",
 		class->name, class->name, params,
-		class->name, rootsuffix, ifret, class->name, rootconstr->name);
+		class->name, rootsuffix, ifret, constr_origin->name,
+		rootconstr->name, constr_addr, constr_arrow, constr_path);
 	print_param_names(parser, rootconstr->paramstext);
 	outprintf(parser, "%s\treturn %sthis%s%s;\n}\n",
 		callend, retaddr, retarrow, retclassname);
@@ -3921,12 +3982,27 @@ static void print_destructor(struct parser *parser, struct class *class)
 
 static void print_class_free(struct parser *parser, struct class *class)
 {
+	struct ancestor *ancestor;
+	struct class *destrclass;
+	char *addr, *arrow, *path;
+
 	if (class->freer_class != class)
 		return;
 
+	addr = arrow = path = "";
+	destrclass = class->destructor ? class->destructor->origin : class;
+	if (destrclass != class) {
+		ancestor = hasho_find(&class->ancestors, destrclass);
+		if (ancestor) {
+			addr = ancestor->parent->is_virtual ? "" : "&";
+			arrow = "->";
+			path = ancestor->path;
+		}
+	}
 	outprintf(parser, "\nvoid free_%s(struct %s *this)\n{\n"
-			"\t%s_d_%s%s(this);\n\tfree(this);\n}\n", class->name, class->name,
-			class->name, class->name, class->rootclass ? "_root" : "");
+			"\t%s_d_%s%s(%sthis%s%s);\n\tfree(this);\n}\n",
+			class->name, class->name, destrclass->name, destrclass->name,
+			destrclass->rootclass ? "_root" : "", addr, arrow, path);
 }
 
 static void print_trampolines(struct parser *parser, struct class *class,

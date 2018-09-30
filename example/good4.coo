@@ -1,0 +1,86 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+struct S_plain {
+	int a, b;
+};
+
+struct S_base {
+	int c, d;
+	S_base();
+	~S_base();
+};
+
+struct S_inherit_pri : S_base {
+	int e, f;
+	void func_pri();
+};
+
+struct S_inherit_sec : S_plain, S_base {
+	int g, h;
+	void func_sec();
+};
+
+struct S_alt_base {
+	int a, b;
+	S_alt_base();
+	~S_alt_base();
+};
+
+struct S_both : S_base, S_alt_base {
+	int g, h;
+	void func_both();
+};
+
+S_base::S_base(void)
+{
+	c = 10;
+	d = 11;
+}
+
+S_base::~S_base(void)
+{
+	c = -1;
+}
+
+void S_inherit_pri::func_pri(void)
+{
+	printf("func_pri!\n");
+}
+
+void S_inherit_sec::func_sec(void)
+{
+	printf("func_sec!\n");
+}
+
+S_alt_base::S_alt_base(void)
+{
+	a = 20;
+	b = 21;
+}
+
+S_alt_base::~S_alt_base(void)
+{
+	a = -1;
+}
+
+void S_both::func_both(void)
+{
+	printf("func_both!\n");
+}
+
+int main(void)
+{
+	S_plain *no_destruct = new S_plain;
+	S_base *destruct = new S_base;
+	S_inherit_pri *destruct_pri = new S_inherit_pri;
+	S_inherit_sec *destruct_sec = new S_inherit_sec;
+	S_both *destruct_2 = new S_both;
+	delete no_destruct;
+	delete destruct;
+	delete destruct_pri;
+	delete destruct_sec;
+	delete destruct_2;
+	return 0;
+}
+

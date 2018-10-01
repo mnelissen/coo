@@ -42,7 +42,7 @@ extern struct B_vmt {
 struct B *new_B(void);
 void B_vfunc_a(struct B *this, int arg);
 void B_vfunc_b(struct B *this, int arg);
-void B_B_root(struct B *this);
+struct B *B_B_root(struct B *this);
 coo_inline void B_vmt_vfunc_b(struct B *this, int arg)
 {
 	((struct B_vmt*)this->A.vmt)->vfunc_b(this, arg);
@@ -60,7 +60,7 @@ extern struct C_vmt {
 
 struct C *new_C(void);
 void C_vfunc_a(struct C *this, int arg);
-void C_C_root(struct C *this);
+struct C *C_C_root(struct C *this);
 #line 17 "good1.coo"
 struct D {
 	struct B B;
@@ -75,8 +75,8 @@ extern struct D_vmt {
 
 struct D *new_D(void);
 void D_vfunc_a(struct D *this, int arg);
-void D_D(struct D *this);
-void D_D_root(struct D *this);
+struct D *D_D(struct D *this);
+struct D *D_D_root(struct D *this);
 #line 22 "good1.coo"
 void A_vfunc_a(struct A *this, int arg)
 {
@@ -98,8 +98,11 @@ void D_vfunc_a(struct D *this, int arg)
 	printf("D::vfunc_a(%d)\n", arg);
 }
 
-void D_D(struct D *this)
+struct D *D_D(struct D *this)
 {
+#line 104 "good1.coo.c"
+	return this;
+#line 44 "good1.coo"
 }
 
 int main(void)
@@ -111,7 +114,7 @@ int main(void)
 }
 
 
-#line 115 "good1.coo.c"
+#line 118 "good1.coo.c"
 struct B_vmt B_vmt = {
 	B_vfunc_a,
 	B_vfunc_b,
@@ -121,13 +124,13 @@ struct B *new_B(void)
 {
 	struct B *this = malloc(sizeof(*this));
 	if (this == NULL) return NULL;
-	B_B_root(this);
-	return this;
+	return B_B_root(this);
 }
 
-void B_B_root(struct B *this)
+struct B *B_B_root(struct B *this)
 {
 	this->A.vmt = &B_vmt;
+	return this;
 }
 
 struct D_vmt D_vmt = {
@@ -139,13 +142,12 @@ struct D *new_D(void)
 {
 	struct D *this = malloc(sizeof(*this));
 	if (this == NULL) return NULL;
-	D_D_root(this);
-	return this;
+	return D_D_root(this);
 }
 
-void D_D_root(struct D *this)
+struct D *D_D_root(struct D *this)
 {
 	this->B.A.vmt = &D_vmt;
 	this->C.A.vmt = &D_vmt;
-	D_D(this);
+	return D_D(this);
 }

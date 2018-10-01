@@ -45,6 +45,12 @@ typedef uint32_t pid_t;
 	"#endif\n"
 #define NUM_LINES_DEF_COO_INLINE 11
 
+#ifdef __GNUC__
+#define attr_format(a,b) __attribute__((format(printf,a,b)))
+#else
+#define attr_format(a,b)
+#endif
+
 static int compare_prefix_strhash(void *user, void *key);
 
 #define DEFINE_PTRHASH(c, h, nm, itemtype) \
@@ -844,7 +850,7 @@ static void outputs(struct parser *parser, const char *src)
 	return outwrite(parser, src, strlen(src));
 }
 
-static void outprintf(struct parser *parser, const char *format, ...)
+static void attr_format(2,3) outprintf(struct parser *parser, const char *format, ...)
 {
 	va_list va_args;
 	unsigned size;
@@ -1233,19 +1239,6 @@ static struct member *addmember(struct parser *parser, struct class *class,
 	if (props.is_abstract)
 		class->num_abstract++;
 	member->retclassptr = rettype->decl;
-	if (membername[0] == '~') {
-		if (retstr != retend)
-			pr_err(membername, "return type is not allowed for destructor");
-		member->rettype = "void ";
-	} else if (rettype->decl.class && rettype->implicit) {
-		member->rettype = malloc(retend - retstr + 8);  /* "struct " + null-term */
-		memcpy(member->rettype, "struct ", 7);
-		memcpy(member->rettype + 7, retstr, retend - retstr);
-		member->rettype[7 + retend - retstr] = 0;
-	} else if (retend == retstr) {
-		member->rettype = "";
-	} else
-		member->rettype = stredup(retstr, retend);
 	if (params) {
 		if (is_void_params(params))
 			member->paramstext = ")";
@@ -1273,11 +1266,20 @@ static struct member *addmember(struct parser *parser, struct class *class,
 				/* don't bother anymore, prevent problems */
 				class->need_root_constructor = 0;
 			} else {
-				if (retstr == retend) {
-					member->rettype = "void ";
-					void_ret = 1;
-				} else
+				void_ret = retstr == retend;
+				if (!void_ret)
 					void_ret = is_void_rettype(retstr);
+				/* even if constructor is void in COO-speak, then in C
+				   translation still return class pointer for chaining */
+				if (void_ret) {
+					member->rettype = aprintf("struct %s *", class->name);
+					member->retclassptr.class = class;
+					member->retclassptr.pointerlevel = 1;
+				}
+				else if (rettype->decl.class != class
+						|| rettype->decl.pointerlevel != 1)
+					pr_err(retstr, "constructor must be void or return "
+						"pointer to its own class type");
 				if (member->is_constructor) {
 					class->void_constructor = void_ret;
 					class->constructor = member;
@@ -1292,6 +1294,8 @@ static struct member *addmember(struct parser *parser, struct class *class,
 		if (!strcmp(class->name, &member->name[1])) {
 			if (class->declare_complete)
 				pr_err(membername, "destructor must be declared in class");
+			if (retstr != retend)
+				pr_err(membername, "return type is not allowed for destructor");
 			member->is_destructor = 1;
 			class->has_destructor = 1;
 			class->destructor = member;
@@ -1300,6 +1304,19 @@ static struct member *addmember(struct parser *parser, struct class *class,
 			pr_err(membername, "invalid member name, "
 				"did you mean ~%s?", class->name);
 		}
+		member->rettype = "void ";
+	}
+
+	if (!member->rettype) {
+		if (rettype->decl.class && rettype->implicit) {
+			member->rettype = malloc(retend - retstr + 8);  /* "struct " + null-term */
+			memcpy(member->rettype, "struct ", 7);
+			memcpy(member->rettype + 7, retstr, retend - retstr);
+			member->rettype[7 + retend - retstr] = 0;
+		} else if (retend == retstr) {
+			member->rettype = "";
+		} else
+			member->rettype = stredup(retstr, retend);
 	}
 
 	/* in case of defining functions on the fly,
@@ -1312,25 +1329,15 @@ void addgenmember(struct parser *parser, struct class *class,
 		struct member *mimic, char *name, char *nameend)
 {
 	struct memberprops constructorprops = {0,};
-	char *rettypestr, *retend, *params;
 	struct classtype rettype;
 
 	constructorprops.is_function = 1;
 	rettype.implicit = 0;
-	if (mimic) {
-		rettype.decl = mimic->retclassptr;
-		rettypestr = mimic->rettype;
-		retend = rettypestr + strlen(rettypestr);
-		params = mimic->paramstext;
-	} else {
-		rettype.decl.class = NULL;
-		rettype.decl.pointerlevel = 0;
-		rettypestr = "void ";
-		retend = rettypestr + 5;   /* "void " */
-		params = ")";
-	}
-	addmember(parser, class, &rettype, rettypestr, retend,
-		name, nameend, params, constructorprops);
+	rettype.decl.class = NULL;
+	rettype.decl.pointerlevel = 0;
+	/* retstr/retend NULL is detected as not present => use void behavior */
+	addmember(parser, class, &rettype, NULL, NULL,
+		name, nameend, mimic ? mimic->paramstext : ")", constructorprops);
 }
 
 static struct variable *addvariable(struct parser *parser, unsigned blocklevel,
@@ -2551,18 +2558,6 @@ static struct class *parse_struct(struct parser *parser, char *next)
 			declbegin = retend = NULL;
 	}
 
-	/* add root constructor if needed and user did not define one */
-	if (!class->num_abstract && class->need_root_constructor && !class->root_constructor) {
-		/* copy user's constructor signature if defined */
-		len = snprintf(namebuf, sizeof(namebuf), "%s_root", class->name);
-		addgenmember(parser, class, class->constructor, namebuf, namebuf+len);
-		class->gen_root_constructor = 1;
-	}
-	if (class->need_root_destructor && !class->root_destructor) {
-		len = snprintf(namebuf, sizeof(namebuf), "d_%s_root", class->name);
-		addgenmember(parser, class, NULL, namebuf, namebuf+len);
-		class->gen_root_destructor = 1;
-	}
 	/* add constructor if there are literal class variables with root constructor */
 	if ((class->num_init_vars || class->num_parent_constr >= 2) && !class->has_constructor) {
 		member = class->prim_parent ? class->prim_parent->constructor : NULL;
@@ -2572,12 +2567,24 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		if (!class->root_constructor)
 			class->void_root_constructor = class->void_constructor;
 	}
+	/* add root constructor if needed and user did not define one */
+	if (!class->num_abstract && class->need_root_constructor && !class->root_constructor) {
+		/* copy user's constructor signature if defined */
+		len = snprintf(namebuf, sizeof(namebuf), "%s_root", class->name);
+		addgenmember(parser, class, class->constructor, namebuf, namebuf+len);
+		class->gen_root_constructor = 1;
+	}
 	/* add destructor if there are literal class variables with destructor */
 	if (need_destructor && !class->has_destructor) {
 		class->name[-1] = '~';  /* &name[-1] == &gen_destructor */
 		addgenmember(parser, class, NULL, &class->name[-1],
 			&class->name[classnameend-classname]);
 		class->gen_destructor = 1;
+	}
+	if (class->need_root_destructor && !class->root_destructor) {
+		len = snprintf(namebuf, sizeof(namebuf), "d_%s_root", class->name);
+		addgenmember(parser, class, NULL, namebuf, namebuf+len);
+		class->gen_root_destructor = 1;
 	}
 
 	/* if we don't need a root constructor, then use the normal constructor */
@@ -3111,10 +3118,12 @@ static void parse_function(struct parser *parser, char *next)
 			/* if this is a constructor and no return type, default to void
 			   no return type allowed for destructor in COO, add it now for C */
 			if (((member->is_constructor || member->is_root_constructor)
-						&& thisfuncret == classname)
+						&& (thisfuncret == classname
+							|| strprefixcmp("void ", thisfuncret)))
 					|| member->is_destructor) {
 				flush(parser);
 				outputs(parser, member->rettype);
+				parser->pf.writepos = classname;
 			}
 			/* replace :: with _ */
 			flush_until(parser, dblcolonsep);
@@ -3235,9 +3244,9 @@ static void parse_function(struct parser *parser, char *next)
 		if (*curr == '}') {
 			print_disposers(parser, curr, blocklevel, next_retblocknr, need_retvar);
 			remove_locals(parser, blocklevel);
+			next = curr + 1;
 			if (--blocklevel == 0)
 				break;
-			next = curr + 1;
 			continue;
 		}
 		if (!exprstart[parenlevel])
@@ -3707,38 +3716,46 @@ static void parse_function(struct parser *parser, char *next)
 		}
 	}
 
-	parser->pf.pos = curr + 1;
+	if (is_constructor) {
+		int lines_coo = 1;
+		for (; curr > parser->pf.buffer && isspace(curr[-1]); curr--) {
+			if (curr[-1] == '\n') {
+				/* move line back, so have to compensate output lineno */
+				lines_coo = 2;
+				parser->pf.lines_coo--;
+				curr--;
+				break;
+			}
+		}
+		flush_until(parser, curr);
+		parser->pf.writepos = curr;
+		switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
+		outwrite(parser, "\n\treturn this;", 14);
+		parser->pf.lines_coo += lines_coo;
+		switch_line_pragma(parser, LINE_PRAGMA_INPUT);
+	}
+	parser->pf.pos = next;
 }
 
 static void print_class_alloc(struct parser *parser, struct class *class)
 {
 	struct member *rootconstr = class->root_constructor;
-	char *rootsuffix, *ifret, *callend, *params;
-	char *constr_addr, *constr_arrow, *constr_path;
-	char *retaddr, *retarrow, *retclassname;
+	char *rootsuffix, *callend1, *callend2, *callend3, *params;
+	char *constr_ret, *constr_addr, *constr_arrow, *constr_path;
 	struct class *constr_origin;
 	struct ancestor *ancestor;
 
 	if (!rootconstr)
 		return;
 
-	if (class->void_root_constructor) {
-		ifret = "";
-		callend = ");\n";
-	} else {
-		ifret = "if (";
-		callend = ") == NULL) {\n"
-			"\t\tfree(this);\n"
-			"\t\treturn NULL;\n\t}\n";
-	}
 	constr_origin = rootconstr->origin;
-	rootsuffix = constr_addr = constr_arrow = constr_path = "";
-	retaddr = retarrow = retclassname = "";
+	rootsuffix = constr_ret = constr_addr = constr_arrow = constr_path = "";
+	callend1 = callend2 = callend3 = "";
 	if (class->rootclass) {
 		rootsuffix = "_root";
-		retaddr = "&";
-		retarrow = "->";
-		retclassname = class->name;
+		callend1 = "\treturn &this->";
+		callend2 = class->name;
+		callend3 = ";\n";
 	} else if (constr_origin != class) {
 		ancestor = hasho_find(&class->ancestors, constr_origin);
 		if (!ancestor) {
@@ -3748,18 +3765,19 @@ static void print_class_alloc(struct parser *parser, struct class *class)
 		constr_addr = ancestor->parent->is_virtual ? "" : "&";
 		constr_arrow = "->";
 		constr_path = ancestor->path;
-	}
+		callend1 = "\treturn this;\n";
+	} else
+		constr_ret = "return ";
 	params = rootconstr->paramstext[0] == ')' ? "void)" : rootconstr->paramstext;
 	outprintf(parser, "\nstruct %s *new_%s(%s\n"
 		"{\n\tstruct %s%s *this = malloc(sizeof(*this));\n"
 		"\tif (this == NULL) return NULL;\n"
 		"\t%s%s_%s(%sthis%s%s",
-		class->name, class->name, params,
-		class->name, rootsuffix, ifret, constr_origin->name,
-		rootconstr->name, constr_addr, constr_arrow, constr_path);
+		class->name, class->name, params, class->name, rootsuffix,
+		constr_ret, constr_origin->name, rootconstr->name,
+		constr_addr, constr_arrow, constr_path);
 	print_param_names(parser, rootconstr->paramstext);
-	outprintf(parser, "%s\treturn %sthis%s%s;\n}\n",
-		callend, retaddr, retarrow, retclassname);
+	outprintf(parser, ");\n%s%s%s}\n", callend1, callend2, callend3);
 	/* no need to count lines_coo here, end of input */
 }
 
@@ -3807,7 +3825,7 @@ static void print_root_constructor(struct parser *parser, struct class *class)
 	struct ancestor *ancestor, *literal_ancestor;
 	struct hasho_entry *entry;
 	struct class *parentclass, *rootclass;
-	char *name, *rootprefix, *retstr, *thisname, *sep;
+	char *name, *rootprefix, *thisname, *sep;
 	struct vmt *vmt;
 	unsigned i;
 
@@ -3825,8 +3843,8 @@ static void print_root_constructor(struct parser *parser, struct class *class)
 	paramstext = class->root_constructor->paramstext;
 	sep_or_end = paramstext[0] != ')' ? ", " : "";
 	/* root constructor function signature */
-	outprintf(parser, "\nvoid %s_%s_root(struct %s *this%s%s\n{\n",
-		class->name, class->name, rootclass->name, sep_or_end, paramstext);
+	outprintf(parser, "\nstruct %s *%s_%s_root(struct %s *this%s%s\n{\n",
+		class->name, class->name, class->name, rootclass->name, sep_or_end, paramstext);
 	/* no need to update lines_coo here, at end of input */
 	/* virtual inits */
 	hasho_foreach(entry, &class->ancestors) {
@@ -3870,27 +3888,26 @@ static void print_root_constructor(struct parser *parser, struct class *class)
 	}
 	/* construct classes that are used as virtual bases only */
 	print_construct_parents(parser, class, rootprefix, sep, VIRTUAL_PARENT);
+	/* no root class if no non-resolved virtual bases */
+	if (class->rootclass) {
+		thisname = "&this->";
+		name = class->name;
+	} else {
+		thisname = "this";
+		name = "";
+	}
 	/* class constructor call */
 	if (class->has_constructor) {
-		retstr = class->void_root_constructor ? "" : "return ";
-		/* no root class if no non-resolved virtual bases */
-		if (class->rootclass) {
-			thisname = "&this->";
-			name = class->name;
-		} else {
-			thisname = "this";
-			name = "";
-		}
-		outprintf(parser, "\t%s%s_%s(%s%s", retstr,
+		outprintf(parser, "\treturn %s_%s(%s%s",
 			class->name, class->name, thisname, name);
 		print_param_names(parser, paramstext);
-		outwrite(parser, ");\n", 3);
+		outwrite(parser, ");\n}\n", 5);
 		/* no need to update lines_coo here, at end of input */
 	} else {
 		/* no constructor, need to call all parents here then */
 		print_construct_parents(parser, class, rootprefix, sep, LITERAL_PARENT);
+		outprintf(parser, "\treturn %s%s;\n}\n", thisname, name);
 	}
-	outwrite(parser, "}\n", 2);
 }
 
 static void print_constructor(struct parser *parser, struct class *class)
@@ -3912,7 +3929,7 @@ static void print_constructor(struct parser *parser, struct class *class)
 		print_call_constructor(parser, memberclass,
 			"", "", member->name, memberclass->root_constructor);
 	}
-	outwrite(parser, "}\n", 2);
+	outwrite(parser, "\treturn this;\n}\n", 16);
 }
 
 static void print_destruct_parents(struct parser *parser, struct class *class,
@@ -3942,7 +3959,7 @@ static void print_root_destructor(struct parser *parser, struct class *class)
 		return;
 
 	outprintf(parser, "\nvoid %s_d_%s_root(struct %s *this)\n{\n",
-		class->name, class->name);
+		class->name, class->name, class->name);
 	if (class->rootclass)
 		outprintf(parser, "\tstruct %s *root_this = container_of(this, struct %s, %s);",
 			class->name, class->name, class->name);

@@ -342,15 +342,15 @@ int main(int argc, char **argv)
 	e.D.C.c1 = 52;
 	e.D.d1 = 53;
 	e.e1 = 54;
-	A_vmt_vfunc_a(&e.D.B.A, 55);
-	B_vmt_vfunc_b(&e.D.B, 56);
-	C_vmt_vfunc_c(&e.D.C, 57);
-	C_vmt_vfunc_c3(&e.D.C, 58);
-	D_vmt_vfunc_d(&e.D, &(&e)->D.B.A, &(&e)->D.B);
+	D_vfunc_a(&e.D, 55);
+	E_vfunc_b(&e, 56);
+	C_vfunc_c(&e.D.C, 57);
+	D_vfunc_c3(&e.D.C, 58);
+	E_vfunc_d(&e, &(&e)->D.B.A, &(&e)->D.B);
 	if (e.D.C.c1 < 33)
 		{ __coo_ret = -2; goto __coo_out1; }
 
-	A_vmt_vfunc_a(&(p_e = new_E())->D.B.A, -1);
+	D_vfunc_a(&(p_e = new_E())->D, -1);
 	free_E(p_e);
 	p_e = &e2;
 	p_e->D.B.A.a1 = 60;
@@ -358,10 +358,10 @@ int main(int argc, char **argv)
 	p_e->D.C.c1 = 62;
 	p_e->D.d1 = 63;
 	p_e->e1 = 64;
-	A_vmt_vfunc_a(&p_e->D.B.A, 65);
-	B_vmt_vfunc_b(&p_e->D.B, 66);
-	C_vmt_vfunc_c(&p_e->D.C, 67);
-	D_vmt_vfunc_d(&p_e->D, &(&e)->D.B.A, &(&e)->D.B);
+	D_vfunc_a(&p_e->D, 65);
+	E_vfunc_b(p_e, 66);
+	C_vfunc_c(&p_e->D.C, 67);
+	E_vfunc_d(p_e, &(&e)->D.B.A, &(&e)->D.B);
 
 	/* silence warnings */
 	printf("%d %d\n", aa1, db1);

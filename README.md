@@ -279,7 +279,8 @@ that the method is not overridden anyway.
 
 * recognize global variables (searched, but never any added)
 * add syntax to zero-initialize a class automatically
-* add "final" classes to not need override, and suppress warning?
+* optimize duplicated parentname strings == ancestor->path?
+* cannot inherit from final class?
 
 ## License
 

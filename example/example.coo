@@ -32,7 +32,7 @@ struct D : B, C {
 	virtual void vfunc_d(A* a, B *b);
 };
 
-struct E : D {
+final struct E : D {
 	int e1;
 	override vfunc_b;
 	override vfunc_d;

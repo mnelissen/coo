@@ -126,6 +126,7 @@ struct class {
 	unsigned num_init_vars;      /* number of members needing root construction call */
 	unsigned num_abstract;       /* number of abstract virtual methods */
 	char declare_complete;       /* inside or after struct declaration? */
+	char is_final;               /* final class, cannot be inherited from */
 	char is_interface;
 	char is_implemented;         /* have seen class implementation */
 	char is_rootclass;           /* this class is a rootclass */
@@ -294,12 +295,14 @@ struct parser {
 	struct dynarr implicit_structs;  /* char *, param positions to add "struct " */
 	struct dynarr *inserts;       /* either inserts_arr or a initializer's */
 	struct hash files_seen;       /* struct file_id pointers */
+	char *newfilename_end;        /* pointer to end of new input filename */
 	int include_ext_in_len;       /* length of include_ext_in, optimization */
 	int num_errors;               /* user errors, prevent spam */
-	int line_pragmas;             /* print line pragmas for compiler lineno */
-	char printbuffer[OUTPR_MAX];  /* buffer for outprintf */
+	char line_pragmas;            /* print line pragmas for compiler lineno */
+	char saw_final;               /* saw the final keyword */
+	char saw_typedef;             /* saw the typedef keyword */
 	char newfilename[NEWFN_MAX];  /* (stacked) store curdir + new input filename */
-	char *newfilename_end;        /* pointer to end of new input filename */
+	char printbuffer[OUTPR_MAX];  /* buffer for outprintf */
 };
 
 DEFINE_STRHASH_FIND(parser, classes, class, class)
@@ -1632,7 +1635,7 @@ static struct member *inheritmember(struct parser *parser, char *parsepos,
 			parent->is_virtual ? "->" : ".",
 			parentmember->parentname);
 	} else {
-		member->parentname = parent->class->name;
+		member->parentname = strdup(parent->class->name);
 		member->parent_virtual = parent->is_virtual;
 	}
 	member->nameinsert = aprintf("%s%s", member->parentname,
@@ -2241,6 +2244,30 @@ static void print_member_decls(struct parser *parser, struct class *class)
 
 	for (i = 0; i < class->members_arr.num; i++) {
 		member = class->members_arr.mem[i];
+
+		/* optimize virtual function calls to actual calls for final classes */
+		if (class->is_final && member->funcinsert && member->props.is_virtual) {
+			member->funcinsert = aprintf("%s_", member->definition->name);
+			/* note that non-primary base virtual calls translate 'this',
+			   so have to pass that base, so keep original parentname */
+			if (!impl_this_needs_offset(member)) {
+				if (member->definition != class) {
+					ancestor = hasho_find(&class->ancestors,
+							member->definition);
+					if (ancestor && ancestor->parent->class
+								!= member->origin) {
+						/* path to definition can only
+						   be shorter than to origin */
+						strcpy(member->parentname, ancestor->path);
+					}
+				} else {
+					/* definition is here, no parent path necessary anymore */
+					free(member->parentname);
+					member->parentname = NULL;
+				}
+			}
+		}
+
 		/* don't print inherited members (that we did not override) */
 		if (member->definition != class)
 			continue;
@@ -2277,7 +2304,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	struct classptr decl;
 	char *declbegin, *retend, *membername, *nameend, *params, *declend, *nextdecl;
 	char *classname, *classnameend, *parentname, *retnext, *prevdeclend, *prevnext;
-	int level, is_typedef, parent_primary, parent_virtual, is_lit_var, len;
+	int level, parent_primary, parent_virtual, is_lit_var, len;
 	int first_virtual_warn, first_vmt_warn, empty_line, need_destructor;
 	struct classtype *parentclasstype, rettype;
 	struct parent *parent, *firstparent;
@@ -2285,9 +2312,8 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	char namebuf[128];
 	unsigned i;
 
-	is_typedef = *parser->pf.pos == 't';
-	/* skip 'typedef struct ' or just 'struct ' */
-	classname = skip_whitespace(parser, parser->pf.pos + (is_typedef ? 15 : 7));
+	/* skip "struct " */
+	classname = skip_whitespace(parser, parser->pf.pos + 7);
 	classnameend = skip_word(classname);
 	if (classnameend != classname) {
 		class = addclass(parser, classname, classnameend);
@@ -2297,6 +2323,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		decl.class = class;
 		decl.pointerlevel = 0;
 		addclasstype(parser, classname, classnameend, &decl, TYPEDEF_IMPLICIT);
+		class->is_final = parser->saw_final;
 	} else
 		class = NULL;
 
@@ -2628,7 +2655,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		if (declend == NULL)
 			return NULL;
 		if (next != classname) {
-			if (is_typedef)
+			if (parser->saw_typedef)
 				addclasstype(parser, classname, next, &decl, TYPEDEF_EXPLICIT);
 			else {
 				/* TODO: addglobal() */
@@ -3095,7 +3122,8 @@ static void parse_function(struct parser *parser, char *next)
 			nameend = skip_methodname(funcname);
 			member = find_member_e(class, funcname, nameend);
 			if (member != NULL) {
-				if (member->props.is_virtual && member->definition != class) {
+				if (member->props.is_virtual && member->definition != class
+						&& !class->is_final) {
 					pr_warn(funcname, "overriding virtual method without "
 						"override in class declaration, is "
 						"invisible to descendent classes");
@@ -4298,7 +4326,7 @@ static void parse_include(struct parser *parser)
 
 static void parse(struct parser *parser)
 {
-	char *next;
+	char *curr, *next;
 
 	/* write line directives for useful compiler messages */
 	if (parser->line_pragmas) {
@@ -4326,16 +4354,27 @@ static void parse(struct parser *parser)
 			continue;
 		}
 
-		next = scan_token(parser, parser->pf.pos, "/\n({;");
+		curr = parser->pf.pos;
+		next = scan_token(parser, curr, "/\n({;");
 		if (next == NULL)
 			break;
 
-		if (*next == '{' && strprefixcmp("struct ", parser->pf.pos)) {
+		parser->saw_final = parser->saw_typedef = 0;
+		if (strprefixcmp("typedef ", curr)) {
+			parser->pf.pos = curr += 8;  /* "typedef " */
+			parser->saw_typedef = 1;
+		}
+		if (strprefixcmp("final ", curr)) {
+			curr += 6;  /* "final " */
+			parser->saw_final = 1;
+		}
+		if (*next == '{' && strprefixcmp("struct ", curr)) {
+			if (parser->saw_final) {
+				flush(parser);
+				parser->pf.writepos = parser->pf.pos = curr;
+			}
 			parse_struct(parser, next);
-		} else if (*next == '{' && strprefixcmp("typedef struct ", parser->pf.pos)) {
-			parse_struct(parser, next);
-		} else if (*next == ';' && strprefixcmp("typedef ", parser->pf.pos)) {
-			parser->pf.pos += 8;  /* "typedef " */
+		} else if (*next == ';' && parser->saw_typedef) {
 			parse_typedef(parser, next);
 		} else if (*next == '(') {
 			parse_function(parser, next);

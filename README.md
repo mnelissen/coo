@@ -275,6 +275,28 @@ causes a hard call to be emitted, never via the VMT. Also other member
 functions may be called this way as an optimization if one is certain
 that the method is not overridden anyway.
 
+### Dynamic casting
+
+TODO: explain dynamic casting syntax.
+
+In order to support dynamic casting, COO generates a 'coo class' for every
+defined class. If you get linker errors like "undefined reference to
+XXXX_coo_class" where XXXX is the name of a class, then it means the class
+was not implemented anywhere. The coo class variable needs to be declared
+(value defined) exactly once. That's why COO only generates coo class
+variables for those classes that it detects are implemented in the parsed
+source file. Undefined references can then still occur for abstract classes
+that are meant as interfaces, since those do not have any implementation
+anywhere. In that case there are two solutions:
+
+1. declare the class as 'nodyncast struct XXXX {};'. This will cause the
+   the coo class variable not to be defined and used. However, then it
+   is also not possible to dynamic cast to this class.
+2. in some file, trigger the coo class variable to be declared manually
+   by writing 'XXXX::coo_class;' as a standalone, global statement. This
+   will set the implemented flag, and cause the coo class variable to be
+   declared and filled in.
+
 ## TODO
 
 * recognize global variables (searched, but never any added)

@@ -34,6 +34,11 @@ void B::vfunc_b(int arg)
 	printf("B::vfunc_b(%d)\n", arg);
 }
 
+void C::vfunc_a(int arg)
+{
+	printf("C::vfunc_a(%d)\n", arg);
+}
+
 void D::vfunc_a(int arg)
 {
 	printf("D::vfunc_a(%d)\n", arg);

@@ -120,6 +120,15 @@ int main(void)
 
 
 #line 123 "good4.coo.c"
+#include <stddef.h>
+#include <stdint.h>
+#pragma pack(8)
+const struct S_base_coo_class {
+	uint32_t num_parents;
+} S_base_coo_class = {
+	0,
+};
+
 struct S_base *new_S_base(void)
 {
 	struct S_base *this = malloc(sizeof(*this));
@@ -132,6 +141,12 @@ void free_S_base(struct S_base *this)
 	S_base_d_S_base(this);
 	free(this);
 }
+
+const struct S_both_coo_class {
+	uint32_t num_parents;
+} S_both_coo_class = {
+	0,
+};
 
 struct S_both *new_S_both(void)
 {
@@ -147,6 +162,12 @@ struct S_both *S_both_S_both(struct S_both *this)
 	return this;
 }
 
+const struct S_inherit_sec_coo_class {
+	uint32_t num_parents;
+} S_inherit_sec_coo_class = {
+	0,
+};
+
 struct S_inherit_sec *new_S_inherit_sec(void)
 {
 	struct S_inherit_sec *this = malloc(sizeof(*this));
@@ -161,6 +182,12 @@ void free_S_inherit_sec(struct S_inherit_sec *this)
 	free(this);
 }
 
+const struct S_alt_base_coo_class {
+	uint32_t num_parents;
+} S_alt_base_coo_class = {
+	0,
+};
+
 struct S_alt_base *new_S_alt_base(void)
 {
 	struct S_alt_base *this = malloc(sizeof(*this));
@@ -173,6 +200,12 @@ void free_S_alt_base(struct S_alt_base *this)
 	S_alt_base_d_S_alt_base(this);
 	free(this);
 }
+
+const struct S_inherit_pri_coo_class {
+	uint32_t num_parents;
+} S_inherit_pri_coo_class = {
+	0,
+};
 
 struct S_inherit_pri *new_S_inherit_pri(void)
 {

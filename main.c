@@ -117,6 +117,7 @@ struct class {
 	char need_dync_p0_dummy;     /* first dync.parent is not at offset 0 */
 	char declare_complete;       /* inside or after struct declaration? */
 	char is_final;               /* final class, cannot be inherited from */
+	char no_dyncast;             /* user disabled dyncasting to this class */
 	char is_interface;
 	char is_implemented;         /* have seen class implementation */
 	char is_rootclass;           /* this class is a rootclass */
@@ -290,6 +291,7 @@ struct parser {
 	int include_ext_in_len;       /* length of include_ext_in, optimization */
 	int num_errors;               /* user errors, prevent spam */
 	char line_pragmas;            /* print line pragmas for compiler lineno */
+	char saw_nodyncast;           /* saw the nodyncast keyword */
 	char saw_final;               /* saw the final keyword */
 	char saw_typedef;             /* saw the typedef keyword */
 	char coo_includes_pr;         /* printed necessary includes for coo class vars? */
@@ -1925,7 +1927,7 @@ static void import_parent(struct parser *parser, char *parsepos,
 	}
 
 	/* count dynamic castable parents */
-	if (parentclass->vmts.num) {
+	if (parentclass->vmts.num && !parentclass->no_dyncast) {
 		class->num_dync_parents++;
 		if (!class->dync_parents)
 			class->dync_parents = parent;
@@ -2133,7 +2135,7 @@ static void print_vmt_type(struct parser *parser, struct class *class)
 
 static void print_coo_class_var(struct parser *parser, struct class *class)
 {
-	if (class->vmts.num == 0)
+	if (class->vmts.num == 0 || class->no_dyncast)
 		return;
 
 	switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
@@ -2339,6 +2341,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		decl.pointerlevel = 0;
 		addclasstype(parser, classname, classnameend, &decl, TYPEDEF_IMPLICIT);
 		class->is_final = parser->saw_final;
+		class->no_dyncast = parser->saw_nodyncast;
 	} else
 		class = NULL;
 
@@ -4102,7 +4105,9 @@ static void print_coo_class(struct parser *parser, struct class *class)
 	struct class *rootclass;
 
 	rootclass = class->rootclass ? &class->rootclass->class : class;
-	num_parents = class->num_dync_parents + class->need_dync_p0_dummy;
+	num_parents = class->num_dync_parents;
+	if (num_parents && class->need_dync_p0_dummy)
+		num_parents++;
 	switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
 	/* disable packing so 'void* parents[]' is aligned */
 	if (!parser->coo_includes_pr) {
@@ -4453,17 +4458,24 @@ static void parse(struct parser *parser)
 		if (next == NULL)
 			break;
 
-		parser->saw_final = parser->saw_typedef = 0;
+		parser->saw_nodyncast = parser->saw_final = parser->saw_typedef = 0;
 		if (strprefixcmp("typedef ", curr)) {
 			parser->pf.pos = curr += 8;  /* "typedef " */
 			parser->saw_typedef = 1;
 		}
-		if (strprefixcmp("final ", curr)) {
-			curr += 6;  /* "final " */
-			parser->saw_final = 1;
+		for (;;) {
+			if (strprefixcmp("final ", curr)) {
+				curr += 6;  /* "final " */
+				parser->saw_final = 1;
+			} else if (strprefixcmp("nodyncast ", curr)) {
+				curr += 10;  /* "nodyncast " */
+				parser->saw_nodyncast = 1;
+			} else
+				break;
 		}
 		if (*next == '{' && strprefixcmp("struct ", curr)) {
-			if (parser->saw_final) {
+			if (parser->saw_final || parser->saw_nodyncast) {
+				/* skip these COO specific keywords */
 				flush(parser);
 				parser->pf.writepos = parser->pf.pos = curr;
 			}

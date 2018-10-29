@@ -5,25 +5,17 @@
 
 typedef struct A {
 	int a1;
-	void *vmt;
+	struct coo_vmt *vmt;
 } A;
 
 #line 12 "example.coo.c"
+#include <coortl.h>
 extern struct A_vmt {
+	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct A *this, int a2);
 } A_vmt;
 
-#ifndef coo_inline
-#ifdef _MSC_VER
-#define coo_inline __forceinline
-#else
-#define coo_inline extern inline __attribute__((always_inline)) __attribute__((gnu_inline))
-#endif
-#endif
-#ifndef container_of
-#define container_of(ptr, type, node_var) \
-  ((type *)((size_t)(ptr)-(size_t)(&((type *)0)->node_var)))
-#endif
+extern const struct A_coo_class A_coo_class;
 
 struct A *new_A(void);
 void A_vfunc_a(struct A *this, int a2);
@@ -41,11 +33,14 @@ struct B {
 	struct A a_local;
 };
 
-#line 45 "example.coo.c"
+#line 37 "example.coo.c"
 extern struct B_vmt {
+	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct B *this, int a2);
 	void (*vfunc_b)(struct B *this, int b2);
 } B_vmt;
+
+extern const struct B_coo_class B_coo_class;
 
 struct B *new_B(void);
 void B_vfunc_a(struct B *this, int a2);
@@ -61,23 +56,27 @@ coo_inline void B_vmt_vfunc_b(struct B *this, int b2)
 struct C {
 	struct A *A;
 	int c1;
-	void *vmt;
+	struct coo_vmt *vmt;
 };
 
-#line 68 "example.coo.c"
+#line 63 "example.coo.c"
 struct C_root {
 	struct C C;
 	struct A A;
 };
 
 extern struct C_A_vmt {
+	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct A *this, int a2);
 } C_A_vmt;
 
 extern struct C_vmt {
+	struct coo_vmt vmt_base;
 	void (*vfunc_c)(struct C *this, int c2);
 	void (*vfunc_c3)(struct C *this, int c3);
 } C_vmt;
+
+extern const struct C_coo_class C_coo_class;
 
 struct C *new_C(void);
 void C_vfunc_a(struct C *this, int a2);
@@ -101,17 +100,21 @@ struct D {
 	int d1;
 };
 
-#line 105 "example.coo.c"
+#line 104 "example.coo.c"
 extern struct D_vmt {
+	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct D *this, int a2);
 	void (*vfunc_b)(struct D *this, int b2);
 	void (*vfunc_d)(struct D *this, struct A* a, struct B *b);
 } D_vmt;
 
 extern struct D_C_vmt {
+	struct coo_vmt vmt_base;
 	void (*vfunc_c)(struct C *this, int c2);
 	void (*vfunc_c3)(struct C *this, int c3);
 } D_C_vmt;
+
+extern const struct D_coo_class D_coo_class;
 
 struct D *new_D(struct A *a);
 void D_vfunc_a(struct D *this, int a2);
@@ -131,12 +134,15 @@ struct E {
 	int e1;
 };
 
-#line 135 "example.coo.c"
+#line 138 "example.coo.c"
 extern struct E_vmt {
+	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct D *this, int a2);
 	void (*vfunc_b)(struct E *this, int b2);
 	void (*vfunc_d)(struct E *this, struct A* a, struct B *b);
 } E_vmt;
+
+extern const struct E_coo_class E_coo_class;
 
 struct E *new_E(void);
 void free_E(struct E *this);
@@ -190,7 +196,7 @@ void foo_vfunc(struct foo *this, int arg1, float *arg2)
 struct A *A_A(struct A *this)
 {
 	this->a1 = -1;
-#line 194 "example.coo.c"
+#line 200 "example.coo.c"
 	return this;
 #line 87 "example.coo"
 }
@@ -204,7 +210,7 @@ struct B *B_B(struct B *this)
 {
 	A_A(&this->A);
 	A_A_root(&this->a_local);
-#line 208 "example.coo.c"
+#line 214 "example.coo.c"
 	return this;
 #line 98 "example.coo"
 }
@@ -260,7 +266,7 @@ struct D *D_D(struct D *this, struct A *a)
 {
 	this->B.b1 = -5;
 	B_B(&this->B);
-#line 264 "example.coo.c"
+#line 270 "example.coo.c"
 	return this;
 #line 151 "example.coo"
 }
@@ -269,7 +275,7 @@ struct E *E_E(struct E *this)
 {
 	this->D.B.A.a1 = -6;
 	D_D(&this->D, &this->D.B.A);
-#line 273 "example.coo.c"
+#line 279 "example.coo.c"
 	return this;
 #line 157 "example.coo"
 }
@@ -367,7 +373,7 @@ int main(int argc, char **argv)
 	printf("%d %d\n", aa1, db1);
 
 	__coo_ret = 0;
-#line 372 "example.coo.c"
+#line 378 "example.coo.c"
 __coo_out1:
 	E_d_E(&e2);
 __coo_out0:
@@ -376,8 +382,19 @@ __coo_out0:
 #line 240 "example.coo"
 }
 
-#line 380 "example.coo.c"
+#line 386 "example.coo.c"
+#include <stddef.h>
+#include <stdint.h>
+#pragma pack(8)
+const struct foo_coo_class {
+	uint32_t num_parents;
+} foo_coo_class = {
+	0,
+};
+
 struct foo_vmt foo_vmt = {
+	{ offsetof(struct foo, vmt),
+	  &foo_coo_class },
 	foo_vfunc,
 };
 
@@ -390,9 +407,17 @@ struct foo *new_foo(void)
 
 struct foo *foo_foo_root(struct foo *this)
 {
-	this->vmt = &foo_vmt;
+	this->vmt = &foo_vmt.vmt_base;
 	return this;
 }
+
+const struct C_coo_class {
+	uint32_t num_parents;
+	const void *parents[1];
+} C_coo_class = {
+	1,
+	{ &A_coo_class }
+};
 
 void C_root_vfunc_a(struct A *__this, int a2)
 {	struct C_root *this = container_of(__this, struct C_root, A);
@@ -400,10 +425,14 @@ void C_root_vfunc_a(struct A *__this, int a2)
 }
 
 struct C_A_vmt C_A_vmt = {
+	{ offsetof(struct C_root, A.vmt),
+	  &C_coo_class },
 	C_root_vfunc_a,
 };
 
 struct C_vmt C_vmt = {
+	{ offsetof(struct C, vmt),
+	  &C_coo_class },
 	C_vfunc_c,
 	C_vfunc_c3,
 };
@@ -419,13 +448,23 @@ struct C *new_C(void)
 struct C *C_C_root(struct C_root *this)
 {
 	this->C.A = &this->A;
-	this->A.vmt = &C_A_vmt;
-	this->C.vmt = &C_vmt;
+	this->A.vmt = &C_A_vmt.vmt_base;
+	this->C.vmt = &C_vmt.vmt_base;
 	A_A(this->C.A);
 	return &this->C;
 }
 
+const struct B_coo_class {
+	uint32_t num_parents;
+	const void *parents[1];
+} B_coo_class = {
+	1,
+	{ &A_coo_class }
+};
+
 struct B_vmt B_vmt = {
+	{ offsetof(struct B, A.vmt),
+	  &B_coo_class },
 	B_vfunc_a,
 	B_vfunc_b,
 };
@@ -439,11 +478,19 @@ struct B *new_B(void)
 
 struct B *B_B_root(struct B *this)
 {
-	this->A.vmt = &B_vmt;
+	this->A.vmt = &B_vmt.vmt_base;
 	return B_B(this);
 }
 
+const struct A_coo_class {
+	uint32_t num_parents;
+} A_coo_class = {
+	0,
+};
+
 struct A_vmt A_vmt = {
+	{ offsetof(struct A, vmt),
+	  &A_coo_class },
 	A_vfunc_a,
 };
 
@@ -456,11 +503,21 @@ struct A *new_A(void)
 
 struct A *A_A_root(struct A *this)
 {
-	this->vmt = &A_vmt;
+	this->vmt = &A_vmt.vmt_base;
 	return A_A(this);
 }
 
+const struct E_coo_class {
+	uint32_t num_parents;
+	const void *parents[1];
+} E_coo_class = {
+	1,
+	{ &D_coo_class }
+};
+
 struct E_vmt E_vmt = {
+	{ offsetof(struct E, D.B.A.vmt),
+	  &E_coo_class },
 	D_vfunc_a,
 	E_vfunc_b,
 	E_vfunc_d,
@@ -476,8 +533,8 @@ struct E *new_E(void)
 struct E *E_E_root(struct E *this)
 {
 	this->D.C.A = &this->D.B.A;
-	this->D.B.A.vmt = &E_vmt;
-	this->D.C.vmt = &D_C_vmt;
+	this->D.B.A.vmt = &E_vmt.vmt_base;
+	this->D.C.vmt = &D_C_vmt.vmt_base;
 	return E_E(this);
 }
 
@@ -487,13 +544,28 @@ void free_E(struct E *this)
 	free(this);
 }
 
+const struct D_coo_class {
+	uint32_t num_parents;
+	uint32_t offsets[1];
+	const void *parents[2];
+} D_coo_class = {
+	2,
+	{ offsetof(struct D, C) },
+	{ &B_coo_class,
+	  &C_coo_class }
+};
+
 struct D_vmt D_vmt = {
+	{ offsetof(struct D, B.A.vmt),
+	  &D_coo_class },
 	D_vfunc_a,
 	D_vfunc_b,
 	D_vfunc_d,
 };
 
 struct D_C_vmt D_C_vmt = {
+	{ offsetof(struct D, C.vmt),
+	  &D_coo_class },
 	C_vfunc_c,
 	D_vfunc_c3,
 };
@@ -508,7 +580,7 @@ struct D *new_D(struct A *a)
 struct D *D_D_root(struct D *this, struct A *a)
 {
 	this->C.A = &this->B.A;
-	this->B.A.vmt = &D_vmt;
-	this->C.vmt = &D_C_vmt;
+	this->B.A.vmt = &D_vmt.vmt_base;
+	this->C.vmt = &D_C_vmt.vmt_base;
 	return D_D(this, a);
 }

@@ -4,28 +4,20 @@
 
 struct foo {
 	int x;
-	void *vmt;
+	struct coo_vmt *vmt;
 	int *(*intfuncptr)(char c);
 	int *y;
 	unsigned int *z;
 };
 
 #line 14 "inc/foo.coo.h"
+#include <coortl.h>
 extern struct foo_vmt {
+	struct coo_vmt vmt_base;
 	void (*vfunc)(struct foo *this, int arg1, float *arg2);
 } foo_vmt;
 
-#ifndef coo_inline
-#ifdef _MSC_VER
-#define coo_inline __forceinline
-#else
-#define coo_inline extern inline __attribute__((always_inline)) __attribute__((gnu_inline))
-#endif
-#endif
-#ifndef container_of
-#define container_of(ptr, type, node_var) \
-  ((type *)((size_t)(ptr)-(size_t)(&((type *)0)->node_var)))
-#endif
+extern const struct foo_coo_class foo_coo_class;
 
 struct foo *new_foo(void);
 char foo_func(struct foo *this);

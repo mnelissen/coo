@@ -31,7 +31,7 @@ not available.
 * class methods
 * virtual methods
 * inheritance
-* no runtime library required
+* tiny runtime library (for dynamic casting)
 
 Planned:
 

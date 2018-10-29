@@ -1,25 +1,17 @@
 #line 1 "inc/bar/bar.hoo"
 struct bar {
 	int a, b;
-	void *vmt;
+	struct coo_vmt *vmt;
 };
 
 #line 8 "inc/bar/bar.coo.h"
+#include <coortl.h>
 extern struct bar_vmt {
+	struct coo_vmt vmt_base;
 	void (*vbarf)(struct bar *this);
 } bar_vmt;
 
-#ifndef coo_inline
-#ifdef _MSC_VER
-#define coo_inline __forceinline
-#else
-#define coo_inline extern inline __attribute__((always_inline)) __attribute__((gnu_inline))
-#endif
-#endif
-#ifndef container_of
-#define container_of(ptr, type, node_var) \
-  ((type *)((size_t)(ptr)-(size_t)(&((type *)0)->node_var)))
-#endif
+extern const struct bar_coo_class bar_coo_class;
 
 struct bar *new_bar(void);
 int *bar_barf(struct bar *this, char a, int b);

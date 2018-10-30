@@ -293,13 +293,12 @@ anywhere. In that case there are two solutions:
    the coo class variable not to be defined and used. However, then it
    is also not possible to dynamic cast to this class.
 2. in some file, trigger the coo class variable to be declared manually
-   by writing 'XXXX::coo_class;' as a standalone, global statement. This
+   by writing 'XXXX::coo_class;' as a standalone, global declaration. This
    will set the implemented flag, and cause the coo class variable to be
-   declared and filled in.
+   defined.
 
 ## TODO
 
-* recognize global variables (searched, but never any added)
 * add syntax to zero-initialize a class automatically
 * optimize duplicated parentname strings == ancestor->path?
 * cannot inherit from final class?

@@ -1551,8 +1551,8 @@ static int find_local_e_class(struct parser *parser, char *name, char *nameend,
 	return 0;
 }
 
-void parse_type(struct parser *parser, char *pos,
-		char **retnext, struct classtype *rettype)
+char *parse_type(struct parser *parser, char *pos,
+		struct classtype *rettype)
 {
 	struct classtype *classtype;
 	char *name, *next;
@@ -1590,7 +1590,7 @@ void parse_type(struct parser *parser, char *pos,
 
 	for (next = skip_whitespace(parser, next); *next == '*'; next++)
 		rettype->decl.pointerlevel++;
-	*retnext = next;
+	return next;
 }
 
 static int is_abstract(struct parser *parser, char **pos)
@@ -2320,7 +2320,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	struct memberprops memberprops = {0,};
 	struct classptr decl;
 	char *declbegin, *retend, *membername, *nameend, *params, *declend, *nextdecl;
-	char *classname, *classnameend, *parentname, *retnext, *prevdeclend, *prevnext;
+	char *classname, *classnameend, *parentname, *prevdeclend, *prevnext;
 	int level, parent_primary, parent_virtual, is_lit_var, len;
 	int first_virtual_warn, first_vmt_warn, empty_line, need_destructor;
 	struct classtype *parentclasstype, rettype;
@@ -2577,7 +2577,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		} else {
 			/* for constructor, parse_type detects rettype wrong */
 			if (retend > declbegin) {
-				parse_type(parser, declbegin, &retnext, &rettype);
+				parse_type(parser, declbegin, &rettype);
 			} else {
 				rettype.decl.class = NULL;
 				rettype.decl.pointerlevel = 0;
@@ -2869,7 +2869,7 @@ static void parse_typedef(struct parser *parser, char *declend)
 	char *next;
 
 	/* check if a class is aliased to a new name */
-	parse_type(parser, parser->pf.pos, &next, &type);
+	next = parse_type(parser, parser->pf.pos, &type);
 	if (type.decl.class == NULL)
 		return;
 
@@ -3153,7 +3153,7 @@ static void parse_function(struct parser *parser, char *next)
 				flush(parser);
 				outputs(parser, "static ");
 				/* add as member so others can call from further down */
-				parse_type(parser, thisfuncret, &curr, &rettype);
+				parse_type(parser, thisfuncret, &rettype);
 				props.is_function = 1;
 				member = addmember(parser, class, &rettype, thisfuncret,
 					classname, funcname, nameend, params, props);
@@ -4423,6 +4423,38 @@ static void parse_include(struct parser *parser)
 	parser->pf.pos = next+1;
 }
 
+static void parse_global(struct parser *parser, char *next)
+{
+	struct classtype classtype;
+	struct variable *variable;
+	char *end, *name, coo_class_var;
+
+	/* special declaration to trigger coo class variable to be emitted */
+	coo_class_var = memcmp("::coo_class", next - 11, 11) == 0;
+	if (coo_class_var) {
+		/* do not output this declaration; before printing implicit struct */
+		flush(parser);
+		parser->pf.writepos = skip_whitespace(parser, next + 1);
+	}
+
+	name = parse_type(parser, parser->pf.pos, &classtype);
+	if (classtype.decl.class == NULL)
+		return;
+	if (coo_class_var) {
+		classtype.decl.class->is_implemented = 1;
+		return;
+	}
+
+	/* global variable definition */
+	end = skip_word(name);
+	variable = alloc_namestruct(struct variable, name, end);
+	if (variable == NULL)
+		return;
+
+	variable->decl = classtype.decl;
+	strhash_insert(&parser->globals, variable);
+}
+
 static void parse(struct parser *parser)
 {
 	char *curr, *next;
@@ -4482,6 +4514,8 @@ static void parse(struct parser *parser)
 			parse_struct(parser, next);
 		} else if (*next == ';' && parser->saw_typedef) {
 			parse_typedef(parser, next);
+		} else if (*next == ';') {
+			parse_global(parser, next);
 		} else if (*next == '(') {
 			parse_function(parser, next);
 		}

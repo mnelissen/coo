@@ -19,10 +19,10 @@
 /* every vmt looks like: */
 struct coo_vmt {
         size_t offset;          /* offset to vmt pointer from instance */
-        const void *coo_class;  /* pointer to coo class def. that implements vmt */
+        const void *coo_class;  /* pointer to coo class hierarchy definition */
         /* ...virtual functions... */
 };
 
-void *coo_dyn_cast(const struct coo_vmt **vmt, const void *dest_class);
+void *coo_dyn_cast(const void *dest_class, const struct coo_vmt **vmt);
 
 #endif

@@ -1551,8 +1551,13 @@ static int find_local_e_class(struct parser *parser, char *name, char *nameend,
 	return 0;
 }
 
-char *parse_type(struct parser *parser, char *pos,
-		struct classtype *rettype)
+enum print_implicit {
+	SKIP_IMPLICIT,   /* boolean compatible */
+	PRINT_IMPLICIT,
+};
+
+static char *parse_type(struct parser *parser, char *pos,
+		struct classtype *rettype, enum print_implicit print_implicit)
 {
 	struct classtype *classtype;
 	char *name, *next;
@@ -1578,7 +1583,8 @@ char *parse_type(struct parser *parser, char *pos,
 			if (isalpha(*pos)) {
 				next = skip_word(pos);
 				if ((classtype = find_classtype_e(parser, pos, next)) != NULL) {
-					print_implicit_struct(parser, classtype, pos);
+					if (print_implicit)
+						print_implicit_struct(parser, classtype, pos);
 					rettype->decl = classtype->decl;
 					rettype->implicit = classtype->implicit;
 				}
@@ -2111,7 +2117,7 @@ static void print_vmt_type(struct parser *parser, struct class *class)
 			parser->pf.lines_coo++;
 		}
 
-		outprintf(parser, "\nextern struct %s {\n"
+		outprintf(parser, "\nextern const struct %s {\n"
 			"\tstruct coo_vmt vmt_base;\n", get_vmt_name(vmt));
 		/* 3 lines here, 1 to close struct */
 		parser->pf.lines_coo += 4;
@@ -2545,7 +2551,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 				addvmt(class, NULL, class, LITERAL_PARENT);
 				/* flush to front of virtual function */
 				flush_until(parser, declbegin);
-				outputs(parser, "struct coo_vmt *vmt;");
+				outputs(parser, "const struct coo_vmt *vmt;");
 				/* set writepos such that flush below is no-op */
 				parser->pf.writepos = prevdeclend;
 				parser->pf.lines_coo++;
@@ -2577,7 +2583,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		} else {
 			/* for constructor, parse_type detects rettype wrong */
 			if (retend > declbegin) {
-				parse_type(parser, declbegin, &rettype);
+				parse_type(parser, declbegin, &rettype, PRINT_IMPLICIT);
 			} else {
 				rettype.decl.class = NULL;
 				rettype.decl.pointerlevel = 0;
@@ -2869,7 +2875,7 @@ static void parse_typedef(struct parser *parser, char *declend)
 	char *next;
 
 	/* check if a class is aliased to a new name */
-	next = parse_type(parser, parser->pf.pos, &type);
+	next = parse_type(parser, parser->pf.pos, &type, PRINT_IMPLICIT);
 	if (type.decl.class == NULL)
 		return;
 
@@ -3086,10 +3092,23 @@ static void select_next_param(struct paramstate *state, struct classptr *dest)
 /* state for detecting function variable: (*name)(.... */
 enum parse_funcvar_state { FV_NONE, FV_NAME, FV_PARENCLOSE };
 enum goto_return { GOTO_RET_NONE, GOTO_RET, GOTO_RET_BLOCK };
+enum dyncast_state { DYNCAST_NONE, DYNCAST_EXPR, DYNCAST_PAREN };
 
 static int is_expr(enum parse_state state)
 {
 	 return state == STMTSTART || state == FINDVAR || state == EXPRUNARY;
+}
+
+static int is_dyncast_expr_sep(char *curr)
+{
+	/* all higher precedence operators do not separate dyncast expressions */
+	if (curr[0] == '+' && curr[1] == '+')
+		return 0;
+	if (curr[0] == '(' || curr[0] == '[' || curr[0] == '.')
+		return 0;
+	if (curr[0] == '-' && curr[1] == '>')
+		return 0;
+	return 1;
 }
 
 static void parse_function(struct parser *parser, char *next)
@@ -3108,6 +3127,7 @@ static void parse_function(struct parser *parser, char *next)
 	char *exprstart[MAX_PAREN_LEVELS], *exprend, *params, *param0, *paramend;
 	char *memberstart[MAX_PAREN_LEVELS], *funcvarname, *funcvarnameend;
 	char *thisprefix, *thisclassname, *thisfuncret, *thisfuncretend, *str1, *str2;
+	enum dyncast_state dyncast[MAX_PAREN_LEVELS];
 	enum parse_funcvar_state funcvarstate;
 	enum parse_state state, nextstate;
 	enum goto_return goto_ret;
@@ -3153,7 +3173,7 @@ static void parse_function(struct parser *parser, char *next)
 				flush(parser);
 				outputs(parser, "static ");
 				/* add as member so others can call from further down */
-				parse_type(parser, thisfuncret, &rettype);
+				parse_type(parser, thisfuncret, &rettype, PRINT_IMPLICIT);
 				props.is_function = 1;
 				member = addmember(parser, class, &rettype, thisfuncret,
 					classname, funcname, nameend, params, props);
@@ -3263,6 +3283,7 @@ static void parse_function(struct parser *parser, char *next)
 	retblocknr = next_retblocknr = in_delete = 0;
 	parser->initializers.num = 0;
 	targetparams[0].params = NULL;
+	memset(&dyncast, 0, sizeof(dyncast));
 	funcvarstate = FV_NONE;
 	goto_ret = GOTO_RET_NONE;
 	state = STMTSTART;
@@ -3320,6 +3341,51 @@ static void parse_function(struct parser *parser, char *next)
 					goto decl_or_cast;
 				}
 				continue;
+			} else if (strprefixcmp("dyn", curr)) {
+				if (strprefixcmp("amic_cast<", curr+3)) {
+					if (strprefixcmp(">(", curr+13)) {
+						next = curr + 13;
+						goto dyncast;
+					}
+					next = parse_type(parser, curr+13,
+						&rettype, SKIP_IMPLICIT);
+					if (next[0] != '>' || next[1] != '(')
+						pr_err(next, "'>' expected");
+					next++;
+					goto dyncast;
+				} else if (curr[3] == ':') {
+					next = curr + 4;
+					rettype.decl = targetdecl[parenlevel];
+				   dyncast:
+					if (rettype.decl.class == NULL) {
+						pr_err(curr, "unknown class to cast to");
+						continue;
+					}
+					if (rettype.decl.pointerlevel != 1) {
+						pr_err(curr, "dynamic cast must be "
+							"to single pointer");
+						continue;
+					}
+					if (rettype.decl.class->no_dyncast) {
+						pr_err(curr, "target class '%s' is not dynamic "
+							"castable", rettype.decl.class->name);
+						continue;
+					}
+					/* skip "dyn:" or "dynamic_cast<>(" */
+					insert_index = addinsert(parser, -1, curr,
+						"coo_dyn_cast(&", next, CONTINUE_AFTER);
+					insert_index = addinsert(parser, insert_index, next,
+						rettype.decl.class->name, next, CONTINUE_AFTER);
+					addinsert(parser, insert_index, next,
+						"_coo_class, &", next, CONTINUE_AFTER);
+					if (*next == '(') {
+						targetdecl[parenlevel+1] = rettype.decl;
+						dyncast[parenlevel+1] = DYNCAST_PAREN;
+					} else {
+						dyncast[parenlevel] = DYNCAST_EXPR;
+					}
+					continue;
+				}
 			} else if (strprefixcmp("return", curr) && !isalnum(curr[6])) {
 				next = curr + 7;  /* "return" */
 				if (need_retvar) {
@@ -3407,6 +3473,7 @@ static void parse_function(struct parser *parser, char *next)
 			case DECLVAR:
 				declvar = addvariable(parser, blocklevel, &decl,
 					exprdecl[0].pointerlevel, name, next, NULL);
+				immdecl = decl;
 				if (exprdecl[0].pointerlevel == 0 && decl.pointerlevel == 0
 						&& decl.class) {
 					if (decl.class->num_abstract) {
@@ -3577,12 +3644,11 @@ static void parse_function(struct parser *parser, char *next)
 			initializer = addinitializer(parser, NULL, name, next);
 		} else if (*curr == ')' || *curr == ',' || *curr == '=' || *curr == ';') {
 			/* determine target and source classes to access ancestor of */
+			immdecl.pointerlevel += exprdecl[parenlevel].pointerlevel;
 			if (exprdecl[parenlevel].class != NULL)
 				expr = &exprdecl[parenlevel];
-			else {
+			else
 				expr = &immdecl;
-				immdecl.pointerlevel += exprdecl[parenlevel].pointerlevel;
-			}
 			target = &targetdecl[parenlevel];
 			if (target->class && expr->class && target->class != expr->class
 					&& target->pointerlevel == expr->pointerlevel
@@ -3599,6 +3665,11 @@ static void parse_function(struct parser *parser, char *next)
 			initializer->end = curr;
 			parser->inserts = &parser->inserts_arr;
 			initializer = NULL;
+		}
+		if (dyncast[parenlevel] == DYNCAST_EXPR && is_dyncast_expr_sep(curr)) {
+			/* close coo_dyn_cast call */
+			addinsert(parser, -1, curr, "->vmt)", curr, CONTINUE_AFTER);
+			dyncast[parenlevel] = DYNCAST_NONE;
 		}
 		if (*curr == '(')
 			seqparen++;
@@ -3623,6 +3694,11 @@ static void parse_function(struct parser *parser, char *next)
 			state = EXPRUNARY;
 		} else if (*curr == ')') {
 			if (parenlevel > 0) {
+				if (dyncast[parenlevel]) {
+					addinsert(parser, -1,
+						curr, ")->vmt", curr, CONTINUE_AFTER);
+					dyncast[parenlevel] = DYNCAST_NONE;
+				}
 				parenlevel--;
 				if (exprdecl[parenlevel].class == NULL)
 					exprdecl[parenlevel] = exprdecl[parenlevel+1];
@@ -3649,7 +3725,6 @@ static void parse_function(struct parser *parser, char *next)
 			exprdecl[parenlevel].pointerlevel = 0;
 		} else if (*curr == '=') {
 			targetdecl[parenlevel] = immdecl;
-			targetdecl[parenlevel].pointerlevel += exprdecl[parenlevel].pointerlevel;
 			exprdecl[parenlevel].pointerlevel = 0;
 			immdecl.class = NULL;
 			state = EXPRUNARY;
@@ -3703,6 +3778,10 @@ static void parse_function(struct parser *parser, char *next)
 				outwrite(parser, ")", 1);
 				in_delete = 0;
 			}
+			targetdecl[0].pointerlevel = 0;
+			exprdecl[0].pointerlevel = 0;
+			targetdecl[0].class = NULL;
+			exprdecl[0].class = NULL;
 			immdecl.class = NULL;
 			decl.class = NULL;
 			declvar = NULL;
@@ -3711,7 +3790,6 @@ static void parse_function(struct parser *parser, char *next)
 			seqparen = 0;
 			parenlevel = 0;
 			state = STMTSTART;
-			exprdecl[0].pointerlevel = 0;
 			if (goto_ret) {
 				/* look ahead to see if function ends here */
 				next = skip_whitespace(parser, curr + 1);
@@ -4176,7 +4254,7 @@ static void print_vmt(struct parser *parser, struct class *class,
 			ancestor_path = "";
 		}
 	}
-	outprintf(parser, "\nstruct %s %s = {\n"
+	outprintf(parser, "\nconst struct %s %s = {\n"
 		"\t{ offsetof(struct %s, %s%svmt),\n"
 		"\t  &%s_coo_class },\n", vmt_name,
 		vmt_name, rootclass->name, ancestor_path, ancestor_sep, class->name);
@@ -4437,7 +4515,7 @@ static void parse_global(struct parser *parser, char *next)
 		parser->pf.writepos = skip_whitespace(parser, next + 1);
 	}
 
-	name = parse_type(parser, parser->pf.pos, &classtype);
+	name = parse_type(parser, parser->pf.pos, &classtype, PRINT_IMPLICIT);
 	if (classtype.decl.class == NULL)
 		return;
 	if (coo_class_var) {

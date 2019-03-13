@@ -3,12 +3,12 @@
 #include <stdlib.h>
 
 struct A {
-	struct coo_vmt *vmt;
+	const struct coo_vmt *vmt;
 };
 
 #line 10 "good1.coo.c"
 #include <coortl.h>
-extern struct A_vmt {
+extern const struct A_vmt {
 	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct A *this, int arg);
 } A_vmt;
@@ -23,10 +23,11 @@ coo_inline void A_vmt_vfunc_a(struct A *this, int arg)
 #line 8 "good1.coo"
 struct B {
 	struct A A;
+	int b1, b2;
 };
 
-#line 29 "good1.coo.c"
-extern struct B_vmt {
+#line 30 "good1.coo.c"
+extern const struct B_vmt {
 	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct B *this, int arg);
 	void (*vfunc_b)(struct B *this, int arg);
@@ -43,13 +44,14 @@ coo_inline void B_vmt_vfunc_b(struct B *this, int arg)
 	((struct B_vmt*)this->A.vmt)->vfunc_b(this, arg);
 }
 
-#line 13 "good1.coo"
+#line 14 "good1.coo"
 struct C {
 	struct A A;
+	int c1, c2;
 };
 
-#line 52 "good1.coo.c"
-extern struct C_vmt {
+#line 54 "good1.coo.c"
+extern const struct C_vmt {
 	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct C *this, int arg);
 } C_vmt;
@@ -59,14 +61,15 @@ extern const struct C_coo_class C_coo_class;
 struct C *new_C(void);
 void C_vfunc_a(struct C *this, int arg);
 struct C *C_C_root(struct C *this);
-#line 17 "good1.coo"
+#line 19 "good1.coo"
 struct D {
 	struct B B;
 	struct C C;
+	int d1, d2;
 };
 
-#line 69 "good1.coo.c"
-extern struct D_vmt {
+#line 72 "good1.coo.c"
+extern const struct D_vmt {
 	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct D *this, int arg);
 	void (*vfunc_b)(struct B *this, int arg);
@@ -78,7 +81,17 @@ struct D *new_D(void);
 void D_vfunc_a(struct D *this, int arg);
 struct D *D_D(struct D *this);
 struct D *D_D_root(struct D *this);
-#line 22 "good1.coo"
+#line 25 "good1.coo"
+struct E {
+	struct A A;
+	int e1, e2;
+};
+
+#line 91 "good1.coo.c"
+extern const struct E_coo_class E_coo_class;
+
+struct E *E_E(struct E *this);
+#line 30 "good1.coo"
 void A_vfunc_a(struct A *this, int arg)
 {
 	printf("A::vfunc_a(%d)\n", arg);
@@ -106,21 +119,45 @@ void D_vfunc_a(struct D *this, int arg)
 
 struct D *D_D(struct D *this)
 {
-#line 110 "good1.coo.c"
+	this->B.b1 = 12, this->B.b2 = 13;
+	this->C.c1 = 24, this->C.c2 = 25;
+	this->d1 = 36, this->d2 = 37;
+#line 126 "good1.coo.c"
 	return this;
-#line 49 "good1.coo"
+#line 60 "good1.coo"
+}
+
+struct E *E_E(struct E *this)
+{
+#line 133 "good1.coo.c"
+	return this;
+#line 64 "good1.coo"
 }
 
 int main(void)
 {
 	struct D *d = new_D();
+	struct A *a = &d->B.A;
+	struct B *b = coo_dyn_cast(&B_coo_class, &(a)->vmt);
+	struct C *c = coo_dyn_cast(&C_coo_class, &a->vmt);
+	struct E *e = coo_dyn_cast(&E_coo_class, &a->vmt);
+	d = coo_dyn_cast(&D_coo_class, &a->vmt);
 	A_vmt_vfunc_a(&d->B.A, 3);
 	B_vmt_vfunc_b(&d->B, 4);
+	A_vmt_vfunc_a(a, 5);
+	B_vmt_vfunc_b(b, 6);
+	A_vmt_vfunc_a(&c->A, 7);
+	printf("a=%p d=%p\n", a, d);
+	printf("b=%p b1=%d b2=%d\n", b, b->b1, b->b2);
+	printf("c=%p c1=%d c2=%d\n", c, c->c1, c->c2);
+	printf("d=%p d1=%d d2=%d\n", d, d->d1, d->d2);
+	printf("e=%p\n", e);
+	free(d);
 	return 0;
 }
 
 
-#line 124 "good1.coo.c"
+#line 161 "good1.coo.c"
 #include <stddef.h>
 #include <stdint.h>
 #pragma pack(8)
@@ -132,7 +169,7 @@ const struct C_coo_class {
 	{ &A_coo_class }
 };
 
-struct C_vmt C_vmt = {
+const struct C_vmt C_vmt = {
 	{ offsetof(struct C, A.vmt),
 	  &C_coo_class },
 	C_vfunc_a,
@@ -159,7 +196,7 @@ const struct B_coo_class {
 	{ &A_coo_class }
 };
 
-struct B_vmt B_vmt = {
+const struct B_vmt B_vmt = {
 	{ offsetof(struct B, A.vmt),
 	  &B_coo_class },
 	B_vfunc_a,
@@ -185,6 +222,14 @@ const struct A_coo_class {
 	0,
 };
 
+const struct E_coo_class {
+	uint32_t num_parents;
+	const void *parents[1];
+} E_coo_class = {
+	1,
+	{ &A_coo_class }
+};
+
 const struct D_coo_class {
 	uint32_t num_parents;
 	uint32_t offsets[1];
@@ -196,7 +241,7 @@ const struct D_coo_class {
 	  &C_coo_class }
 };
 
-struct D_vmt D_vmt = {
+const struct D_vmt D_vmt = {
 	{ offsetof(struct D, B.A.vmt),
 	  &D_coo_class },
 	D_vfunc_a,

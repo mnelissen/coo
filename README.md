@@ -31,6 +31,7 @@ not available.
 * class methods
 * virtual methods
 * inheritance
+* dynamic casting
 * tiny runtime library (for dynamic casting)
 
 Planned:
@@ -38,7 +39,6 @@ Planned:
 * structured error handling (in some form)
 * protected classes, private/public members, encapsulation
 * special case for interfaces? (only virtual methods, no variables)
-* dynamic casting (auto *)
 * method instance pointers
 * typesafe containers
 * function overloading? (in some form)
@@ -166,8 +166,10 @@ cannot be declared on the stack or created with operator new.
 #### Multiple inheritance
 
 Multiple inheritance is allowed, but classes that have member variables
-can only be inherited once (directly or indirectly). (But see [Virtual inheritance](#Virtual-inheritance) below.) This rule is to prevent ambiguity when
-referencing their (base) member variables in the class implementation.
+can only be inherited once (directly or indirectly). (But see
+[Virtual inheritance](#Virtual-inheritance) below.) This rule is to
+prevent ambiguity when referencing their (base) member variables in the
+class implementation.
 
 Classes that define only (virtual) functions can be used as an interface.
 This means they do not have any member variables defined, and therefore they
@@ -277,7 +279,11 @@ that the method is not overridden anyway.
 
 ### Dynamic casting
 
-TODO: explain dynamic casting syntax.
+Dynamic casting is supported with the following syntax:
+
+1. as C++: `dynamic_cast<class*>(expression)`
+2. automatic: `class *c = dyn:expr`. This syntax looks at the context
+   to be cast to, and uses `class *` automatically in this case.
 
 In order to support dynamic casting, COO generates a 'coo class' for every
 defined class. If you get linker errors like "undefined reference to
@@ -296,6 +302,32 @@ anywhere. In that case there are two solutions:
    by writing 'XXXX::coo_class;' as a standalone, global declaration. This
    will set the implemented flag, and cause the coo class variable to be
    defined.
+
+## Technical details
+
+Example code:
+
+``` cpp
+struct A     { int a; virtual int fa(void); };
+struct B : A { int b; virtual int fb(void); };
+struct C : B { int c; virtual int fc(void); } g_c;
+struct A *p_a = g_c;
+```
+
+Has memory layout:
+
+    A_coo_class:  |  0  |
+    B_coo_class:  |  1  |  &A_coo_class  |
+    C_coo_class:  |  1  |  &B_coo_class  |
+    A_vmt:  |  offsetof(A,vmt)  |  &A_coo_class  |  &A_fa  |
+    B_vmt:  |  offsetof(A,vmt)  |  &B_coo_class  |  &A_fa  |  &B_fb  |
+    C_vmt:  |  offsetof(A,vmt)  |  &C_coo_class  |  &A_fa  |  &B_fb  |  &C_fc  |
+    g_c:    |  a  |  &C_vmt  |  b  |  c  |
+
+In this case `dynamic_cast<B*>(p_a)` means answering the question: does the class
+pointed to by `p_a->vmt` have a reference to `B_coo_class`? `p_a->vmt` points to
+`C_coo_class`, then perform a recursive search through the parent hierarchy. In
+this case, it is immediately found as the `C_coo_class` has a pointer to `B_coo_class`.
 
 ## TODO
 

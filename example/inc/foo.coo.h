@@ -4,7 +4,7 @@
 
 struct foo {
 	int x;
-	struct coo_vmt *vmt;
+	const struct coo_vmt *vmt;
 	int *(*intfuncptr)(char c);
 	int *y;
 	unsigned int *z;
@@ -12,7 +12,7 @@ struct foo {
 
 #line 14 "inc/foo.coo.h"
 #include <coortl.h>
-extern struct foo_vmt {
+extern const struct foo_vmt {
 	struct coo_vmt vmt_base;
 	void (*vfunc)(struct foo *this, int arg1, float *arg2);
 } foo_vmt;

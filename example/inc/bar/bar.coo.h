@@ -1,12 +1,12 @@
 #line 1 "inc/bar/bar.hoo"
 struct bar {
 	int a, b;
-	struct coo_vmt *vmt;
+	const struct coo_vmt *vmt;
 };
 
 #line 8 "inc/bar/bar.coo.h"
 #include <coortl.h>
-extern struct bar_vmt {
+extern const struct bar_vmt {
 	struct coo_vmt vmt_base;
 	void (*vbarf)(struct bar *this);
 } bar_vmt;

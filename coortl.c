@@ -60,12 +60,14 @@ static uint32_t decode_varuint(const void **p_data)
    varuint offsets[num_parents-1];
    void *parents[num_parents]; */
 
-static void *recurse_dyn_cast(void *this,
-                const void *this_class, const void *dest_class)
+static void *recurse_dyn_cast(const void *dest_class, void *this, const void *this_class)
 {
         varuint_t i, num_parents;
         const void *offsets;
         void *new_this;
+
+        if (this_class == dest_class)
+                return this;
 
         num_parents = decode_varuint(&this_class);
         if (num_parents == 0)
@@ -79,7 +81,7 @@ static void *recurse_dyn_cast(void *this,
         for (i = 0;;) {
                 if (*(void**)this_class == dest_class)
                         return this;
-                new_this = recurse_dyn_cast(this, *(void**)this_class, dest_class);
+                new_this = recurse_dyn_cast(dest_class, this, *(void**)this_class);
                 if (new_this)
                         return new_this;
                 if (++i == num_parents)
@@ -89,8 +91,7 @@ static void *recurse_dyn_cast(void *this,
         }
 }
 
-void *coo_dyn_cast(const struct coo_vmt **vmt, const void *dest_class)
+void *coo_dyn_cast(const void *dest_class, const struct coo_vmt **vmt)
 {
-        return recurse_dyn_cast((char*)vmt - (*vmt)->offset,
-                (*vmt)->coo_class, dest_class);
+        return recurse_dyn_cast(dest_class, (char*)vmt - (*vmt)->offset, (*vmt)->coo_class);
 }

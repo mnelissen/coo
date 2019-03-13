@@ -51,6 +51,12 @@ void D::test(void)
 	printf("%d %d %d %d\n", a1, b1, c1, d1);
 }
 
+void * foo::get_foo(int a)
+{
+	printf("get_foo a=%d\n", a);
+	return this;
+}
+
 char foo::func()
 {
 	printf("%d\n", x + *y);

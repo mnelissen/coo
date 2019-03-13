@@ -1,6 +1,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+/*  plain      ----base-------   alt_base
+      |       /     |         \   |
+    inherit_sec	  inherit_pri  both
+*/
+
 struct S_plain {
 	int a, b;
 };

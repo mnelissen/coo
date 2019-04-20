@@ -226,6 +226,17 @@ references are resolved to the one literal case. In C++ this would
 lead to two copies of that base class in the final class: one for all
 of the virtual references, and one for the literal.
 
+### Final classes
+
+Inserting `final` before the `struct <name>` declares the class as a
+final class. Final means that it cannot be inherited from. This optimizes
+calls to virtual functions inherited from the primary base class to be
+direct calls, as it is known what function they will call. Note that
+virtual functions inherited from secondary base classes are not optimized:
+their implementation performs a base pointer translation (from secondary
+to implementing-primary class), therefore calling those functions of
+this class will still occur via their VMT pointer.
+
 ### Constructors
 
 A function defined in a struct that has the same name as the struct is the

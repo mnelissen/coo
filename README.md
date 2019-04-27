@@ -138,6 +138,45 @@ void A::somefunc(void)
 }
 ```
 
+### Visibility
+
+Visibility of members is defined same as in C++. By default members have
+public visibility. A section of visiblity is started using the keyword
+'private', 'protected' or 'public' plus a colon. Private members can only
+be accessed by the class it was defined in. Protected members can only be
+accessed by that class and inheriting classes. Public members can be
+accessed anywhere.
+
+``` cpp
+struct A {
+ private:
+  int x;
+ protected:
+  int y;
+ public:
+  int z;
+};
+
+struct B : A {
+ public:
+  int zz;
+};
+
+void B::func(void)
+{
+  printf("%d\n", x);   /* error: cannot access private member A::x in B */
+  printf("%d\n", y);   /* ok: can access protected member, B inherits from A */
+}
+
+int main(void)
+{
+  B b;
+  printf("%d\n", b.y);  /* error: cannot access protected member A::y */
+  printf("%d %d\n", b.z, b.zz);  /* ok: can access public members anywhere */
+  return 0;
+}
+```
+
 ### Inheritance
 
 Classes can inherit other classes by listing them after a colon. All

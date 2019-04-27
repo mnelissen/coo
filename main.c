@@ -75,6 +75,12 @@ enum parse_state {
 	ACCESSMEMBER, ACCESSINHERITED, EXPRUNARY
 };
 
+enum visibility {
+	PUBLIC,      /* default is public, like C struct */
+	PROTECTED,
+	PRIVATE,
+};
+
 struct dynarr {
 	void **mem;
 	unsigned num;
@@ -89,6 +95,7 @@ struct memberprops {
 	unsigned char is_static:1;
 	unsigned char from_primary:1;  /* inherited from primary base class? */
 	unsigned char from_virtual:1;  /* a virtual inheritance in chain? */
+	enum visibility visibility:2;
 };
 
 struct class {
@@ -177,6 +184,7 @@ struct member {
 	struct classptr retclassptr;
 	struct class *origin;      /* origin class where member was defined */
 	struct class *definition;  /* closest class virtual member overridden */
+	struct class *visi_define; /* closest class visibility was defined */
 	struct vmt *vmt;           /* vmt this member is defined in */
 	char *paramstext;          /* literal text of all params definition */
 	struct dynarr params;      /* struct classptr *, params' class type */
@@ -883,6 +891,14 @@ static void flush(struct parser *parser)
 	parser->pf.writepos = parser->pf.pos;
 }
 
+static void flush_skipto(struct parser *parser,
+		char *until, int until_lineno, char *continue_at)
+{
+	flush_until(parser, until);
+	parser->pf.writepos = continue_at;
+	parser->pf.lines_coo -= parser->pf.lineno - until_lineno;
+}
+
 static void print_implicit_struct(struct parser *parser,
 		struct classtype *classtype, char *position)
 {
@@ -1232,6 +1248,7 @@ static struct member *addmember(struct parser *parser, struct class *class,
 
 	member->origin = class;
 	member->definition = class;
+	member->visi_define = class;
 	member->props = props;
 	if (props.is_abstract)
 		class->num_abstract++;
@@ -1949,7 +1966,7 @@ static void import_parent(struct parser *parser, char *parsepos,
 }
 
 static struct member *implmember(struct parser *parser, char *parsepos,
-		struct class *class, char *membername, char *nameend)
+		struct class *class, char *membername, char *nameend, struct memberprops props)
 {
 	struct class *vmt_origin;
 	struct member *member;
@@ -1963,8 +1980,19 @@ static struct member *implmember(struct parser *parser, char *parsepos,
 	}
 
 	if (!member->props.is_virtual) {
-		pr_err(parsepos, "inherited member is not virtual");
+		pr_err(parsepos, "inherited member %s::%s is not virtual",
+			member->origin->name, member->name);
 		return NULL;
+	}
+
+	if (props.visibility != member->props.visibility) {
+		if (props.visibility > member->props.visibility) {
+			pr_err(parsepos, "cannot decrease visibility of inherited "
+				"member %s::%s", member->visi_define->name, member->name);
+			return NULL;
+		}
+		member->props.visibility = props.visibility;
+		member->visi_define = class;
 	}
 
 	member->definition = class;
@@ -2327,7 +2355,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	struct classptr decl;
 	char *declbegin, *retend, *membername, *nameend, *params, *declend, *nextdecl;
 	char *classname, *classnameend, *parentname, *prevdeclend, *prevnext;
-	int level, parent_primary, parent_virtual, is_lit_var, len;
+	int level, parent_primary, parent_virtual, is_lit_var, len, prevdeclend_lineno;
 	int first_virtual_warn, first_vmt_warn, empty_line, need_destructor;
 	struct classtype *parentclasstype, rettype;
 	struct parent *parent, *firstparent;
@@ -2455,6 +2483,8 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	for (;;) {
 		/* search (sub)struct or end of variable or function prototype */
 		prevnext = next + 1;
+		if (declbegin == NULL)
+			prevdeclend_lineno = parser->pf.lineno;
 		next = skip_whitespace(parser, prevnext);
 		if (declbegin == NULL) {
 			prevdeclend = prevnext;
@@ -2463,7 +2493,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 		/* remember last word before '(' or ';' => member name */
 		if (isalpha(*next) || *next == '*' || *next == '~')
 			membername = next;
-		if (!(next = scan_token(parser, next, "/{},;( \r\n\t\v")))
+		if (!(next = scan_token(parser, next, "/{},:;( \r\n\t\v")))
 			return NULL;
 
 		/* count substruct level */
@@ -2476,6 +2506,19 @@ static struct class *parse_struct(struct parser *parser, char *next)
 			declbegin = NULL;
 			if (--level == 0)
 				break;
+			continue;
+		}
+		if (*next == ':') {
+			if (strprefixcmp("public:", declbegin))
+				memberprops.visibility = PUBLIC;
+			else if (strprefixcmp("protected:", declbegin))
+				memberprops.visibility = PROTECTED;
+			else if (strprefixcmp("private:", declbegin))
+				memberprops.visibility = PRIVATE;
+			else
+				pr_err(declbegin, "unrecognized visiblity modifier");
+			flush_skipto(parser, prevdeclend, prevdeclend_lineno, next + 1);
+			declbegin = NULL;
 			continue;
 		}
 		/* ignore definitions in substructs */
@@ -2567,15 +2610,12 @@ static struct class *parse_struct(struct parser *parser, char *next)
 
 		/* do not print functions or static variables inside the struct */
 		next = declend;
-		if (memberprops.is_function || memberprops.is_static) {
-			flush_until(parser, prevdeclend);
-			parser->pf.pos = parser->pf.writepos = next + 1;
-			parser->pf.lines_coo--;
-		}
+		if (memberprops.is_function || memberprops.is_static)
+			flush_skipto(parser, prevdeclend, prevdeclend_lineno, next + 1);
 
 		if (memberprops.is_override) {
 			/* cannot add member, should have inherited already from parent */
-			implmember(parser, membername, class, membername, nameend);
+			implmember(parser, membername, class, membername, nameend, memberprops);
 			if (declbegin != membername)
 				pr_err(membername, "membername must follow override");
 			if (params)
@@ -2735,7 +2775,8 @@ static struct member *parse_member(struct parser *parser,
 		return NULL;
 
 	if (exprstart && member->props.is_static) {
-		pr_err(name, "cannot access static member");
+		pr_err(name, "cannot access static member %s::%s",
+			member->origin->name, member->name);
 		return NULL;
 	}
 
@@ -2828,6 +2869,39 @@ out:
 	return member;
 }
 
+static void check_visibility(struct parser *parser, struct class *thisclass,
+		struct member *member, char *errpos)
+{
+	char *errmsg;
+
+	switch (member->props.visibility) {
+	case PRIVATE:
+		if (member->origin == thisclass)
+			return;
+		errmsg = "cannot access private member %s::%s";
+		break;
+	case PROTECTED:
+		/* thisclass can be NULL when parsing global/non-class functions */
+		if (thisclass && hasho_find(&thisclass->ancestors, member->origin))
+			return;
+		errmsg = "cannot access protected member %s::%s";
+		break;
+	default:  /* public always OK */
+		return;
+	}
+	pr_err(errpos, errmsg, member->visi_define->name, member->name);
+}
+
+static int check_ancestor_visibility(struct parser *parser, struct member *member, char *errpos)
+{
+	if (member->props.visibility == PRIVATE) {
+		pr_err(errpos, "cannot access private member %s::%s",
+			member->visi_define->name, member->name);
+		return -1;
+	}
+	return 0;
+}
+
 static char *access_inherited(struct parser *parser, struct class *thisclass,
 		struct class *tgtclass, char *name, char *next, struct dynarr **retparams)
 {
@@ -2841,6 +2915,8 @@ static char *access_inherited(struct parser *parser, struct class *thisclass,
 		return next;
 
 	if (tgtclass != thisclass) {
+		if (check_ancestor_visibility(parser, member, name) < 0)
+			return next;
 		ancestor = hasho_find(&thisclass->ancestors, tgtclass);
 		if (ancestor == NULL)
 			return next;
@@ -3491,7 +3567,7 @@ static void parse_function(struct parser *parser, char *next)
 					}
 				}
 				break;
-			case ACCESSMEMBER:
+			case ACCESSMEMBER:  /* parsing expr.member or expr->member */
 				/* immdecl is used for same parenthesis level,
 				   exprdecl in case of cast (nested in parentheses) */
 				expr = immdecl.class ? &immdecl : &exprdecl[parenlevel];
@@ -3514,9 +3590,11 @@ static void parse_function(struct parser *parser, char *next)
 								"root constructor", member->name);
 						}
 					}
+					check_visibility(parser, class, submember,
+						memberstart[parenlevel]);
 				}
 				break;
-			case ACCESSINHERITED:
+			case ACCESSINHERITED:  /* parsing class::member */
 				next = access_inherited(parser, class, immdecl.class,
 					name, next, &targetparams[parenlevel].params);
 				break;
@@ -3539,6 +3617,8 @@ static void parse_function(struct parser *parser, char *next)
 								"constructor %s", member->name);
 						}
 					}
+					if (member->origin != class)
+						check_ancestor_visibility(parser, member, name);
 					break;
 				}
 				/* maybe it's a global variable? */
@@ -3643,7 +3723,9 @@ static void parse_function(struct parser *parser, char *next)
 			   to keep order the order the same */
 			initializer = addinitializer(parser, NULL, name, next);
 		} else if (*curr == ')' || *curr == ',' || *curr == '=' || *curr == ';') {
-			/* determine target and source classes to access ancestor of */
+			/* parsing membername in context (function argument, assignment)
+			   where pointer to a membername's ancestor class is expected
+			   determine target and source classes to access ancestor of */
 			immdecl.pointerlevel += exprdecl[parenlevel].pointerlevel;
 			if (exprdecl[parenlevel].class != NULL)
 				expr = &exprdecl[parenlevel];

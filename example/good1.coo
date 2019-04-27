@@ -6,14 +6,24 @@ struct A {
 };
 
 struct B : A {
+ private:
 	int b1, b2;
+ protected:
+	void init_B(void);
+ public:
 	override vfunc_a;
 	virtual void vfunc_b(int arg);
+	int get_b1(void);
+	int get_b2(void);
 };
 
 struct C : A {
+ protected:
 	int c1, c2;
+ public:
 	override vfunc_a;
+	int get_c1(void);
+	int get_c2(void);
 };
 
 struct D : B, C {
@@ -42,19 +52,44 @@ void B::vfunc_b(int arg)
 	printf("B::vfunc_b(%d)\n", arg);
 }
 
+int B::get_b1(void)
+{
+	return b1;
+}
+
+int B::get_b2(void)
+{
+	return b2;
+}
+
+void B::init_B(void)
+{
+	b1 = 12, b2 = 13;
+}
+
 void C::vfunc_a(int arg)
 {
 	printf("C::vfunc_a(%d)\n", arg);
 }
 
+int C::get_c1(void)
+{
+	return c1;
+}
+
+int C::get_c2(void)
+{
+	return c2;
+}
+
 void D::vfunc_a(int arg)
 {
-	printf("D::vfunc_a(%d)\n", arg);
+	printf("D::vfunc_a(%d) %d %d\n", arg, c1, c2);
 }
 
 void D::D(void)
 {
-	b1 = 12, b2 = 13;
+	init_B();
 	c1 = 24, c2 = 25;
 	d1 = 36, d2 = 37;
 }
@@ -77,8 +112,8 @@ int main(void)
 	b->vfunc_b(6);
 	c->vfunc_a(7);
 	printf("a=%p d=%p\n", a, d);
-	printf("b=%p b1=%d b2=%d\n", b, b->b1, b->b2);
-	printf("c=%p c1=%d c2=%d\n", c, c->c1, c->c2);
+	printf("b=%p b1=%d b2=%d\n", b, b->get_b1(), b->get_b2());
+	printf("c=%p c1=%d c2=%d\n", c, c->get_c1(), c->get_c2());
 	printf("d=%p d1=%d d2=%d\n", d, d->d1, d->d2);
 	printf("e=%p\n", e);
 	delete d;

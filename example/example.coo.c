@@ -180,7 +180,7 @@ char foo_func(struct foo *this)
 
 static double foo_func_new(struct foo *this, int z)
 {
-	struct foo *x = foo_get_foo(x, 2), *x2;
+	struct foo *x = foo_get_foo(x, 2), *x2 = x;
 	printf("%d\n", *this->y + *this->z);
 	foo_func1(this, this->z);
 	foo_func(x);

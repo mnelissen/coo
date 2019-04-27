@@ -68,7 +68,7 @@ char foo::func()
 
 double foo::func_new(int z)
 {
-	struct foo *x = x->get_foo(2), *x2;
+	struct foo *x = x->get_foo(2), *x2 = x;
 	printf("%d\n", *y + *z);
 	func1(z);
 	x->func();

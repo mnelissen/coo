@@ -37,7 +37,7 @@ not available.
 Planned:
 
 * structured error handling (in some form)
-* protected classes, private/public members, encapsulation
+* protected classes
 * special case for interfaces? (only virtual methods, no variables)
 * method instance pointers
 * typesafe containers

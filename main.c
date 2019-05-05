@@ -2667,8 +2667,8 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	}
 	/* add destructor if there are literal class variables with destructor */
 	if (need_destructor && !class->has_destructor) {
-		class->name[-1] = '~';  /* &name[-1] == &gen_destructor */
-		addgenmember(parser, class, NULL, &class->name[-1],
+		class->gen_destructor = '~';  /* &name[-1] == &gen_destructor */
+		addgenmember(parser, class, NULL, &class->gen_destructor,
 			&class->name[classnameend-classname]);
 		class->gen_destructor = 1;
 	}

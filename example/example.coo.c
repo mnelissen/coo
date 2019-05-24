@@ -425,7 +425,7 @@ const struct C_coo_class {
 	{ &A_coo_class }
 };
 
-void C_root_vfunc_a(struct A *__this, int a2)
+static void C_root_vfunc_a(struct A *__this, int a2)
 {	struct C_root *this = container_of(__this, struct C_root, A);
 	C_vfunc_a(&this->C, a2);
 }
@@ -437,7 +437,7 @@ const struct C_A_vmt C_A_vmt = {
 };
 
 const struct C_vmt C_vmt = {
-	{ offsetof(struct C, vmt),
+	{ offsetof(struct C_root, C.vmt),
 	  &C_coo_class },
 	C_vfunc_c,
 	C_vfunc_c3,
@@ -454,7 +454,7 @@ struct C *new_C(void)
 struct C *C_C_root(struct C_root *this)
 {
 	this->C.A = &this->A;
-	this->A.vmt = &C_A_vmt.vmt_base;
+	this->A.vmt = &A_vmt.vmt_base;
 	this->C.vmt = &C_vmt.vmt_base;
 	A_A(this->C.A);
 	return &this->C;

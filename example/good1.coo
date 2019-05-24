@@ -24,12 +24,19 @@ struct C : A {
 	override vfunc_a;
 	int get_c1(void);
 	int get_c2(void);
+	void set_c1(int new_c1);
+	virtual void handle_pass_C(int arg, C *C);
 };
+
+typedef void (*::integer_cb)(int arg);
+typedef void (*::pass_C_cb)(int arg, C *c);
 
 struct D : B, C {
 	int d1, d2;
+	pass_C_cb cb;
 	void D();
 	override vfunc_a;
+	override handle_pass_C;
 };
 
 struct E : A {
@@ -77,9 +84,19 @@ int C::get_c1(void)
 	return c1;
 }
 
+void C::set_c1(int new_c1)
+{
+	c1 = new_c1;
+}
+
 int C::get_c2(void)
 {
 	return c2;
+}
+
+void C::handle_pass_C(int arg, C *C)
+{
+	printf("C::handle_pass_C %d %p %p", arg, this, C);
 }
 
 void D::vfunc_a(int arg)
@@ -89,13 +106,29 @@ void D::vfunc_a(int arg)
 
 void D::D(void)
 {
+	integer_cb int_cb;
+	C *c = this;
 	init_B();
-	c1 = 24, c2 = 25;
+	c1 = 3, c2 = 25;
 	d1 = 36, d2 = 37;
+	cb = c->handle_pass_C;
+	int_cb = set_c1;
+	int_cb(24);
+	if (c1 != 24)
+		printf("ERROR, c1 should be 24, is %d\n", c1);
+}
+
+void D::handle_pass_C(int arg, C *C)
+{
+	printf("D::handle_pass_C c1=%d c2=%d %d %p %p", c1, c2, arg, this, C);
 }
 
 void E::E(void)
 {
+	integer_cb cb;
+
+	cb = A::vfunc_a;  /* TODO: fix this */
+	cb(5);
 }
 
 int main(void)
@@ -116,6 +149,7 @@ int main(void)
 	printf("c=%p c1=%d c2=%d\n", c, c->get_c1(), c->get_c2());
 	printf("d=%p d1=%d d2=%d\n", d, d->d1, d->d2);
 	printf("e=%p\n", e);
+	d->cb(48, d);
 	delete d;
 	return 0;
 }

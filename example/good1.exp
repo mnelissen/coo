@@ -207,12 +207,18 @@ void D_handle_pass_C(struct C *__this, int arg, struct C *C)
 struct E *E_E(struct E *this)
 {
 	integer_cb cb;
+	struct C c2;
 
+#line 129
+	C_C_root(&c2);
+#line 131
 	{ struct A *coo_obj0 = &this->A; void (*coo_fv0)(struct A *this, int arg) = A_vfunc_a; integer_cb coo_mv0 = { coo_obj0, (void (*)())coo_fv0 }; cb = coo_mv0; }  /* TODO: fix this */
 	cb.func(cb.obj, 5);
-#line 214 "good1.coo.c"
+	{ struct C *coo_obj0 = &c2; void (*coo_fv0)(struct C *this, int new_c1) = C_set_c1; integer_cb coo_mv0 = { coo_obj0, (void (*)())coo_fv0 }; cb = coo_mv0; }
+	cb.func(cb.obj, 6);
+#line 220 "good1.coo.c"
 	return this;
-#line 132 "good1.coo"
+#line 135 "good1.coo"
 }
 
 int main(void)
@@ -239,7 +245,7 @@ int main(void)
 }
 
 
-#line 243 "good1.coo.c"
+#line 249 "good1.coo.c"
 #include <stddef.h>
 #include <stdint.h>
 #pragma pack(8)

@@ -261,13 +261,13 @@ Virtual inheritance allows the designer to inherit from a base class
 multiple times even if that base class has member variables. COO allows
 inheriting (literally, that is, non-virtually) from a base class once
 plus any number of times virtually. In this case the virtual base
-references are resolved to the one literal case. In C++ this would
+references are resolved to the one literal instance. In C++ this would
 lead to two copies of that base class in the final class: one for all
 of the virtual references, and one for the literal.
 
 ### Final classes
 
-Inserting `final` before the `struct <name>` declares the class as a
+Inserting `final` before `struct <name> {};` declares the class as a
 final class. Final means that it cannot be inherited from. This optimizes
 calls to virtual functions inherited from the primary base class to be
 direct calls, as it is known what function they will call. Note that
@@ -348,14 +348,67 @@ anywhere. In that case there are two solutions:
 1. declare the class as 'nodyncast struct XXXX {};'. This will cause the
    the coo class variable not to be defined and used. However, then it
    is also not possible to dynamic cast to this class.
-2. in some file, trigger the coo class variable to be declared manually
+2. in some file, trigger the coo class variable to be defined manually
    by writing 'XXXX::coo_class;' as a standalone, global declaration. This
-   will set the implemented flag, and cause the coo class variable to be
-   defined.
+   will set the implemented flag, and cause the coo class variable
+   definition to be emitted.
+
+### Method pointers
+
+Method pointers are like C function pointers, but they are a pair of
+object and function pointer. The idea here is that at the time of taking
+the address of the function (or, method), both the object instance pointer
+and the function pointer are captured so that anyone wanting to call the
+method pointer does not need to know about the type of the class to call
+the method on. In C++ this concept does not exist in the language, but it
+is achieved by combining std::function and std::bind. Regular C++ class
+function pointers are seldomly used for this reason; they interact badly
+with inheritance.
+
+Typing a method name as an expression without parentheses after
+(that would mean calling it), yields a method pointer that can be
+stored in a variable of compatible method pointer type.
+
+Syntax to declare a method pointer type is similar to C's
+function pointer type (although obscure, alas), but with an added
+'::'. Calling the method pointer is like calling any function.
+See example below:
+
+``` cpp
+/* declare a method pointer type named integer_cb */
+typedef void (*::integer_cb)(int arg);
+
+struct C {
+	int c1;
+	void set_c1(int arg);
+	void C(int init_c1);
+}
+
+void C::C(int init_c1)
+{
+	c1 = init_c1;
+}
+
+void C::set_c1(int arg)
+{
+	c1 = arg;
+}
+
+int main(void)
+{
+	C c(1);
+	integer_cb cb;  /* declare method pointer */
+
+	cb = c.set_c1;  /* let it point to &c and C::set_c1 */
+	cb(3);          /* call methodptr: c.set_c1(3) */
+	printf("cb resulted in c.c1: %d\n", c.c1);
+	return 0;
+}
+```
 
 ## Technical details
 
-Example code:
+Example code to show details for dynamic casting:
 
 ``` cpp
 struct A     { int a; virtual int fa(void); };
@@ -394,7 +447,7 @@ This program is licensed under GPLv3 or later. Processed output of this program,
 in particular macro defines that are part of the program source code are licensed
 under BSD-3-clause.
 
-Copyright 2018 Micha Nelissen
+Copyright 2018-2019 Micha Nelissen
 
 ## Disclaimer
 

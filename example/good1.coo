@@ -126,9 +126,12 @@ void D::handle_pass_C(int arg, C *C)
 void E::E(void)
 {
 	integer_cb cb;
+	C c2();
 
 	cb = A::vfunc_a;  /* TODO: fix this */
 	cb(5);
+	cb = c2.set_c1;
+	cb(6);
 }
 
 int main(void)

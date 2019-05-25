@@ -3081,8 +3081,10 @@ static void parse_method(struct parser *parser, char *stmtstart, struct methodpt
 		if (ancestor == NULL)
 			return;
 		ancpath = ancestor->path;
-	} else
-		pre = post = ancpath = "";
+	} else {
+		pre = expr->pointerlevel == 0 ? "&" : "";
+		post = ancpath = "";
+	}
 	if (member->paramstext[0] != ')') {
 		sep_or_end = ", ";
 		params = member->paramstext;

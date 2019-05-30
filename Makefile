@@ -1,5 +1,12 @@
 .SUFFIXES:
 SUFFIXES:=
+%: %,v
+%: RCS/%
+%: RCS/%,v
+%: s.%
+%: SCCS/s.%
+%.c: %.w %.ch
+%.tex: %.w %.ch
 CFLAGS=-Wall -Wextra -g
 all: coo coortl.o coortl.oo
 coo: main.o hash.o hasho.o
@@ -20,5 +27,6 @@ testcpp.o: testcpp.cpp
 	gcc $(CFLAGS) -c -o $@ $<
 %.oo: %.c %.h
 	gcc $(CFLAGS) -O2 -c -o $@ $<
+main.h:
 clean:
 	rm -f *.o

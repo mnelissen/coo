@@ -438,7 +438,6 @@ this case, it is immediately found as the `C_coo_class` has a pointer to `B_coo_
 * optimize duplicated parentname strings == ancestor->path?
 * cannot inherit from final class?
 * parse parameters, type without name skipped
-* print tempblock declarations immediately instead of using addinsert
 * don't emit vmt call wrappers, but use tempblock (if necessary) to directly call
 
 ## License

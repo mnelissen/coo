@@ -3073,7 +3073,7 @@ static void parse_method(struct parser *parser, char *stmtstart, struct methodpt
 {
 	char *maybe_this, *newscope, *sep_or_end, *params, *vmtpath, *vmtaccess;
 	char *pre, *post, *ancpath, funcsourcebuf[128], *funcsource;
-	int index, scope_varnr, free_funcsource = 0;
+	int scope_varnr, free_funcsource = 0;
 	struct class *memberdef = member->definition;
 	struct ancestor *ancestor;
 
@@ -3118,11 +3118,12 @@ static void parse_method(struct parser *parser, char *stmtstart, struct methodpt
 			"%s_%s", tgtclass->name, member->name);
 	}
 	free_funcsource = funcsource != funcsourcebuf;
-	index = addinsert_format(parser, -1, stmtstart, exprstart, CONTINUE_AFTER,
-		"%sstruct %s *coo_obj%d = %s",
+	parser->pf.pos = stmtstart;
+	flush(parser);
+	outprintf(parser, "%sstruct %s *coo_obj%d = %s",
 		newscope, memberdef->name, scope_varnr, pre);
-	addinsert_format(parser, index, exprend, stmtstart, CONTINUE_AFTER,
-		"%s%s%s; "
+	outwrite(parser, exprstart, exprend - exprstart);
+	outprintf(parser, "%s%s%s; "
 		"%s(*coo_fv%d)(struct %s *this%s%s = %s; "
 		"%s coo_mv%d = { coo_obj%d, (%s(*)())coo_fv%d }; ",
 		maybe_this, post, ancpath,
@@ -3353,9 +3354,10 @@ static char *insertmpcall(struct parser *parser, int expr_is_oneword, char *stmt
 			"%sobj%s", arrow, sep_or_end);
 	} else {
 		newscope = open_tempscope(parser, &scope_varnr);
-		insert_index = addinsert_format(parser, -1, stmtstart, exprstart, CONTINUE_AFTER,
-			"%s%s coo_mv%d = ", newscope, targetmp->name, scope_varnr);
-		addinsert(parser, insert_index, exprend, "", stmtstart, CONTINUE_AFTER);
+		parser->pf.pos = stmtstart;
+		flush(parser);
+		outprintf(parser, "%s%s coo_mv%d = ", newscope, targetmp->name, scope_varnr);
+		outwrite(parser, exprstart, exprend - exprstart);
 		/* temp.var has been defined, now use it to replace expression */
 		addinsert_format(parser, -1, exprstart, parenpos+1, CONTINUE_AFTER,
 			"; coo_mv%d.func(coo_mv%d.obj%s", scope_varnr, scope_varnr, sep_or_end);

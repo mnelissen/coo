@@ -1,6 +1,6 @@
 .SUFFIXES:
 SUFFIXES:=
-CFLAGS=-Wall -Wextra -g -fno-diagnostics-show-caret
+CFLAGS=-Wall -Wextra -g
 all: coo coortl.o coortl.oo
 coo: main.o hash.o hasho.o
 	gcc $(LDFLAGS) -o $@ $^
@@ -16,9 +16,9 @@ testc.o: testc.c
 	gcc $(CFLAGS) -ansi -pedantic -c -o $@ $<
 testcpp.o: testcpp.cpp
 	g++ $(CFLAGS) -ansi -pedantic -c -o $@ $<
-%.o: %.c
+%.o: %.c %.h
 	gcc $(CFLAGS) -c -o $@ $<
-%.oo: %.c
+%.oo: %.c %.h
 	gcc $(CFLAGS) -O2 -c -o $@ $<
 clean:
 	rm -f *.o

@@ -20,13 +20,13 @@ typedef struct hash {
 	struct hash_entry **entries;
         hash_cmp_cb compare;
 	unsigned mask;
-	int num_entries;
+	unsigned num_entries;
         int cmp_offset;   /* offset from struct hash_entry to compare data */
         int user_offset;  /* offset from userdata to struct hash_entry */
 } hash_t;
 
 uint32_t uint32hash(uint32_t key);
-size_t uint64hash(uint64_t key);
+uint64_t uint64hash(uint64_t key);
 size_t strhash(const char *str);
 size_t memhash(const void *mem, size_t size);
 

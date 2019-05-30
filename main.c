@@ -734,6 +734,10 @@ static size_t file_size(FILE *fp)
 
 #else
 
+#ifdef __linux__
+#define st_mtimespec st_mtim
+#endif
+
 static int get_file_id(FILE *fp, struct file_id *out_id)
 {
 	struct stat stat;
@@ -743,7 +747,8 @@ static int get_file_id(FILE *fp, struct file_id *out_id)
 
 	out_id->dev_id = stat.st_dev;
 	out_id->file_id = stat.st_ino;
-	out_id->mtime = stat.st_mtim.tv_sec * 1000000ull + stat.st_mtim.tv_nsec;
+	out_id->mtime = stat.st_mtimespec.tv_sec * 1000000ull
+	                + stat.st_mtimespec.tv_nsec;
 	return 0;
 }
 

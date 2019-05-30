@@ -15,7 +15,7 @@ struct hasho_entry {
 typedef struct hasho {
 	struct hasho_entry *entries;
 	unsigned mask;
-	int num_entries;
+	unsigned num_entries;
 } hasho_t;
 
 size_t ptrhash(void *ptr);

@@ -408,6 +408,8 @@ int main(void)
 
 ## Technical details
 
+### Dynamic casting
+
 Example code to show details for dynamic casting:
 
 ``` cpp
@@ -432,6 +434,16 @@ pointed to by `p_a->vmt` have a reference to `B_coo_class`? `p_a->vmt` points to
 `C_coo_class`, then perform a recursive search through the parent hierarchy. In
 this case, it is immediately found as the `C_coo_class` has a pointer to `B_coo_class`.
 
+### String/memory pool
+
+Many strings allocated by the parser have lifetime of the parser itself,
+like class names, field names etc. Therefore, there is a simple memory
+allocator in the parser, in the variables memblock / memptr / memavail.
+This also allows multiple string pointers to point to the same string
+memory without needing reference count, as all string memory is owned by
+the parser anyway. More dynamic strings like stack variable names are
+allocated with malloc / realloc / free.
+
 ## TODO
 
 * add syntax to zero-initialize a class automatically
@@ -439,6 +451,7 @@ this case, it is immediately found as the `C_coo_class` has a pointer to `B_coo_
 * cannot inherit from final class?
 * parse parameters, type without name skipped
 * don't emit vmt call wrappers, but use tempblock (if necessary) to directly call
+* cleanup parser memory after use, add destroy_parser function
 
 ## License
 

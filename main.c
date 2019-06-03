@@ -321,6 +321,7 @@ struct parser {
 	char *memblock;               /* current memory block for allocation */
 	char *memptr;                 /* pointer to next available memory */
 	size_t memavail;              /* available memory in current block */
+	struct class *class;          /* parsing function of this class */
 	int include_ext_in_len;       /* length of include_ext_in, optimization */
 	int num_errors;               /* user errors, prevent spam */
 	int tempscope_varnr;          /* unique nr for vars in tempscope */
@@ -406,6 +407,11 @@ static char *strchrnul(char *str, int ch)
 static int islinespace(int ch)
 {
 	return ch == ' ' || ch == '\t';
+}
+
+static int iswordstart(int ch)
+{
+	return isalpha(ch) || ch == '_';
 }
 
 static char *rev_linestart(const char *bufstart, char *position)
@@ -1118,9 +1124,11 @@ static struct classtype *addclasstype(struct parser *parser, char *typename,
 typedef void (*insert_implicit_cb)(struct parser *parser, char *position);
 typedef void (*new_param_cb)(struct parser *parser, int position,
 		struct classptr *decl, char *name, char *next);
+typedef void (*check_name_cb)(struct parser *parser, char *name, char *next);
 
 static char *parse_parameters(struct parser *parser, char *params,
-		insert_implicit_cb new_implicit, new_param_cb new_param)
+		insert_implicit_cb new_implicit, new_param_cb new_param,
+		check_name_cb check_name)
 {
 	struct classtype *classtype;
 	struct classptr decl;
@@ -1130,6 +1138,7 @@ static char *parse_parameters(struct parser *parser, char *params,
 
 	decl.pointerlevel = 0;
 	state = FINDVAR;
+	name = NULL;
 	for (position = 0, next = params;;) {
 		curr = strskip_whitespace(next);
 		if (curr[0] == 0)
@@ -1147,15 +1156,19 @@ static char *parse_parameters(struct parser *parser, char *params,
 				state = DECLVAR;
 			}
 			continue;
-		} else if (*curr == ',') {
+		} else if (*curr == ',' || *curr == ')') {
+			if (name && check_name)
+				check_name(parser, name, curr);
+			if (*curr == ')')
+				return curr + 1;
+			/* it's a comma, continue with next parameter */
 			state = FINDVAR;
 			next = curr + 1;
 			position++;
 			decl.pointerlevel = 0;
+			name = NULL;
 			continue;
-		} else if (*curr == ')') {
-			return curr + 1;
-		} else if (!isalpha(*curr)) {
+		} else if (!iswordstart(*curr)) {
 			if (*curr == '*')
 				decl.pointerlevel++;
 			next = curr + 1;
@@ -1302,7 +1315,7 @@ static void parse_parameters_to(struct parser *parser,
 
 	/* save_param_class stores params in parser->param_classes */
 	paramsend = parse_parameters(parser, params,
-		params_out ? save_implicit_insert : NULL, save_param_class);
+		params_out ? save_implicit_insert : NULL, save_param_class, NULL);
 	/* move the dynarr (array pointer etc) to requested array */
 	memcpy(param_classes, &parser->param_classes, sizeof(*param_classes));
 	memset(&parser->param_classes, 0, sizeof(parser->param_classes));
@@ -1830,7 +1843,7 @@ static char *parse_type(struct parser *parser, char *pos, struct classtype *rett
 			break;
 		}
 
-		if (!isalpha(*pos)) {
+		if (!iswordstart(*pos)) {
 			next = pos;
 			break;
 		}
@@ -2526,7 +2539,7 @@ static void print_param_names(struct parser *parser, char *params)
 			if (*p == '/') {
 				if (!skip_comment(parser, &p))
 					p++;
-			} else if (isalpha(*p)) {
+			} else if (iswordstart(*p)) {
 				last_word = p;
 				last_end = p = skip_word(p);
 			} else
@@ -2814,7 +2827,7 @@ static struct class *parse_struct(struct parser *parser, char *next)
 			declbegin = next;
 		}
 		/* remember last word before '(' or ';' => member name */
-		if (isalpha(*next) || *next == '*' || *next == '~')
+		if (iswordstart(*next) || *next == '*' || *next == '~')
 			membername = next;
 		if (!(next = scan_token(parser, next, "/{},:;( \r\n\t\v")))
 			return NULL;
@@ -3646,6 +3659,29 @@ static void param_to_variable(struct parser *parser, int position,
 	addvariable(parser, 0, decl, 0, name, next, NULL);
 }
 
+static void check_conflict_param_member(struct parser *parser,
+		char *name, char *nameend)
+{
+	struct member *member;
+	char *inheritmsg, *inherittext;
+
+	if (!parser->class)
+		return;
+
+	member = find_member_e(parser->class, name, nameend);
+	if (!member)
+		return;
+
+	if (member->origin != parser->class) {
+		inheritmsg = " inherited from ";
+		inherittext = member->origin->name;
+	} else
+		inheritmsg = inherittext = "";
+	pr_warn(name, "class %s also has member named '%s'%s%s; change "
+		"parameter name to avoid confusion", parser->class->name,
+		member->name, inheritmsg, inherittext);
+}
+
 static void insertancestor(struct parser *parser,
 		char *exprstart, char *name, char *end,
 		struct classptr *target, struct classptr *expr)
@@ -3834,6 +3870,7 @@ static void parse_function(struct parser *parser, char *next)
 	} else
 		thisptr.class = NULL;
 
+	parser->class = thisptr.class;
 	paramend = scan_token(parser, next, "/\n)");
 	if (paramend == NULL)
 		return;
@@ -3857,7 +3894,8 @@ static void parse_function(struct parser *parser, char *next)
 	next++;
 
 	/* store parameters as variables */
-	if (parse_parameters(parser, params, NULL, param_to_variable) == NULL)
+	if (parse_parameters(parser, params, NULL, param_to_variable,
+			check_conflict_param_member) == NULL)
 		return;
 
 	if (thispath) {
@@ -3920,7 +3958,7 @@ static void parse_function(struct parser *parser, char *next)
 		}
 		if (isdigit(*curr))
 			curr = skip_word(curr);
-		else if (isalpha(*curr)) {
+		else if (iswordstart(*curr)) {
 			if (!memberstart[parenlevel])
 				memberstart[parenlevel] = curr;
 			if (strprefixcmp("static ", curr)) {

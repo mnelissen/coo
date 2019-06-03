@@ -66,9 +66,9 @@ char foo::func()
 	return 0;
 }
 
-double foo::func_new(int z)
+double foo::func_new(struct foo *in, int z1)
 {
-	struct foo *x = x->get_foo(2), *x2 = x;
+	struct foo *x = in->get_foo(2), *x2 = x;
 	printf("%d\n", *y + *z);
 	func1(z);
 	x->func();
@@ -187,6 +187,7 @@ int main(int argc, char **argv)
 	C c;
 	D d(&c); int db1 = d.b1;
 	E e, *p_e;
+	struct foo foo;
 
 	a.a1 = 10;
 	a.vfunc_a(11);
@@ -212,6 +213,7 @@ int main(int argc, char **argv)
 	d.vfunc_b(45);
 	d.vfunc_c(46);
 	d.vfunc_d(&e, &e);
+	d.test();
 
 	e.a1 = 50;
 	e.b1 = 51;
@@ -238,6 +240,8 @@ int main(int argc, char **argv)
 	p_e->vfunc_b(66);
 	p_e->vfunc_c(67);
 	p_e->vfunc_d(&e, &e);
+
+	foo.func_new(&foo, 3);
 
 	/* silence warnings */
 	printf("%d %d\n", aa1, db1);

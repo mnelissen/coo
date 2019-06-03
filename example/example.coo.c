@@ -178,9 +178,9 @@ char foo_func(struct foo *this)
 	return 0;
 }
 
-static double foo_func_new(struct foo *this, int z)
+static double foo_func_new(struct foo *this, struct foo *in, int z1)
 {
-	struct foo *x = foo_get_foo(x, 2), *x2 = x;
+	struct foo *x = foo_get_foo(in, 2), *x2 = x;
 	printf("%d\n", *this->y + *this->z);
 	foo_func1(this, this->z);
 	foo_func(x);
@@ -311,6 +311,7 @@ int main(int argc, char **argv)
 	struct C_root c;
 	struct D d; int db1;
 	struct E e, *p_e;
+	struct foo foo;
 
 	int __coo_ret;
 #line 184
@@ -320,7 +321,8 @@ int main(int argc, char **argv)
 	C_C_root(&c);
 	D_D_root(&d, &(&c)->A); db1 = d.B.b1;
 	E_E_root(&e);
-#line 191
+	foo_foo_root(&foo);
+#line 192
 	a.a1 = 10;
 	A_vmt_vfunc_a(&a, 11);
 
@@ -332,9 +334,9 @@ int main(int argc, char **argv)
 		{ __coo_ret = -1; goto __coo_out0; }
 
 	struct E e2;
-#line 201
-	E_E_root(&e2);
 #line 202
+	E_E_root(&e2);
+#line 203
 	c.A.a1 = 30;
 	c.C.c1 = 31;
 	A_vmt_vfunc_a(&c.A, 32);
@@ -348,6 +350,7 @@ int main(int argc, char **argv)
 	B_vmt_vfunc_b(&d.B, 45);
 	C_vmt_vfunc_c(&d.C, 46);
 	D_vmt_vfunc_d(&d, &(&e)->D.B.A, &(&e)->D.B);
+	D_test(&d);
 
 	e.D.B.A.a1 = 50;
 	e.D.B.b1 = 51;
@@ -375,20 +378,22 @@ int main(int argc, char **argv)
 	C_vfunc_c(&p_e->D.C, 67);
 	E_vfunc_d(p_e, &(&e)->D.B.A, &(&e)->D.B);
 
+	foo_func_new(&foo, &foo, 3);
+
 	/* silence warnings */
 	printf("%d %d\n", aa1, db1);
 
 	__coo_ret = 0;
-#line 384 "example.coo.c"
+#line 389 "example.coo.c"
 __coo_out1:
 	E_d_E(&e2);
 __coo_out0:
 	E_d_E(&e);
 	return __coo_ret;
-#line 246 "example.coo"
+#line 250 "example.coo"
 }
 
-#line 392 "example.coo.c"
+#line 397 "example.coo.c"
 #include <stddef.h>
 #include <stdint.h>
 #pragma pack(8)

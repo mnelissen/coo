@@ -322,6 +322,7 @@ struct parser {
 	char *memptr;                 /* pointer to next available memory */
 	size_t memavail;              /* available memory in current block */
 	struct class *class;          /* parsing function of this class */
+	char *last_parentname;        /* cache to optimize parentname constr */
 	int include_ext_in_len;       /* length of include_ext_in, optimization */
 	int num_errors;               /* user errors, prevent spam */
 	int tempscope_varnr;          /* unique nr for vars in tempscope */
@@ -1899,9 +1900,14 @@ static struct member *inheritmember(struct parser *parser, char *parsepos,
 	if (member->props.is_abstract)
 		class->num_abstract++;
 	if (parentmember->parentname) {
-		member->parentname = psaprintf(parser, "%s%s%s",
-			parent->class->name, parent->is_virtual ? "->" : ".",
-			parentmember->parentname);
+		if (parser->last_parentname) {
+			member->parentname = parser->last_parentname;
+		} else {
+			member->parentname = psaprintf(parser, "%s%s%s",
+				parent->class->name, parent->is_virtual ? "->" : ".",
+				parentmember->parentname);
+			parser->last_parentname = member->parentname;
+		}
 	} else {
 		member->parentname = parent->class->name;
 		member->parent_virtual = parent->is_virtual;
@@ -1923,6 +1929,8 @@ static void addmember_to_children(struct parser *parser, char *parsepos,
 
 	for (i = 0; i < class->descendants.num; i++) {
 		parent = class->descendants.mem[i];
+		/* possibly different parent path, clear cache */
+		parser->last_parentname = NULL;
 		inheritmember(parser, parsepos, parent->child, parent, member);
 	}
 }
@@ -2228,6 +2236,8 @@ static void import_parent(struct parser *parser, char *parsepos,
 			goto merge;
 		if (origin != currorigin) {
 			currorigin = origin;
+			/* origin changed, clear parentname cache */
+			parser->last_parentname = NULL;
 			/* if we already imported this class virtual, or
 			   this import is virtual, then don't inherit
 			   the members again (prevent duplicates) */

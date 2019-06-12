@@ -18,9 +18,4 @@ int *bar_barf(struct bar *this, char a, int b);
 void *bar_get_bar(struct bar *this, int a);
 void bar_vbarf(struct bar *this);
 struct bar *bar_bar_root(struct bar *this);
-coo_inline void bar_vmt_vbarf(struct bar *this)
-{
-	((struct bar_vmt*)this->vmt)->vbarf(this);
-}
-
 #line 7 "inc/bar/bar.hoo"

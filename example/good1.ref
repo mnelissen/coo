@@ -1,0 +1,11 @@
+D::vfunc_a(3) 24 25
+B::vfunc_b(4)
+D::vfunc_a(5) 24 25
+B::vfunc_b(6)
+D::vfunc_a(7) 24 25
+offset a=0 
+offset b=0  b1=12 b2=13
+offset c=16 c1=24 c2=25
+            d1=36 d2=37
+e=0x0
+D::handle_pass_C c1=24 c2=25 48 16

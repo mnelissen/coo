@@ -120,7 +120,7 @@ void D::D(void)
 
 void D::handle_pass_C(int arg, C *C)
 {
-	printf("D::handle_pass_C c1=%d c2=%d %d %p %p", c1, c2, arg, this, C);
+	printf("D::handle_pass_C c1=%d c2=%d %d %d\n", c1, c2, arg, (int)((char*)C-(char*)this));
 }
 
 void E::E(void)
@@ -147,10 +147,10 @@ int main(void)
 	a->vfunc_a(5);
 	b->vfunc_b(6);
 	c->vfunc_a(7);
-	printf("a=%p d=%p\n", a, d);
-	printf("b=%p b1=%d b2=%d\n", b, b->get_b1(), b->get_b2());
-	printf("c=%p c1=%d c2=%d\n", c, c->get_c1(), c->get_c2());
-	printf("d=%p d1=%d d2=%d\n", d, d->d1, d->d2);
+	printf("offset a=%-2d\n", (int)((char*)a-(char*)d));
+	printf("offset b=%-2d b1=%d b2=%d\n", (int)((char*)b-(char*)d), b->get_b1(), b->get_b2());
+	printf("offset c=%-2d c1=%d c2=%d\n", (int)((char*)c-(char*)d), c->get_c1(), c->get_c2());
+	printf("            d1=%d d2=%d\n", d->d1, d->d2);
 	printf("e=%p\n", e);
 	d->cb(48, d);
 	delete d;

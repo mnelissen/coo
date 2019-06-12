@@ -117,6 +117,7 @@ struct class {
 	struct hash_entry node;      /* node in parser.classes hash */
 	struct parent *dync_parents; /* linked list of dyncastable parents */
 	struct parent *dync_lastp;   /* last dyncastable parent to add after */
+	char *funcinsert;            /* insert in front of function call "class_" */
 	unsigned num_parent_constr;  /* number of parent constructors */
 	unsigned num_parent_destr;   /* number of parent destructors */
 	unsigned num_init_vars;      /* number of members needing root construction call */
@@ -198,9 +199,6 @@ struct member {
 	struct vmt *vmt;           /* vmt this member is defined in */
 	char *paramstext;          /* literal text of all params definition */
 	struct dynarr params;      /* struct classptr *, params' class type */
-	char *funcinsert;   /* insert this string in front of function call */
-	  /* for normal function:  func() ==> class_func()
-	     for virtual function: func() ==> class_vmt_func() */
 	char *parentname;   /* insert after function first argument expression */
 	  /* for a function: x->func() ==> x_func(&x.parent) */
 	char *nameinsert;   /* insert this in front of membername when using */
@@ -322,7 +320,7 @@ struct parser {
 	char *memptr;                 /* pointer to next available memory */
 	size_t memavail;              /* available memory in current block */
 	struct class *class;          /* parsing function of this class */
-	char *last_parentname;        /* cache to optimize parentname constr */
+	char *last_parentname;        /* cache to optimize parentname init */
 	int include_ext_in_len;       /* length of include_ext_in, optimization */
 	int num_errors;               /* user errors, prevent spam */
 	int tempscope_varnr;          /* unique nr for vars in tempscope */
@@ -1104,6 +1102,14 @@ static struct class *addclass(struct parser *parser, char *classname, char *name
 	return initclass(parser, class);
 }
 
+static char *get_class_funcinsert(struct parser *parser, struct class *class)
+{
+	if (!class->funcinsert)
+		class->funcinsert = psaprintf(parser, "%s_", class->name);
+
+	return class->funcinsert;
+}
+
 static struct classtype *addclasstype(struct parser *parser, char *typename,
 		char *nameend, struct classptr *decl, enum typedef_implicit implicit)
 {
@@ -1255,6 +1261,21 @@ static struct member *dupmemberto(struct parser *parser, struct class *class,
 	return member;
 }
 
+static char *get_member_nameinsert(struct parser *parser,
+		struct class *class, struct member *member)
+{
+	if (member->nameinsert)
+		return member->nameinsert;
+
+	/* static variables have class_ in front, just like functions */
+	if (member->props.is_static)
+		member->nameinsert = get_class_funcinsert(parser, class);
+	else if (member->parentname)
+		member->nameinsert = psaprintf(parser, "%s%s",
+			member->parentname, member->parent_virtual ? "->" : ".");
+	return member->nameinsert;
+}
+
 static void save_implicit_insert(struct parser *parser, char *position)
 {
 	if (grow_dynarr(&parser->implicit_structs))
@@ -1352,7 +1373,7 @@ static struct member *addmember(struct parser *parser, struct class *class,
 		char *membername, char *nameend, char *params, struct memberprops props)
 {
 	struct member *member, *dupmember;
-	char *vmt_insert, *insert, *end, *parsepos = retstr, void_ret;
+	char *end, *parsepos = retstr, void_ret;
 
 	member = allocmember_e(parser, class, membername, nameend, &dupmember);
 	if (member == NULL) {
@@ -1387,14 +1408,6 @@ static struct member *addmember(struct parser *parser, struct class *class,
 			member->paramstext = ")";
 		else
 			parse_parameters_to(parser, params, &member->paramstext, &member->params);
-	}
-	if (props.is_function || props.is_static) {
-		vmt_insert = props.is_virtual ? "vmt_" : "";
-		insert = psaprintf(parser, "%s_%s", class->name, vmt_insert);
-		if (props.is_function)
-			member->funcinsert = insert;
-		else
-			member->nameinsert = insert;
 	}
 	if (props.is_virtual) {
 		member->vmt = class->vmt;
@@ -1528,6 +1541,7 @@ static struct variable *addvariable_common(struct parser *parser, unsigned block
 	variable->decl = *decl;
 	variable->decl.pointerlevel += extraptr;  /* typedef type + extra pointers */
 	variable->blocklevel = blocklevel;
+	variable->mpdecl = NULL;
 	dynarr->num++;
 	return variable;
 }
@@ -1605,6 +1619,12 @@ static struct methodptr *dupmethodptrtype(struct parser *parser,
 	return mptype;
 }
 
+static int is_nop_insert(struct insert *insert)
+{
+	return insert->flush_until == insert->continue_at
+		&& insert->insert_text[0] == 0;
+}
+
 /* compatible with struct insert.continue_after */
 enum insert_continue { CONTINUE_BEFORE, CONTINUE_AFTER };
 
@@ -1626,12 +1646,7 @@ static int addinsert(struct parser *parser, int insert_index,
 		*end_pos = insert;
 	}
 
-	insert->flush_until = flush_until;
-	insert->insert_text = insert_text;
-	insert->continue_at = continue_at;
-	insert->continue_after = insert_continue;
-	insert->free_insert = 0;
-	parser->inserts->num++;
+
 	if (insert_index < 0) {
 		/* check flush ordering to be incremental */
 		for (before_pos = end_pos;; before_pos--) {
@@ -1647,10 +1662,23 @@ static int addinsert(struct parser *parser, int insert_index,
 		before_pos = (struct insert **)&parser->inserts->mem[insert_index];
 	}
 
-	if (before_pos < end_pos) {
-		memmove(before_pos+1, before_pos, (char*)end_pos-(char*)before_pos);
-		*before_pos = insert;
+	/* print_inserts_fromto might nop-out some inserts, see if we can reuse them */
+	if (before_pos < end_pos && is_nop_insert(*before_pos)) {
+		/* reuse, so inserts->num doesn't increase */
+		insert = *before_pos;
+	} else {
+		parser->inserts->num++;
+		if (before_pos < end_pos) {
+			memmove(before_pos+1, before_pos, (char*)end_pos-(char*)before_pos);
+			*before_pos = insert;
+		}
 	}
+
+	insert->flush_until = flush_until;
+	insert->insert_text = insert_text;
+	insert->continue_at = continue_at;
+	insert->continue_after = insert_continue;
+	insert->free_insert = 0;
 	/* return index of next entry to insert before */
 	return (void**)before_pos + 1 - parser->inserts->mem;
 }
@@ -1912,9 +1940,6 @@ static struct member *inheritmember(struct parser *parser, char *parsepos,
 		member->parentname = parent->class->name;
 		member->parent_virtual = parent->is_virtual;
 	}
-	if (!member->props.is_static)
-		member->nameinsert = psaprintf(parser, "%s%s",
-			member->parentname, member->parent_virtual ? "->" : ".");
 	/* in case of defining functions on the fly,
 	   insert into classes inheriting from this class as well */
 	addmember_to_children(parser, parsepos, class, member);
@@ -2566,44 +2591,20 @@ static void print_param_names(struct parser *parser, char *params)
 	}
 }
 
-enum func_decltype {
-	MEMBER_FUNCTION,
-	VIRTUAL_WRAPPER,
-};
-
-static void print_func_decl(struct parser *parser, struct class *class,
-		struct member *member, enum func_decltype emittype)
+static void print_func_decl(struct parser *parser,
+		struct class *class, struct member *member)
 {
-	char *func_prefix, *name_insert, *func_body, *rootclass, *vmtpath, *vmtaccess;
 	struct class *thisclass;
+	char *rootclass;
 	unsigned empty;
 
 	empty = member->paramstext[0] == ')';
-	if (emittype == VIRTUAL_WRAPPER) {
-		func_prefix = "coo_inline ";
-		name_insert = "vmt_";
-		func_body = "\n{";
-	} else {
-		func_prefix = name_insert = "";
-		func_body = ";";   /* no body */
-	}
 	thisclass = get_impl_this_class(member);
 	rootclass = member->is_root_constructor && class->rootclass ? "_root" : "";
-	outprintf(parser, "\n%s%s%s_%s%s%s(struct %s%s *this%s%s%s",
-		func_prefix, member->rettype, class->name,
-		name_insert, member->implprefix, member->implname,
-		thisclass->name, rootclass,
-		empty ? "" : ", ", member->paramstext, func_body);
+	outprintf(parser, "\n%s%s_%s%s(struct %s%s *this%s%s;",
+		member->rettype, class->name, member->implprefix, member->implname,
+		thisclass->name, rootclass, empty ? "" : ", ", member->paramstext);
 	parser->pf.lines_coo++;
-	if (emittype == VIRTUAL_WRAPPER) {
-		get_vmt_path(parser, member->vmt, &vmtpath, &vmtaccess);
-		outprintf(parser, "\n\t((struct %s_vmt*)this->%s%svmt)->%s%s(this",
-			class->name, vmtpath, vmtaccess,
-			member->implprefix, member->implname);
-		print_param_names(parser, member->paramstext);
-		outprintf(parser, ");\n}\n");
-		parser->pf.lines_coo += 4;  /* 1 in func_body, 3 here */
-	}
 }
 
 static void print_member_decls(struct parser *parser, struct class *class)
@@ -2643,8 +2644,8 @@ static void print_member_decls(struct parser *parser, struct class *class)
 		member = class->members_arr.mem[i];
 
 		/* optimize virtual function calls to actual calls for final classes */
-		if (class->is_final && member->funcinsert && member->props.is_virtual) {
-			member->funcinsert = psaprintf(parser, "%s_", member->definition->name);
+		if (class->is_final && member->props.is_virtual) {
+			member->props.is_virtual = 0;
 			/* note that non-primary base virtual calls translate 'this',
 			   so have to pass that base, so keep original parentname */
 			if (!impl_this_needs_offset(member)) {
@@ -2653,9 +2654,7 @@ static void print_member_decls(struct parser *parser, struct class *class)
 							member->definition);
 					if (ancestor && ancestor->parent->class
 								!= member->origin) {
-						/* path to definition can only
-						   be shorter than to origin */
-						strcpy(member->parentname, ancestor->path);
+						member->parentname = ancestor->path;
 					}
 				} else {
 					/* definition is here, no parent path necessary anymore */
@@ -2674,22 +2673,12 @@ static void print_member_decls(struct parser *parser, struct class *class)
 
 		switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
 		if (member->props.is_function) {
-			print_func_decl(parser, class, member, MEMBER_FUNCTION);
+			print_func_decl(parser, class, member);
 		} else {
 			outprintf(parser, "\nextern %s%s_%s;",
 				member->rettype, class->name, member->name);
 			parser->pf.lines_coo++;
 		}
-	}
-
-	/* now generate all the virtual method call wrappers */
-	for (i = 0; i < class->members_arr.num; i++) {
-		member = class->members_arr.mem[i];
-		/* don't inherited members */
-		if (member->origin != class)
-			continue;
-		if (member->props.is_virtual)
-			print_func_decl(parser, class, member, VIRTUAL_WRAPPER);
 	}
 }
 
@@ -3106,6 +3095,33 @@ static struct class *parse_struct(struct parser *parser, char *next)
 	return class;
 }
 
+static void print_inserts_fromto(struct parser *parser, char *from, char *until)
+{
+	struct dynarr *inserts = parser->inserts;
+	struct insert *insert;
+	unsigned j;
+
+	parser->pf.writepos = from;
+	for (j = 0; j < inserts->num; j++) {
+		insert = inserts->mem[j];
+		if (from > insert->flush_until)
+			continue;
+		if (until < insert->flush_until)
+			break;
+		flush_until(parser, insert->flush_until);
+		outputs(parser, insert->insert_text);
+		parser->pf.writepos = insert->continue_at;
+		/* make insert a no-op */
+		insert->flush_until = insert->continue_at;
+		if (insert->free_insert)
+			free(insert->insert_text);
+		insert->insert_text = "";
+		insert->free_insert = 0;
+	}
+	parser->pf.pos = until;
+	flush(parser);
+}
+
 static struct ancestor *accessancestor(struct classptr *expr, char *exprstart,
 		char *name, struct class *target, char **pre, char **post)
 {
@@ -3196,18 +3212,20 @@ static void parse_method(struct parser *parser, char *stmtstart, struct methodpt
 }
 
 static struct member *parse_member(struct parser *parser, char *stmtstart,
-	struct methodptr *targetmp, char *exprstart, char *exprend,
+	struct methodptr *targetmp, int expr_is_oneword, char *exprstart, char *exprend,
 	struct classptr *expr, char *name, char *nameend,
 	struct classptr *retclassptr, struct methodptr **retmp, struct dynarr **retparams)
 {
 	struct member *member;
+	struct class *class = expr->class;
 	char *args, *flush_until, *insert_text, *continue_at;
+	char *newscope, insert_buf[16], *vmtpath, *vmtaccess;
 	enum insert_continue insert_continue;
-	int add_this, has_arguments, insert_index = -1;
+	int add_this, has_arguments, scope_varnr, insert_index = -1;
 
 	if (expr->class == NULL)
 		return NULL;
-	if ((member = find_member_e(expr->class, name, nameend)) == NULL)
+	if ((member = find_member_e(class, name, nameend)) == NULL)
 		return NULL;
 
 	if (exprstart && member->props.is_static) {
@@ -3229,8 +3247,45 @@ static struct member *parse_member(struct parser *parser, char *stmtstart,
 			return NULL;
 		}
 
-		insert_index = addinsert(parser, insert_index,
-			exprstart ?: name, member->funcinsert, name, CONTINUE_BEFORE);
+		if (member->props.is_virtual) {
+			if (!expr_is_oneword) {
+				newscope = open_tempscope(parser, &scope_varnr);
+				parser->pf.pos = stmtstart;
+				flush(parser);
+				outprintf(parser, "%sstruct %s *coo_obj%d = %s",
+					newscope, class->name, scope_varnr,
+					expr->pointerlevel == 0 ? "&" : "");
+				print_inserts_fromto(parser, exprstart, exprend);
+				sprintf(insert_buf, "coo_obj%d->", scope_varnr);
+				insert_text = insert_buf;
+				flush_until = exprstart;
+				continue_at = name;
+			} else if (exprstart) {
+				/* user supplied expression, do not skip it */
+				flush_until = exprstart;
+				insert_text = "";
+				continue_at = exprstart;
+			} else {
+				flush_until = name;
+				insert_text = "this->";
+				continue_at = name;
+			}
+			/* output vmt type cast */
+			insert_index = addinsert_format(parser, insert_index,
+				flush_until, continue_at, CONTINUE_BEFORE,
+				"((struct %s_vmt*)%s",
+				member->origin->name, insert_text);
+			/* output expression + vmt path + name */
+			get_vmt_path(parser, member->vmt, &vmtpath, &vmtaccess);
+			insert_index = addinsert_format(parser, insert_index,
+				name, name, CONTINUE_BEFORE,
+				"%s%svmt)->", vmtpath, vmtaccess);
+		} else {
+			insert_index = addinsert(parser, insert_index, exprstart ?: name,
+				get_class_funcinsert(parser, member->definition),
+				name, CONTINUE_BEFORE);
+		}
+
 		continue_at = ++args;
 		has_arguments = *strskip_whitespace(args) != ')';
 		if (add_this) {
@@ -3283,18 +3338,17 @@ static struct member *parse_member(struct parser *parser, char *stmtstart,
 	} else if (add_this) {
 		flush_until = name;
 		continue_at = name;
-		insert_text = "this->";
 		insert_continue = CONTINUE_BEFORE;
-		if (member->nameinsert) {
+		insert_text = get_member_nameinsert(parser, class, member);
+		if (insert_text)
 			insert_index = addinsert(parser, insert_index,
-				name, insert_text, name, CONTINUE_BEFORE);
-			insert_text = member->nameinsert;
-		}
-	} else if (member->nameinsert) {
+				name, "this->", name, CONTINUE_BEFORE);
+		else
+			insert_text = "this->";
+	} else if ((insert_text = get_member_nameinsert(parser, class, member)) != NULL) {
 		/* static variables need to skip expression/variable name, is a global */
 		flush_until = member->props.is_static && exprstart ? exprstart : name;
 		continue_at = name;
-		insert_text = member->nameinsert;
 	}
 
 	if (continue_at)
@@ -3512,9 +3566,6 @@ static void print_inserts(struct parser *parser, struct dynarr *inserts)
 	struct insert *insert;
 	unsigned j;
 
-	if (inserts->num == 0)
-		return;
-
 	for (j = 0; j < inserts->num; j++) {
 		insert = inserts->mem[j];
 		flush_until(parser, insert->flush_until);
@@ -3523,6 +3574,7 @@ static void print_inserts(struct parser *parser, struct dynarr *inserts)
 		if (insert->free_insert)
 			free(insert->insert_text);
 	}
+
 	inserts->num = 0;
 }
 
@@ -4148,8 +4200,9 @@ static void parse_function(struct parser *parser, char *next)
 				expr = immdecl.class ? &immdecl : &exprdecl[parenlevel];
 				if (expr->pointerlevel <= 1) {
 					submember = parse_member(parser, stmtstart,
-						targetmp[parenlevel], memberstart[parenlevel],
-						exprend, expr, name, next, expr, &immmp,
+						targetmp[parenlevel], expr_is_oneword,
+						memberstart[parenlevel], exprend, expr,
+						name, next, expr, &immmp,
 						&targetparams[parenlevel].params);
 					if (submember == NULL)
 						break;
@@ -4183,7 +4236,7 @@ static void parse_function(struct parser *parser, char *next)
 					break;
 				/* maybe it's a member field? "this" has pointerlevel 1 */
 				member = parse_member(parser, stmtstart, targetmp[parenlevel],
-					NULL, NULL, &thisptr, name, next,
+					0, NULL, NULL, &thisptr, name, next,
 					&immdecl, &immmp, tgtparams);
 				if (member != NULL) {
 					if (is_constructor && member->parent_constructor) {
@@ -4458,7 +4511,6 @@ static void parse_function(struct parser *parser, char *next)
 					pr_err(curr, "unknown variable to delete");
 				}
 			}
-			parser->inserts = &parser->inserts_arr;
 			print_inserts(parser, parser->inserts);
 			if (in_delete) {
 				parser->pf.pos = curr;
@@ -4467,17 +4519,13 @@ static void parse_function(struct parser *parser, char *next)
 				in_delete = 0;
 			}
 			close_tempscope(parser, curr + 1);
-			targetdecl[0].pointerlevel = 0;
-			exprdecl[0].pointerlevel = 0;
-			targetdecl[0].class = NULL;
-			exprdecl[0].class = NULL;
-			immdecl.class = NULL;
-			decl.class = NULL;
+			targetdecl[0].pointerlevel = exprdecl[0].pointerlevel = 0;
+			targetdecl[0].class = exprdecl[0].class = NULL;
+			immdecl.class = decl.class = NULL;
+			declmv = exprmp[0] = immmp = NULL;
 			stmtstart = NULL;
 			declvar = NULL;
-			declmv = NULL;
 			member = NULL;
-			immmp = NULL;
 			numwords = 0;
 			seqparen = 0;
 			parenlevel = 0;

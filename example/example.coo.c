@@ -21,11 +21,6 @@ struct A *new_A(void);
 void A_vfunc_a(struct A *this, int a2);
 struct A *A_A(struct A *this);
 struct A *A_A_root(struct A *this);
-coo_inline void A_vmt_vfunc_a(struct A *this, int a2)
-{
-	((struct A_vmt*)this->vmt)->vfunc_a(this, a2);
-}
-
 #line 11 "example.coo"
 struct B {
 	struct A A;
@@ -33,7 +28,7 @@ struct B {
 	struct A a_local;
 };
 
-#line 37 "example.coo.c"
+#line 32 "example.coo.c"
 extern const struct B_vmt {
 	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct B *this, int a2);
@@ -47,11 +42,6 @@ void B_vfunc_a(struct B *this, int a2);
 void B_vfunc_b(struct B *this, int b2);
 struct B *B_B(struct B *this);
 struct B *B_B_root(struct B *this);
-coo_inline void B_vmt_vfunc_b(struct B *this, int b2)
-{
-	((struct B_vmt*)this->A.vmt)->vfunc_b(this, b2);
-}
-
 #line 19 "example.coo"
 struct C {
 	struct A *A;
@@ -59,7 +49,7 @@ struct C {
 	const struct coo_vmt *vmt;
 };
 
-#line 63 "example.coo.c"
+#line 53 "example.coo.c"
 struct C_root {
 	struct C C;
 	struct A A;
@@ -83,16 +73,6 @@ void C_vfunc_a(struct C *this, int a2);
 void C_vfunc_c(struct C *this, int c2);
 void C_vfunc_c3(struct C *this, int c3);
 struct C *C_C_root(struct C_root *this);
-coo_inline void C_vmt_vfunc_c(struct C *this, int c2)
-{
-	((struct C_vmt*)this->vmt)->vfunc_c(this, c2);
-}
-
-coo_inline void C_vmt_vfunc_c3(struct C *this, int c3)
-{
-	((struct C_vmt*)this->vmt)->vfunc_c3(this, c3);
-}
-
 #line 26 "example.coo"
 struct D {
 	struct B B;
@@ -100,7 +80,7 @@ struct D {
 	int d1;
 };
 
-#line 104 "example.coo.c"
+#line 84 "example.coo.c"
 extern const struct D_vmt {
 	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct D *this, int a2);
@@ -123,18 +103,13 @@ void D_vfunc_c3(struct C *this, int c3);
 struct D *D_D(struct D *this, struct A *a);
 void D_vfunc_d(struct D *this, struct A* a, struct B *b);
 struct D *D_D_root(struct D *this, struct A *a);
-coo_inline void D_vmt_vfunc_d(struct D *this, struct A* a, struct B *b)
-{
-	((struct D_vmt*)this->B.A.vmt)->vfunc_d(this, a, b);
-}
-
 #line 35 "example.coo"
 struct E {
 	struct D D;
 	int e1;
 };
 
-#line 138 "example.coo.c"
+#line 113 "example.coo.c"
 extern const struct E_vmt {
 	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct D *this, int a2);
@@ -202,7 +177,7 @@ void foo_vfunc(struct foo *this, int arg1, float *arg2)
 struct A *A_A(struct A *this)
 {
 	this->a1 = -1;
-#line 206 "example.coo.c"
+#line 181 "example.coo.c"
 	return this;
 #line 93 "example.coo"
 }
@@ -216,7 +191,7 @@ struct B *B_B(struct B *this)
 {
 	A_A(&this->A);
 	A_A_root(&this->a_local);
-#line 220 "example.coo.c"
+#line 195 "example.coo.c"
 	return this;
 #line 104 "example.coo"
 }
@@ -272,7 +247,7 @@ struct D *D_D(struct D *this, struct A *a)
 {
 	this->B.b1 = -5;
 	B_B(&this->B);
-#line 276 "example.coo.c"
+#line 251 "example.coo.c"
 	return this;
 #line 157 "example.coo"
 }
@@ -281,7 +256,7 @@ struct E *E_E(struct E *this)
 {
 	this->D.B.A.a1 = -6;
 	D_D(&this->D, &this->D.B.A);
-#line 285 "example.coo.c"
+#line 260 "example.coo.c"
 	return this;
 #line 163 "example.coo"
 }
@@ -324,12 +299,12 @@ int main(int argc, char **argv)
 	foo_foo_root(&foo);
 #line 192
 	a.a1 = 10;
-	A_vmt_vfunc_a(&a, 11);
+	((struct A_vmt*)a.vmt)->vfunc_a(&a, 11);
 
 	b.A.a1 = 20;
 	b.b1 = 21;
-	A_vmt_vfunc_a(&b.A, 22);
-	B_vmt_vfunc_b(&b, 23);
+	((struct A_vmt*)b.A.vmt)->vfunc_a(&b.A, 22);
+	((struct B_vmt*)b.A.vmt)->vfunc_b(&b, 23);
 	if (b.A.a1 < 10)
 		{ __coo_ret = -1; goto __coo_out0; }
 
@@ -339,17 +314,17 @@ int main(int argc, char **argv)
 #line 203
 	c.A.a1 = 30;
 	c.C.c1 = 31;
-	A_vmt_vfunc_a(&c.A, 32);
-	C_vmt_vfunc_c(&c.C, 33);
+	((struct A_vmt*)c.A.vmt)->vfunc_a(&c.A, 32);
+	((struct C_vmt*)c.C.vmt)->vfunc_c(&c.C, 33);
 
 	d.B.A.a1 = 40;
 	d.B.b1 = 41;
 	d.C.c1 = 42;
 	d.d1 = 43;
-	A_vmt_vfunc_a(&d.B.A, 44);
-	B_vmt_vfunc_b(&d.B, 45);
-	C_vmt_vfunc_c(&d.C, 46);
-	D_vmt_vfunc_d(&d, &(&e)->D.B.A, &(&e)->D.B);
+	((struct A_vmt*)d.B.A.vmt)->vfunc_a(&d.B.A, 44);
+	((struct B_vmt*)d.B.A.vmt)->vfunc_b(&d.B, 45);
+	((struct C_vmt*)d.C.vmt)->vfunc_c(&d.C, 46);
+	((struct D_vmt*)d.B.A.vmt)->vfunc_d(&d, &(&e)->D.B.A, &(&e)->D.B);
 	D_test(&d);
 
 	e.D.B.A.a1 = 50;
@@ -384,7 +359,7 @@ int main(int argc, char **argv)
 	printf("%d %d\n", aa1, db1);
 
 	__coo_ret = 0;
-#line 389 "example.coo.c"
+#line 364 "example.coo.c"
 __coo_out1:
 	E_d_E(&e2);
 __coo_out0:
@@ -393,7 +368,7 @@ __coo_out0:
 #line 250 "example.coo"
 }
 
-#line 397 "example.coo.c"
+#line 372 "example.coo.c"
 #include <stddef.h>
 #include <stdint.h>
 #pragma pack(8)

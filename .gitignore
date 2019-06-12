@@ -1,1 +1,7 @@
 *.o
+*.oo
+*.dSYM
+coo
+coo_opt
+example/good*_exe
+example/good*_dbg

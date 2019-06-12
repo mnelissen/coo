@@ -12,8 +12,8 @@
 #define coo_inline extern inline __attribute__((always_inline)) __attribute__((gnu_inline))
 #endif
 #ifndef container_of
-#define container_of(ptr, type, node_var) \
-  ((type *)((size_t)(ptr)-(size_t)(&((type *)0)->node_var)))
+#define container_of(ptr, type, var) \
+  ((type *)((size_t)(ptr)-(size_t)(&((type *)0)->var)))
 #endif
 
 /* every vmt looks like: */

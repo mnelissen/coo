@@ -11,6 +11,7 @@ CC=gcc
 TESTS:=$(patsubst %.coo,%.coo.c,$(wildcard fail*.coo))
 TESTS:=$(TESTS) $(patsubst %.coo,%_exe,$(wildcard good*.coo))
 TESTS:=$(TESTS) $(patsubst %.coo,%_dbg,$(wildcard good*.coo))
+TESTS:=$(TESTS) $(patsubst %.coo,%_run,$(wildcard good*.coo))
 TESTS:=$(TESTS) $(patsubst %.coo,%.coo.c,$(wildcard good*.coo))
 all: example $(TESTS)
 clean:
@@ -32,4 +33,6 @@ good%_exe: good%.coo.c coortlopt.o
 	$(CC) $(CFLAGS) -O2 -o $@ $^
 good%_dbg: good%.coo.c coortldbg.o
 	$(CC) $(CFLAGS) -o $@ $^
-.PHONY: example.coo.c
+good%_run: good%_exe
+	./$< | diff -u good$*.ref -
+.PHONY: example.coo.c good*_run

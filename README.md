@@ -450,7 +450,6 @@ allocated with malloc / realloc / free.
 * optimize duplicated parentname strings == ancestor->path?
 * cannot inherit from final class?
 * parse parameters, type without name skipped
-* don't emit vmt call wrappers, but use tempblock (if necessary) to directly call
 * cleanup parser memory after use, add destroy_parser function
 * remove get_vmt_name, replace with vmt->class->name or vmt->modified->class->name
 

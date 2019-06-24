@@ -1,0 +1,35 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+struct H {
+	int xh;
+	void H();
+};
+
+struct A {
+	int xa;
+	H h;
+};
+
+struct B : A {
+	int g;
+};
+
+void H::H(void)
+{
+	xh = 1;
+}
+
+void A::A(void)
+{
+	h.H();
+	xa = 2;
+}
+
+int main(void)
+{
+	B b;
+	printf("%d %d\n", b.xa, b.h.xh);
+	return 0;
+}
+

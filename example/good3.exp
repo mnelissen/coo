@@ -1,0 +1,86 @@
+#line 1 "good3.coo"
+#include <stdio.h>
+#include <stdlib.h>
+
+struct H {
+	int xh;
+};
+
+#line 10 "good3.coo.c"
+struct H *new_H(void);
+struct H *H_H(struct H *this);
+#line 9 "good3.coo"
+struct A {
+	int xa;
+	struct H h;
+};
+
+#line 19 "good3.coo.c"
+struct A *new_A(void);
+struct A *A_A(struct A *this);
+#line 14 "good3.coo"
+struct B {
+	struct A A;
+	int g;
+};
+
+#line 28 "good3.coo.c"
+struct B *new_B(void);
+#line 18 "good3.coo"
+struct H *H_H(struct H *this)
+{
+	this->xh = 1;
+#line 34 "good3.coo.c"
+	return this;
+#line 21 "good3.coo"
+}
+
+struct A *A_A(struct A *this)
+{
+	H_H(&this->h);
+	this->xa = 2;
+#line 43 "good3.coo.c"
+	return this;
+#line 27 "good3.coo"
+}
+
+int main(void)
+{
+	struct B b;
+#line 31
+	A_A(&b.A);
+#line 32
+	printf("%d %d\n", b.A.xa, b.A.h.xh);
+	return 0;
+}
+
+
+#line 59 "good3.coo.c"
+#include <stddef.h>
+#include <stdint.h>
+#pragma pack(8)
+const struct H_coo_class {
+	uint32_t num_parents;
+} H_coo_class = {
+	0,
+};
+
+struct H *new_H(void)
+{
+	struct H *this = malloc(sizeof(*this));
+	if (this == NULL) return NULL;
+	return H_H(this);
+}
+
+const struct A_coo_class {
+	uint32_t num_parents;
+} A_coo_class = {
+	0,
+};
+
+struct A *new_A(void)
+{
+	struct A *this = malloc(sizeof(*this));
+	if (this == NULL) return NULL;
+	return A_A(this);
+}

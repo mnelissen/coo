@@ -223,7 +223,7 @@ int main(void)
 	printf("offset b=%-2d b1=%d b2=%d\n", (int)((char*)b-(char*)d), B_get_b1(b), B_get_b2(b));
 	printf("offset c=%-2d c1=%d c2=%d\n", (int)((char*)c-(char*)d), C_get_c1(c), C_get_c2(c));
 	printf("            d1=%d d2=%d\n", d->d1, d->d2);
-	printf("e=%p\n", e);
+	printf("e=0x%zu\n", (size_t)e);
 	d->cb.func(d->cb.obj, 48, &d->C);
 	free(d);
 	return 0;

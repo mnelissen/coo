@@ -1,0 +1,122 @@
+#line 1 "good2.coo"
+#include <stdio.h>
+#include <stdlib.h>
+
+struct A {
+	const struct coo_vmt *vmt;
+};
+
+#line 10 "good2.coo.c"
+#include <coortl.h>
+extern const struct A_vmt {
+	struct coo_vmt vmt_base;
+	void (*vfunc_a)(struct A *this, int arg);
+	void (*vfunc_b)(struct A *this, int arg);
+} A_vmt;
+
+extern const struct A_coo_class A_coo_class;
+
+#line 9 "good2.coo"
+struct B {
+	struct A A;
+};
+
+#line 25 "good2.coo.c"
+extern const struct B_vmt {
+	struct coo_vmt vmt_base;
+	void (*vfunc_a)(struct B *this, int arg);
+	void (*vfunc_b)(struct A *this, int arg);
+} B_vmt;
+
+extern const struct B_coo_class B_coo_class;
+
+void B_vfunc_a(struct B *this, int arg);
+#line 13 "good2.coo"
+struct C {
+	struct B B;
+};
+
+#line 40 "good2.coo.c"
+extern const struct C_vmt {
+	struct coo_vmt vmt_base;
+	void (*vfunc_a)(struct B *this, int arg);
+	void (*vfunc_b)(struct C *this, int arg);
+} C_vmt;
+
+extern const struct C_coo_class C_coo_class;
+
+struct C *new_C(void);
+void C_vfunc_b(struct C *this, int arg);
+struct C *C_C(struct C *this);
+struct C *C_C_root(struct C *this);
+#line 18 "good2.coo"
+void B_vfunc_a(struct B *this, int arg)
+{
+	printf("B::vfunc_a(%d)\n", arg);
+}
+
+void C_vfunc_b(struct C *this, int arg)
+{
+	printf("C::vfunc_b(%d)\n", arg);
+}
+
+struct C *C_C(struct C *this)
+{
+#line 68 "good2.coo.c"
+	return this;
+#line 32 "good2.coo"
+}
+
+int main(void)
+{
+	struct C *c = new_C();
+	((struct A_vmt*)c->B.A.vmt)->vfunc_a(&c->B.A, 3);
+	((struct A_vmt*)c->B.A.vmt)->vfunc_b(&c->B.A, 4);
+	return 0;
+}
+
+#line 81 "good2.coo.c"
+#include <stddef.h>
+#include <stdint.h>
+#pragma pack(8)
+const struct C_coo_class {
+	uint32_t num_parents;
+	const void *parents[1];
+} C_coo_class = {
+	1,
+	{ &B_coo_class }
+};
+
+const struct C_vmt C_vmt = {
+	{ offsetof(struct C, B.A.vmt),
+	  &C_coo_class },
+	B_vfunc_a,
+	C_vfunc_b,
+};
+
+struct C *new_C(void)
+{
+	struct C *this = malloc(sizeof(*this));
+	if (this == NULL) return NULL;
+	return C_C_root(this);
+}
+
+struct C *C_C_root(struct C *this)
+{
+	this->B.A.vmt = &C_vmt.vmt_base;
+	return C_C(this);
+}
+
+const struct B_coo_class {
+	uint32_t num_parents;
+	const void *parents[1];
+} B_coo_class = {
+	1,
+	{ &A_coo_class }
+};
+
+const struct A_coo_class {
+	uint32_t num_parents;
+} A_coo_class = {
+	0,
+};

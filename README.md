@@ -408,7 +408,7 @@ int main(void)
 
 ## Technical details
 
-### Dynamic casting
+### Dynamic casting details
 
 Example code to show details for dynamic casting:
 
@@ -448,7 +448,6 @@ allocated with malloc / realloc / free.
 
 * add syntax to zero-initialize a class automatically
 * optimize duplicated parentname strings == ancestor->path?
-* cannot inherit from final class?
 * parse parameters, type without name skipped
 * cleanup parser memory after use, add destroy_parser function
 * remove get_vmt_name, replace with vmt->class->name or vmt->modified->class->name

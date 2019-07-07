@@ -2177,6 +2177,9 @@ static void import_parent(struct parser *parser, char *parsepos,
 	char *sec_name;
 	int ret;
 
+	if (parentclass->is_final)
+		pr_err(parsepos, "cannot inherit from final class %s", parentclass->name);
+
 	/* inherit vmts */
 	for (i = 0; i < parentclass->vmts.num; i++) {
 		parentvmt = parentclass->vmts.mem[i];

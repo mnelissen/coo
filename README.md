@@ -39,7 +39,6 @@ Planned:
 * structured error handling (in some form)
 * protected classes
 * special case for interfaces? (only virtual methods, no variables)
-* method instance pointers
 * typesafe containers
 * function overloading? (in some form)
 
@@ -212,7 +211,9 @@ class implementation.
 
 Classes that define only (virtual) functions can be used as an interface.
 This means they do not have any member variables defined, and therefore they
-pose no ambiguity.
+pose no ambiguity when inherited twice. However, if there are multiple
+overrides for a virtual function X, then that function X must be overridden
+to define the intended behavior.
 
 ``` cpp
 struct Intf1 {
@@ -222,6 +223,10 @@ struct Intf1 {
 struct Intf2 : Intf1 {
   virtual void vfunc2(void);
 }
+
+struct ImplIntf1 {
+  override vfunc1;
+};
 
 struct Base {
   int a1;
@@ -236,15 +241,21 @@ struct Right : Base {
   int c1;
 };
 
-/* this an error */
+/* this an error, cannot inherit class Base twice */
 struct Bottom : Left, Right {
   int bottom;
 };
 
-/* this is okay, vfunc1 implemented by Left */
+/* this is okay, vfunc1 inherited via Intf2 implemented by Left */
 struct Left2 : Left, Intf2 {
   int i2;
   override vfunc2;
+}
+
+/* overriding vfunc1 in below Left3 is mandatory as
+   both Left and ImplIntf1 override vfunc1 */
+struct Left3 : Left, ImplIntf1 {
+  override vfunc1;
 }
 ```
 
@@ -318,7 +329,7 @@ will be called anyway likely leading to wrong behavior.
 
 ### Call inherited functions
 
-In general member names and therefore function calls are unique. But when
+In general, member names and therefore function calls are unique. But when
 overriding an inherited method, it often makes sense to call the inherited
 function. Plain calling it would translate to a virtual method call, most
 likely causing a loop. Therefore, similar syntax to C++ is supported to
@@ -379,30 +390,30 @@ See example below:
 typedef void (*::integer_cb)(int arg);
 
 struct C {
-	int c1;
-	void set_c1(int arg);
-	void C(int init_c1);
-}
+  int c1;
+  void set_c1(int arg);
+  void C(int init_c1);
+};
 
 void C::C(int init_c1)
 {
-	c1 = init_c1;
+  c1 = init_c1;
 }
 
 void C::set_c1(int arg)
 {
-	c1 = arg;
+  c1 = arg;
 }
 
 int main(void)
 {
-	C c(1);
-	integer_cb cb;  /* declare method pointer */
+  C c(1);
+  integer_cb cb;  /* declare method pointer */
 
-	cb = c.set_c1;  /* let it point to &c and C::set_c1 */
-	cb(3);          /* call methodptr: c.set_c1(3) */
-	printf("cb resulted in c.c1: %d\n", c.c1);
-	return 0;
+  cb = c.set_c1;  /* let it point to &c and C::set_c1 */
+  cb(3);          /* call methodptr: c.set_c1(3) */
+  printf("cb resulted in c.c1: %d\n", c.c1);
+  return 0;
 }
 ```
 
@@ -421,13 +432,15 @@ struct A *p_a = g_c;
 
 Has memory layout:
 
-    A_coo_class:  |  0  |
-    B_coo_class:  |  1  |  &A_coo_class  |
-    C_coo_class:  |  1  |  &B_coo_class  |
-    A_vmt:  |  offsetof(A,vmt)  |  &A_coo_class  |  &A_fa  |
-    B_vmt:  |  offsetof(A,vmt)  |  &B_coo_class  |  &A_fa  |  &B_fb  |
-    C_vmt:  |  offsetof(A,vmt)  |  &C_coo_class  |  &A_fa  |  &B_fb  |  &C_fc  |
-    g_c:    |  a  |  &C_vmt  |  b  |  c  |
+``` text
+A_coo_class:  |  0  |
+B_coo_class:  |  1  |  &A_coo_class  |
+C_coo_class:  |  1  |  &B_coo_class  |
+A_vmt:  |  offsetof(A,vmt)  |  &A_coo_class  |  &A_fa  |
+B_vmt:  |  offsetof(A,vmt)  |  &B_coo_class  |  &A_fa  |  &B_fb  |
+C_vmt:  |  offsetof(A,vmt)  |  &C_coo_class  |  &A_fa  |  &B_fb  |  &C_fc  |
+g_c:    |  a  |  &C_vmt  |  b  |  c  |
+```
 
 In this case `dynamic_cast<B*>(p_a)` means answering the question: does the class
 pointed to by `p_a->vmt` have a reference to `B_coo_class`? `p_a->vmt` points to

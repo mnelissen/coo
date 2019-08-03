@@ -40,6 +40,7 @@ Planned:
 * protected classes
 * special case for interfaces? (only virtual methods, no variables)
 * typesafe containers
+* reference counted classes
 * function overloading? (in some form)
 
 ## C compatibility
@@ -464,6 +465,7 @@ allocated with malloc / realloc / free.
 * parse parameters, type without name skipped
 * cleanup parser memory after use, add destroy_parser function
 * remove get_vmt_name, replace with vmt->class->name or vmt->modified->class->name
+* check dynarr memleaks in anytype local variables
 
 ## License
 

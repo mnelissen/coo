@@ -1,0 +1,51 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+struct A {
+	int a;
+};
+
+struct B<T,U> : A {
+	T b1;
+	U b2;
+};
+
+struct C<T> : B<T,A*> {
+	T c1;
+	void set_b1_c1(T arg);
+};
+
+struct D<T,V> : C<T> {
+	int d;
+};
+
+struct L {
+	int l;
+};
+
+struct M {
+	int m;
+};
+
+void C::set_b1_c1(T arg)
+{
+	c1 = arg;
+	b1 = c1;
+}
+
+int main(void)
+{
+	B<L*,A*> *b_a;
+	C<L*> *c = new C<L*>;
+	D<L*,M*> *d = new D<L*,M*>;
+	L l1, l2;
+	b_a = c;
+	c->set_b1_c1(&l1);
+	b_a->b1->l = 5;
+	printf("l=%d ", l1.l);
+	b_a = d;
+	d->set_b1_c1(&l2);
+	b_a->b1->l = 6;
+	printf("l=%d\n", l2.l);
+	return 0;
+}

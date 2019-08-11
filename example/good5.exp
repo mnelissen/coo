@@ -1,0 +1,72 @@
+#line 1 "good5.coo"
+#include <stdio.h>
+#include <stdlib.h>
+
+struct A {
+	int a;
+};
+
+#line 8 "good5.coo"
+struct B {
+	struct A A;
+	void *b1;
+	void *b2;
+};
+
+#line 13 "good5.coo"
+struct C {
+	struct B B;
+	void *c1;
+};
+
+#line 23 "good5.coo.c"
+void C_set_b1_c1(struct C *this, void *arg);
+#line 18 "good5.coo"
+struct D {
+	struct C C;
+	int d;
+};
+
+#line 22 "good5.coo"
+struct L {
+	int l;
+};
+
+#line 26 "good5.coo"
+struct M {
+	int m;
+};
+
+#line 30 "good5.coo"
+void C_set_b1_c1(struct C *this, void *arg)
+{
+	this->c1 = arg;
+	this->B.b1 = this->c1;
+}
+
+int main(void)
+{
+	struct B *b_a;
+	struct C *c = (struct C*)malloc(sizeof(struct C));
+	struct D *d = (struct D*)malloc(sizeof(struct D));
+	struct L l1, l2;
+	b_a = &c->B;
+	C_set_b1_c1(c, &l1);
+	((struct L*)b_a->b1)->l = 5;
+	printf("l=%d ", l1.l);
+	b_a = &d->C.B;
+	C_set_b1_c1(&d->C, &l2);
+	((struct L*)b_a->b1)->l = 6;
+	printf("l=%d\n", l2.l);
+	return 0;
+}
+
+#line 65 "good5.coo.c"
+#include <stddef.h>
+#include <stdint.h>
+#pragma pack(8)
+const struct C_coo_class {
+	uint32_t num_parents;
+} C_coo_class = {
+	0,
+};

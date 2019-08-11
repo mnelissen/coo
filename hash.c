@@ -190,6 +190,7 @@ retry:
 	}
 
 	insert(&table->entries[table_index], new);
+	table->num_entries++;
 	return NULL;
 }
 
@@ -227,6 +228,7 @@ int hash_remove(struct hash *table, struct hash_entry *delete)
 		nextp = &(*entryp)->next;
 		if (*nextp == delete) {
 			*entryp = delete->next;
+			table->num_entries--;
 			return 0;
 		}
 	}

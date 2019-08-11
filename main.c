@@ -99,7 +99,7 @@ struct memberprops {
 	enum visibility visibility:2;
 };
 
-enum { AT_UNKNOWN, AT_CLASS, AT_FUNC, AT_METHOD, AT_TEMPLPAR, AT_TEMPLINST };
+enum { AT_UNKNOWN, AT_METHOD, AT_CLASS, AT_TEMPLINST, AT_TEMPLPAR };
 
 struct anytype {
 	union {
@@ -111,6 +111,7 @@ struct anytype {
 	char pointerlevel;
 	unsigned char type;          /* AT_xxxx */
 	unsigned char implicit;      /* for AT_CLASS, still needs "struct " */
+	unsigned char from_tp;       /* type is mapped from a templpar */
 };
 
 struct class {
@@ -174,6 +175,7 @@ struct parent {
 struct ancestor {   /* link to parent, or parent of parent, etc.. */
 	struct parent *parent;
 	struct ancestor *next;     /* alternate path to same origin (interface) */
+	struct dynarr templ_map;   /* struct templpar of owned class */
 	unsigned from_virtual;
 	char path[];   /* full path to ancestor */
 };
@@ -201,7 +203,7 @@ struct vmt {
 
 struct templpar {
 	struct hash_entry node;    /* entry in class->templpars */
-	struct class *impl;        /* implementation type, NULL => "void *" */
+	struct anytype impl;       /* implementation, unknown => "void *" */
 	char *implstr;             /* representation string of impl */
 	unsigned index;            /* this type's index into class->templ_arr */
 	char name[];               /* declared name of template type */
@@ -331,7 +333,7 @@ struct parser {
 	struct dynarr includepaths;   /* char pointers */
 	struct dynarr file_stack;     /* struct parse_file pointers */
 	struct dynarr param_types;    /* struct anytype *, collect params of funcs */
-	struct dynarr implicit_structs;  /* char *, param positions to add "struct " */
+	struct dynarr param_inserts;  /* 3x char *, replace from/text/to */
 	struct dynarr *inserts;       /* either inserts_arr or a initializer's */
 	struct hash files_seen;       /* struct file_id pointers */
 	char *newfilename_end;        /* pointer to end of new input filename */
@@ -343,6 +345,7 @@ struct parser {
 	int include_ext_in_len;       /* length of include_ext_in, optimization */
 	int num_errors;               /* user errors, prevent spam */
 	int tempscope_varnr;          /* unique nr for vars in tempscope */
+	int param_inserts_delta;      /* delta param_inserts text to insert - to skip */
 	char line_pragmas;            /* print line pragmas for compiler lineno */
 	char saw_nodyncast;           /* saw the nodyncast keyword */
 	char saw_final;               /* saw the final keyword */
@@ -385,8 +388,8 @@ static void *palloc(struct parser *parser, size_t alignmask, size_t size)
 	return newblock;
 }
 
-#define pstralloc(p,s) palloc(p,0,s)
-#define pgenalloc(p,s) palloc(p,sizeof(void*)-1,s)
+#define pstralloc(s) palloc(parser,0,s)
+#define pgenalloc(s) palloc(parser,sizeof(void*)-1,s)
 
 static void parser_nextline(struct parser *parser, char *pos)
 {
@@ -692,7 +695,7 @@ static char *strdupto(char *dest, const char *src)
 static char *pstredup(struct parser *parser, const char *src, const char *until)
 {
 	int len = until-src;
-	char *newdest = pstralloc(parser, len+1);
+	char *newdest = pstralloc(len+1);
 	if (newdest == NULL)
 		return NULL;
 	memcpy(newdest, src, len);
@@ -766,7 +769,7 @@ static attr_format(2,3) char *psaprintf(struct parser *parser, const char *forma
 	va_copy(va2, va_args);
 	len = vsnprintf(NULL, 0, format, va2);
 	va_end(va2);
-	if ((len < 0) || (str = pstralloc(parser, len+1)) == NULL)
+	if ((len < 0) || (str = pstralloc(len+1)) == NULL)
 		return NULL;
 	vsnprintf(str, len+1, format, va_args);
 	return str;
@@ -861,9 +864,8 @@ static void *read_file(FILE *fp, char *buffer)
 
 static int grow_dynarr_to(struct dynarr *dynarr, unsigned minimum)
 {
-	if (minimum >= dynarr->max) {
-		unsigned newmax = minimum > dynarr->max ? minimum : dynarr->max;
-		newmax = newmax >= 16 ? newmax * 2 : 16;
+	if (minimum > dynarr->max) {
+		unsigned newmax = minimum >= 16 ? minimum * 2 : 16;
 		void **newmem = realloc(dynarr->mem, newmax * sizeof(void*));
 		if (newmem == NULL)
 			return -1;
@@ -877,7 +879,7 @@ static int grow_dynarr_to(struct dynarr *dynarr, unsigned minimum)
 
 static int grow_dynarr(struct dynarr *dynarr)
 {
-	return grow_dynarr_to(dynarr, dynarr->num);
+	return grow_dynarr_to(dynarr, dynarr->num+1);
 }
 
 void *allocdynitem_size(struct dynarr *dynarr, size_t itemsize)
@@ -1082,7 +1084,7 @@ static void *realloc_namestruct(struct parser *parser, void *ptr,
 	char *ret, *dest;
 
 	if (parser)
-		ret = pgenalloc(parser, allocsize);
+		ret = pgenalloc(allocsize);
 	else
 		ret = realloc(ptr, allocsize);
 	if (ret == NULL)
@@ -1149,30 +1151,41 @@ static struct classtype *addclasstype(struct parser *parser, char *typename,
 	return type;
 }
 
-static struct templpar *addtemplpar(struct parser *parser, struct class *class,
-		char *typename, char *nameend, struct class *impl)
+static struct templpar *addtemplpar(struct parser *parser,
+		struct class *class, char *typename, char *nameend)
 {
-	struct templpar *par;
+	struct templpar *tp;
 
 	if (grow_dynarr(&class->templ_arr) < 0)
 		return NULL;
 
-	par = alloc_namestruct(parser, struct templpar, typename, nameend);
-	if (par == NULL)
+	tp = alloc_namestruct(parser, struct templpar, typename, nameend);
+	if (tp == NULL)
 		return NULL;
 
-	if (strhash_insert(&class->templpars, par)) {
-		/* already exists */
-		free(par);
+	if (strhash_insert(&class->templpars, tp)) {
+		/* already exists (tp allocated in parser memory, can't free) */
 		return NULL;
 	}
 
-	par->index = class->templ_arr.num;
-	par->impl = impl;
-	par->implstr = impl ? psaprintf(parser, "%s *", impl->name) : "void *";
-	class->templ_arr.mem[par->index] = par;
+	tp->index = class->templ_arr.num;
+	tp->impl.type = AT_UNKNOWN;
+	tp->impl.args.mem = NULL;
+	tp->impl.args.max = 0;
+	tp->implstr = "void *";
+	class->templ_arr.mem[tp->index] = tp;
 	class->templ_arr.num++;
-	return par;
+	return tp;
+}
+
+static char *replace_templpar(struct parser *parser,
+		struct templpar *tp, char *pos, char *next)
+{
+	flush_until(parser, pos);
+	outputs(parser, tp->implstr);
+	if (*next == ' ')
+		next++;
+	return parser->pf.writepos = next;
 }
 
 static int copy_anytype(struct anytype *dest, struct anytype *src)
@@ -1184,14 +1197,15 @@ static int copy_anytype(struct anytype *dest, struct anytype *src)
 	dest->pointerlevel = src->pointerlevel;
 	dest->type = src->type;
 	dest->implicit = src->implicit;
-	if (src->type == AT_TEMPLINST) {
+	dest->from_tp = src->from_tp;
+	if (src->type == AT_TEMPLINST || src->type == AT_TEMPLPAR) {
 		if (grow_dynarr_to(&dest->args, src->args.num) < 0)
 			return -1;
 
 		dest->args.num = src->args.num;
 		for (i = 0; i < src->args.num; i++) {
 			if (dest->args.mem[i] == NULL) {
-				dest->args.mem[i] = malloc(sizeof(struct anytype));
+				dest->args.mem[i] = calloc(1, sizeof(struct anytype));
 				if (dest->args.mem[i] == NULL)
 					return -1;
 			}
@@ -1201,6 +1215,12 @@ static int copy_anytype(struct anytype *dest, struct anytype *src)
 	}
 
 	return 0;
+}
+
+static void move_anytype(struct anytype *dest, struct anytype *src)
+{
+	memcpy(dest, src, sizeof(*dest));
+	memset(&src->args, 0, sizeof(src->args));
 }
 
 static struct class *to_class(struct anytype *any)
@@ -1222,7 +1242,62 @@ static struct templpar *to_tp(struct anytype *any)
 }
 #endif
 
-struct anytype *addargtype(struct dynarr *templ_map)
+static int cmp_templ_args(struct anytype *from,
+		struct anytype *to, struct ancestor *ancestor);
+
+static int is_assignable(struct anytype *from, struct anytype *to)
+{
+	struct ancestor *ancestor;
+
+	/* template instance might be assignable to a class */
+	if (from->type != to->type && !to_class(from))
+		return 0;
+	if (from->type == AT_UNKNOWN)
+		return 0;
+	if (from->pointerlevel != to->pointerlevel)
+		return 0;
+	if (from->u.class == to->u.class)
+		return 1;
+	if (from->type == AT_METHOD || from->type == AT_TEMPLPAR)
+		return 0;
+
+	ancestor = hasho_find(&from->u.class->ancestors, to->u.class);
+	if (ancestor == NULL)
+		return -1;
+
+	/* not equal class, but ancestor is also OK */
+	return cmp_templ_args(from, to, ancestor) == 0;
+}
+
+/* compare two template argument lists to be compatible, ancestor: from(child) to parent(to) */
+static int cmp_templ_args(struct anytype *from,
+		struct anytype *to, struct ancestor *ancestor)
+{
+	struct anytype *tmplarg, *fromtype, *totype;
+	unsigned i;
+
+	/* <anytype>.args.* only valid for AT_TEMPLINST, init here to generalize */
+	if (to->type != AT_TEMPLINST)
+		to->args.num = 0;
+	if (to->args.num != ancestor->templ_map.num)
+		return -1;
+	for (i = 0; i < ancestor->templ_map.num; i++) {
+		tmplarg = ancestor->templ_map.mem[i];
+		if (tmplarg == NULL)
+			continue;
+		/* non-template types are fixed by class definition, so OK */
+		if (tmplarg->type != AT_TEMPLPAR)
+			continue;
+		fromtype = from->args.mem[tmplarg->u.tp->index];
+		totype = to->args.mem[tmplarg->u.tp->index];
+		if (!is_assignable(fromtype, totype))
+			return -1;
+	}
+
+	return 0;
+}
+
+static struct anytype *addargtype(struct dynarr *templ_map)
 {
 	struct anytype *rettype;
 
@@ -1230,7 +1305,8 @@ struct anytype *addargtype(struct dynarr *templ_map)
 		return NULL;
 	rettype = templ_map->mem[templ_map->num];
 	if (!rettype) {
-		rettype = malloc(sizeof(struct anytype));
+		/* TODO: free memory */
+		rettype = calloc(1, sizeof(struct anytype));
 		if (!rettype)
 			return NULL;
 		templ_map->mem[templ_map->num] = rettype;
@@ -1239,13 +1315,16 @@ struct anytype *addargtype(struct dynarr *templ_map)
 	return rettype;
 }
 
-typedef void (*insert_implicit_cb)(struct parser *parser, char *position);
+typedef void (*new_insert_cb)(struct parser *parser, char *from, char *text, char *to);
 typedef void (*new_param_cb)(struct parser *parser, int position,
 		struct class *class, struct anytype *decl, char *name, char *next);
 typedef void (*check_name_cb)(struct parser *parser, char *name, char *next);
 
+static char *parse_templargs(struct parser *parser, struct class *class,
+		struct class *parentclass, char *next, struct dynarr *templ_map);
+
 static char *parse_parameters(struct parser *parser, struct class *class, char *params,
-		insert_implicit_cb new_implicit, new_param_cb new_param,
+		new_insert_cb new_insert, new_param_cb new_param,
 		check_name_cb check_name)
 {
 	struct classtype *classtype;
@@ -1271,8 +1350,8 @@ static char *parse_parameters(struct parser *parser, struct class *class, char *
 				/* grammar error, ignore */
 				state = FINDVAR;
 			} else if ((decl.u.class = find_class_e(parser, name, next)) != NULL) {
-				decl.type = AT_CLASS;
-				state = DECLVAR;
+				decl.pointerlevel = 0;
+				goto parse_class;
 			}
 			continue;
 		} else if (*curr == ',' || *curr == ')') {
@@ -1304,14 +1383,20 @@ static char *parse_parameters(struct parser *parser, struct class *class, char *
 		default:
 			if ((classtype = find_classtype_e(parser, name, next)) != NULL) {
 				if (classtype->implicit) {
-					if (new_implicit)
-						new_implicit(parser, name);
+					if (new_insert)
+						new_insert(parser, name, "struct ", name);
 					else
 						print_implicit_struct(parser, classtype, name);
 				}
-				decl.type = AT_CLASS;
 				decl.u.class = classtype->class;
 				decl.pointerlevel = classtype->pointerlevel;
+			  parse_class:
+				decl.type = AT_CLASS;
+				if (*next == '<') {
+					decl.type = AT_TEMPLINST;
+					next = parse_templargs(parser, class,
+						decl.u.class, next, &decl.args);
+				}
 				state = DECLVAR;
 			} else if ((decl.u.mp = find_methodptr_e(parser, name, next)) != NULL) {
 				/* TODO: test this */
@@ -1320,6 +1405,12 @@ static char *parse_parameters(struct parser *parser, struct class *class, char *
 			} else if (class == NULL) {
 				break;
 			} else if ((decl.u.tp = find_templpar_e(class, name, next)) != NULL) {
+				if (new_insert) {
+					if (*next == ' ')
+						next++;
+					new_insert(parser, name, decl.u.tp->implstr, next);
+				} else
+					next = replace_templpar(parser, decl.u.tp, name, next);
 				decl.type = AT_TEMPLPAR;
 				state = DECLVAR;
 			}
@@ -1374,7 +1465,7 @@ static struct member *dupmemberto(struct parser *parser, struct class *class,
 	int size = offsetof(struct member, name) + strlen(parentmember->name) + 1;
 	struct member *member;
 
-	member = pgenalloc(parser, size);
+	member = pgenalloc(size);
 	if (member == NULL)
 		return NULL;
 
@@ -1399,12 +1490,15 @@ static char *get_member_nameinsert(struct parser *parser,
 	return member->nameinsert;
 }
 
-static void save_implicit_insert(struct parser *parser, char *position)
+static void save_param_insert(struct parser *parser, char *from, char *text, char *to)
 {
-	if (grow_dynarr(&parser->implicit_structs))
+	if (grow_dynarr_to(&parser->param_inserts, parser->param_inserts.num + 3))
 		return;
 
-	parser->implicit_structs.mem[parser->implicit_structs.num++] = position;
+	parser->param_inserts.mem[parser->param_inserts.num++] = from;
+	parser->param_inserts.mem[parser->param_inserts.num++] = text;
+	parser->param_inserts.mem[parser->param_inserts.num++] = to;
+	parser->param_inserts_delta += strlen(text) - (to - from);
 }
 
 static void save_param_type(struct parser *parser, int position,
@@ -1413,7 +1507,7 @@ static void save_param_type(struct parser *parser, int position,
 	struct dynarr *dynarr = &parser->param_types;
 	struct anytype *newtype;
 
-	if (grow_dynarr_to(dynarr, position) < 0)
+	if (grow_dynarr_to(dynarr, position+1) < 0)
 		return;
 
 	newtype = malloc(sizeof(*newtype));
@@ -1430,26 +1524,29 @@ static void addmember_to_children(struct parser *parser, char *parsepos,
 
 static char *insert_implicit_structs(struct parser *parser, char *src, char *srcend)
 {
-	char *dest, *insertpos, *params_new;
-	unsigned i, remaining;
+	char *dest, *from, *text, *params_new;
+	size_t textlen;
+	unsigned i;
 
-	params_new = malloc(srcend - src + 1 + parser->implicit_structs.num * 7);  /* "struct " */
+	params_new = malloc(srcend - src + 1 + parser->param_inserts_delta);
 	if (params_new == NULL)
 		return NULL;
 
-	for (dest = params_new, i = 0; i < parser->implicit_structs.num; i++) {
-		insertpos = parser->implicit_structs.mem[i];
-		memcpy(dest, src, insertpos - src);
-		dest += insertpos - src;
-		memcpy(dest, "struct ", 7);
-		dest += 7;
-		src = insertpos;
+	for (dest = params_new, i = 0; i < parser->param_inserts.num;) {
+		from = parser->param_inserts.mem[i++];
+		text = parser->param_inserts.mem[i++];
+		memcpy(dest, src, from - src);
+		dest += from - src;
+		textlen = strlen(text);
+		memcpy(dest, text, textlen);
+		dest += textlen;
+		src = parser->param_inserts.mem[i++];
 	}
 	/* src moved in meanwhile, calculate remaining */
-	remaining = srcend - src;
-	memcpy(dest, src, remaining);
-	dest[remaining] = 0;
-	parser->implicit_structs.num = 0;
+	textlen = srcend - src;
+	memcpy(dest, src, textlen);
+	dest[textlen] = 0;
+	parser->param_inserts.num = 0;
 	return params_new;
 }
 
@@ -1459,8 +1556,9 @@ static void parse_parameters_to(struct parser *parser, struct class *class,
 	char *paramsend;
 
 	/* save_param_class stores params in parser->param_types */
+	parser->param_inserts_delta = 0;
 	paramsend = parse_parameters(parser, class, params,
-		params_out ? save_implicit_insert : NULL, save_param_type, NULL);
+		params_out ? save_param_insert : NULL, save_param_type, NULL);
 	/* move the dynarr (array pointer etc) to requested array */
 	memcpy(param_types, &parser->param_types, sizeof(*param_types));
 	memset(&parser->param_types, 0, sizeof(parser->param_types));
@@ -1523,7 +1621,8 @@ static struct member *addmember(struct parser *parser, struct class *class,
 		goto out;
 	}
 
-	copy_anytype(&member->rettype, rettype);
+	/* take ownership of template args, if any */
+	move_anytype(&member->rettype, rettype);
 	if (params) {
 		if (is_void_params(params))
 			member->paramstext = ")";
@@ -1559,6 +1658,7 @@ static struct member *addmember(struct parser *parser, struct class *class,
 					member->rettype.type = AT_CLASS;
 					member->rettype.u.class = class;
 					member->rettype.pointerlevel = 1;
+					member->rettype.from_tp = 0;
 				} else if (to_class(rettype) != class
 						|| rettype->pointerlevel != 1)
 					pr_err(parsepos, "constructor must be void or return "
@@ -1968,22 +2068,6 @@ static int find_local_e_class(struct parser *parser, char *name, char *nameend,
 	return 0;
 }
 
-static char *replace_templpar(struct parser *parser,
-		struct templpar *par, char *pos, char *next)
-{
-	flush_until(parser, pos);
-	if (par->impl)
-		outprintf(parser, "struct %s *", par->impl->name);
-	else
-		outwrite(parser, "void *", 6);
-	if (*next == ' ')
-		next++;
-	return parser->pf.writepos = next;
-}
-
-static char *parse_templargs(struct parser *parser, struct class *class,
-		struct class *parentclass, char *next, struct dynarr *templ_map);
-
 enum print_implicit {
 	SKIP_IMPLICIT,   /* boolean compatible */
 	PRINT_IMPLICIT,
@@ -1993,7 +2077,6 @@ static char *parse_type(struct parser *parser, struct class *class, char *pos,
 		struct anytype *rettype, enum print_implicit print_implicit)
 {
 	struct classtype *classtype;
-	struct templpar *templpar;
 	char *name, *next;
 
 	rettype->implicit = 0;
@@ -2031,8 +2114,10 @@ static char *parse_type(struct parser *parser, struct class *class, char *pos,
 			rettype->implicit = classtype->implicit;
 		  class:
 			rettype->type = AT_CLASS;
+			rettype->from_tp = 0;
 			if (*next == '<') {
-				 next = parse_templargs(parser, class, classtype->class,
+				rettype->type = AT_TEMPLINST;
+				next = parse_templargs(parser, class, classtype->class,
 						next, &rettype->args);
 			}
 			break;
@@ -2043,10 +2128,9 @@ static char *parse_type(struct parser *parser, struct class *class, char *pos,
 		}
 		if (class == NULL)
 			break;
-		if ((templpar = find_templpar_e(class, pos, next)) != NULL) {
+		if ((rettype->u.tp = find_templpar_e(class, pos, next)) != NULL) {
 			if (print_implicit)
-				next = replace_templpar(parser, templpar, pos, next);
-			rettype->u.tp = templpar;
+				next = replace_templpar(parser, rettype->u.tp, pos, next);
 			rettype->type = AT_TEMPLPAR;
 			break;
 		}
@@ -2067,7 +2151,8 @@ static char *parse_templargs(struct parser *parser, struct class *class,
 	if (!parentclass->templpars.num_entries)
 		pr_err(next, "%s is not a template class",
 			parentclass->name);
-	for (;;) {
+	/* next is at '<', skip */
+	for (next++;;) {
 		name = skip_whitespace(parser, next);
 		if (!iswordstart(*name)) {
 			pr_err(name, "expected a name");
@@ -2077,10 +2162,11 @@ static char *parse_templargs(struct parser *parser, struct class *class,
 		if (!argtype)
 			goto next;
 
-		next = parse_type(parser, class, name, argtype, PRINT_IMPLICIT);
+		next = parse_type(parser, class, name, argtype, SKIP_IMPLICIT);
 		if (argtype->type == AT_UNKNOWN)
 			pr_err(name, "unknown template type");
-
+		if (argtype->type != AT_TEMPLPAR && argtype->pointerlevel == 0)
+			pr_err(name, "template argument must be a pointer type");
 	  next:
 		next = skip_whitespace(parser, next);
 		sep = next++;
@@ -2204,7 +2290,7 @@ static void mergemember(struct parser *parser, struct class *class, struct membe
 	}
 }
 
-static void add_ancestor(struct parser *parser, struct class *class,
+static struct ancestor *add_ancestor(struct parser *parser, struct class *class,
 		int from_virtual, struct parent *origin_parent,
 		char *via_class_name, char *link, char *path)
 {
@@ -2216,7 +2302,7 @@ static void add_ancestor(struct parser *parser, struct class *class,
 			(int)offsetof(struct ancestor, path),
 			"", via_class_name, link, path);
 	if (ancestor == NULL)
-		return;
+		return NULL;
 
 	ancestor->next = NULL;
 	ancestor->parent = origin_parent;
@@ -2238,23 +2324,64 @@ static void add_ancestor(struct parser *parser, struct class *class,
 			orig_ancestor->next = ancestor;
 		}
 	}
+
+	return ancestor;
+}
+
+static void map_ancestor_templ_pars(struct parser *parser, struct ancestor *new_ancestor,
+		struct ancestor *ancestor, struct parent *parent)
+{
+	struct anytype *ta;
+	unsigned i;
+
+	new_ancestor->templ_map.num = 0;
+	if (ancestor->templ_map.num == 0)
+		return;
+
+	new_ancestor->templ_map.mem = pgenalloc(ancestor->templ_map.num * sizeof(void*));
+	if (new_ancestor->templ_map.mem == NULL)
+		return;
+
+	new_ancestor->templ_map.num = new_ancestor->templ_map.max = ancestor->templ_map.num;
+	for (i = 0; i < ancestor->templ_map.num; i++) {
+		/* get template argument passed by parent class */
+		ta = ancestor->templ_map.mem[i];
+		/* translate template type, others stay as-is */
+		if (ta && ta->type == AT_TEMPLPAR) {
+			/* lookup the mapping to our class */
+			if (ta->u.tp->index < parent->templ_map.num)
+				ta = parent->templ_map.mem[ta->u.tp->index];
+			else
+				ta = NULL;
+		}
+		new_ancestor->templ_map.mem[i] = ta;
+	}
 }
 
 static void add_ancestors(struct parser *parser, struct class *class, struct parent *parent)
 {
 	struct class *parentclass = parent->class;
 	struct hasho_entry *ancestor_entry;
-	struct ancestor *ancestor;
+	struct ancestor *ancestor, *new_ancestor;
 	int from_virtual;
 
-	add_ancestor(parser, class, parent->is_virtual, parent, parentclass->name, "", "");
+	new_ancestor = add_ancestor(parser, class, parent->is_virtual,
+		parent, parentclass->name, "", "");
+	if (new_ancestor == NULL)
+		return;
+
+	memcpy(&new_ancestor->templ_map, &parent->templ_map, sizeof(new_ancestor->templ_map));
 	hasho_foreach(ancestor_entry, &parentclass->ancestors) {
 		ancestor = ancestor_entry->value;
 		do {
 			from_virtual = ancestor->from_virtual | parent->is_virtual;
-			add_ancestor(parser, class, from_virtual, ancestor->parent,
-				parentclass->name, parent->is_virtual ? "->" : ".",
-				ancestor->path);
+			new_ancestor = add_ancestor(parser, class, from_virtual,
+				ancestor->parent, parentclass->name,
+				parent->is_virtual ? "->" : ".", ancestor->path);
+			if (new_ancestor == NULL)
+				return;
+
+			map_ancestor_templ_pars(parser, new_ancestor, ancestor, parent);
 			ancestor = ancestor->next;
 		} while (ancestor);
 	}
@@ -2885,7 +3012,7 @@ static void print_member_decls(struct parser *parser, struct class *class)
 static char *parse_templpars(struct parser *parser, struct class *class, char *next)
 {
 	char *name, *nameend, *implstr, sep;
-	struct anytype impltype;
+	struct templpar *tp;
 
 	/* flush to skip template parameters in C output */
 	flush_until(parser, next);
@@ -2897,24 +3024,25 @@ static char *parse_templpars(struct parser *parser, struct class *class, char *n
 		}
 		nameend = skip_word(name);
 		next = skip_whitespace(parser, nameend);
+		tp = addtemplpar(parser, class, name, nameend);
 		if (*next == ':') {
 			implstr = skip_whitespace(parser, next+1);
 			if (!iswordstart(*implstr)) {
 				pr_err(name, "expected a type");
 				goto nextpar;
 			}
-			next = parse_type(parser, class, implstr, &impltype, SKIP_IMPLICIT);
-			if (impltype.type != AT_CLASS) {
+			next = parse_type(parser, class, implstr, &tp->impl, SKIP_IMPLICIT);
+			if (tp->impl.type != AT_CLASS) {
 				pr_err(implstr, "expected a class type");
 				goto nextpar;
 			}
-			if (impltype.pointerlevel != 1) {
+			if (tp->impl.pointerlevel != 1) {
 				pr_err(implstr, "expected single pointer type");
 				goto nextpar;
 			}
+			tp->implstr = psaprintf(parser, "struct %s *", tp->impl.u.class->name);
 		}
 
-		addtemplpar(parser, class, name, nameend, impltype.u.class);
 	  nextpar:
 		sep = *next++;
 		if (sep == '>')
@@ -2957,6 +3085,7 @@ static struct class *parse_struct(struct parser *parser, char *openbrace)
 		decl.u.class = class;
 		decl.pointerlevel = 0;
 		decl.implicit = 1;
+		decl.from_tp = 0;
 		addclasstype(parser, classname, classnameend, &decl);
 		class->is_final = parser->saw_final;
 		class->no_dyncast = parser->saw_nodyncast;
@@ -3490,19 +3619,31 @@ static struct member *parse_member(struct parser *parser, char *stmtstart,
 	char *args, *flush_until, *insert_text, *continue_at;
 	char *newscope, insert_buf[16], *vmtpath, *vmtaccess;
 	enum insert_continue insert_continue;
-	int add_this, has_arguments, scope_varnr, insert_index = -1;
+	int add_this, has_arguments, scope_varnr, insert_index;
 
 	if (class == NULL)
 		return NULL;
-	if ((member = find_member_e(class, name, nameend)) == NULL)
-		return NULL;
-
-	if (exprstart && member->props.is_static) {
-		pr_err(name, "cannot access static member %s::%s",
-			member->origin->name, member->name);
+	if ((member = find_member_e(class, name, nameend)) == NULL) {
+		/* without expr, looking up any name in 'this' causes many false positives */
+		if (exprstart)
+			pr_err(name, "cannot find member");
 		return NULL;
 	}
 
+	if (exprstart) {
+		if (member->props.is_static) {
+			pr_err(name, "cannot access static member %s::%s",
+				member->origin->name, member->name);
+			return NULL;
+		}
+		if (expr->from_tp) {
+			insert_index = addinsert_format(parser, -1, exprstart, exprstart,
+				CONTINUE_BEFORE, "((struct %s*)", class->name);
+			addinsert(parser, insert_index, exprend, ")", exprend, CONTINUE_AFTER);
+		}
+	}
+
+	insert_index = -1;
 	continue_at = NULL;
 	insert_continue = CONTINUE_AFTER;
 	add_this = !exprstart && !member->props.is_static;
@@ -3539,6 +3680,7 @@ static struct member *parse_member(struct parser *parser, char *stmtstart,
 				insert_text = "this->";
 				continue_at = name;
 			}
+
 			/* output vmt type cast */
 			insert_index = addinsert_format(parser, insert_index,
 				flush_until, continue_at, CONTINUE_BEFORE,
@@ -3625,7 +3767,16 @@ static struct member *parse_member(struct parser *parser, char *stmtstart,
 			flush_until, insert_text, continue_at, insert_continue);
 
 out:
-	copy_anytype(retdecl, &member->rettype);
+	if (member->rettype.type == AT_TEMPLPAR && expr->type == AT_TEMPLINST) {
+		if (member->rettype.u.tp->index >= expr->args.num) {
+			pr_err(name, "(ierr) tp index out of range");
+			retdecl->type = AT_UNKNOWN;
+		} else {
+			copy_anytype(retdecl, expr->args.mem[member->rettype.u.tp->index]);
+			retdecl->from_tp = 1;
+		}
+	} else
+		copy_anytype(retdecl, &member->rettype);
 	*retparams = &member->params;
 	return member;
 }
@@ -4011,18 +4162,22 @@ static void check_conflict_param_member(struct parser *parser,
 		member->name, inheritmsg, inherittext);
 }
 
-static void insertancestor(struct parser *parser,
-		char *exprstart, char *name, char *end,
-		struct class *target, struct anytype *expr)
+static void insertancestor(struct parser *parser, char *exprstart,
+		char *name, char *end, struct anytype *target, struct anytype *expr)
 	/* assumes expr->type == AT_CLASS */
 {
 	struct ancestor *ancestor;
 	int insert_index = -1;
 	char *pre, *post;
 
-	ancestor = accessancestor(expr, exprstart, name, target, &pre, &post);
+	ancestor = accessancestor(expr, exprstart, name, target->u.class, &pre, &post);
 	if (ancestor == NULL)
 		return;
+
+	if (cmp_templ_args(expr, target, ancestor) < 0) {
+		pr_err(name, "incompatible template types");
+		return;
+	}
 
 	if (pre[0])
 		insert_index = addinsert(parser, insert_index,
@@ -4114,8 +4269,7 @@ static void parse_function(struct parser *parser, char *next)
 	hash_clear(&parser->locals);
 	parser->nested_locals.num = 0;
 	thispath = NULL;
-	thisptr.type = AT_UNKNOWN;
-	thisptr.u.class = NULL;
+	memset(&thisptr, 0, sizeof(thisptr));
 	if (funcname) {   /* funcname assigned means there is a classname::funcname */
 		if ((thisptr.u.class = find_class(parser, classname)) != NULL) {
 			/* lookup method name */
@@ -4194,6 +4348,7 @@ static void parse_function(struct parser *parser, char *next)
 			decl.type = AT_CLASS;
 			decl.u.class = thisptr.u.class;
 			decl.pointerlevel = 1;
+			decl.from_tp = 0;
 			name = "this";
 			nameend = name + 4;  /* "this" */
 			addvariable(parser, thisptr.u.class, 0, &decl, 0, name, nameend, NULL);
@@ -4243,6 +4398,10 @@ static void parse_function(struct parser *parser, char *next)
 
 	seqparen = parenlevel = exprdecl[0].pointerlevel = numwords = 0;
 	exprdecl[0].type = targetdecl[0].type = decl.type = immdecl.type = AT_UNKNOWN;
+	exprdecl[0].args.mem = targetdecl[0].args.mem = NULL;
+	exprdecl[0].args.max = targetdecl[0].args.max = 0;
+	decl.args.mem = immdecl.args.mem = NULL;
+	decl.args.max = immdecl.args.max = 0;
 	have_retvar = need_retvar = used_retvar = void_retvar = 0;
 	stmtstart = exprstart[0] = memberstart[0] = exprend = accinhcolons = NULL;
 	funcvarname = funcvarnameend = name = NULL;  /* make compiler happy */
@@ -4309,8 +4468,8 @@ static void parse_function(struct parser *parser, char *next)
 					state = FINDVAR;
 				} else if ((decl.u.class =
 						find_class_e(parser, name, next)) != NULL) {
+					decl.implicit = 0;
 					decl.pointerlevel = 0;
-					decl.type = AT_CLASS;
 					goto decl_or_cast;
 				}
 				continue;
@@ -4383,35 +4542,45 @@ static void parse_function(struct parser *parser, char *next)
 				name = skip_whitespace(parser, curr + 4);  /* "new " */
 				next = skip_word(name);
 				classtype = find_classtype_e(parser, name, next);
-				if (classtype) {
-					if (!classtype->pointerlevel) {
-						immdecl.type = AT_CLASS;
-						immdecl.u.class = classtype->class;
-						immdecl.pointerlevel = 1;
-						if (immdecl.u.class->constructor) {
-							addinsert(parser, -1, curr,
-								"new_", name, CONTINUE_AFTER);
-							state = CONSTRUCT;
-						} else {
-							if (classtype->implicit) {
-								str1 = "(struct ";
-								str2 = "*)malloc(sizeof(struct ";
-							} else {
-								str1 = "(";
-								str2 = "*)malloc(sizeof(";
-							}
-							/* first print a cast to dest type */
-							insert_index = addinsert(parser, -1,
-								curr, str1, name, CONTINUE_AFTER);
-							/* second the malloc, go back to name */
-							insert_index = addinsert(parser,
-								insert_index, next, str2,
-								name, CONTINUE_AFTER);
-							addinsert(parser, insert_index, next,
-								"))", next, CONTINUE_AFTER);
-						}
-					} else
-						pr_err(name, "'new type' cannot be pointer type");
+				if (classtype == NULL)
+					continue;
+				if (classtype->pointerlevel) {
+					pr_err(name, "'new <type>' cannot be pointer type");
+					continue;
+				}
+
+				immdecl.type = AT_CLASS;
+				immdecl.u.class = classtype->class;
+				immdecl.pointerlevel = 1;
+				immdecl.from_tp = 0;
+				if (immdecl.u.class->constructor) {
+					addinsert(parser, -1, curr,
+						"new_", name, CONTINUE_AFTER);
+					state = CONSTRUCT;
+				} else {
+					if (classtype->implicit) {
+						str1 = "(struct ";
+						str2 = "*)malloc(sizeof(struct ";
+					} else {
+						str1 = "(";
+						str2 = "*)malloc(sizeof(";
+					}
+					/* first print a cast to dest type */
+					insert_index = addinsert(parser, -1,
+						curr, str1, name, CONTINUE_AFTER);
+					/* second the malloc, go back to name */
+					insert_index = addinsert(parser, insert_index,
+						next, str2, name, CONTINUE_AFTER);
+					addinsert(parser, insert_index, next,
+						"))", next, CONTINUE_AFTER);
+				}
+				if (*next == '<') {
+					tmplpos = next;
+					immdecl.type = AT_TEMPLINST;
+					next = parse_templargs(parser, thisptr.u.class,
+						immdecl.u.class, next, &immdecl.args);
+					/* don't print template arguments */
+					addinsert(parser, -1, tmplpos, "", next, CONTINUE_AFTER);
 				}
 				continue;
  			} else if (state == STMTSTART && strprefixcmp("delete ", curr)) {
@@ -4532,20 +4701,23 @@ static void parse_function(struct parser *parser, char *next)
 				/* maybe it's a type, to declare variable, or a cast */
 				classtype = find_classtype_e(parser, name, next);
 				if (classtype != NULL) {
-					decl.type = AT_CLASS;
 					decl.u.class = classtype->class;
 					decl.pointerlevel = classtype->pointerlevel;
 					decl.implicit = classtype->implicit;
+				  decl_or_cast:
+					decl.type = AT_CLASS;
+					decl.from_tp = 0;
 					if (*next == '<') {
 						tmplpos = next;
 						decl.type = AT_TEMPLINST;
 						next = parse_templargs(parser, thisptr.u.class,
-							classtype->class, next, &decl.args);
+							decl.u.class, next, &decl.args);
 					}
-					/* we don't want implicit struct for class::func */
-					if (*next != ':') {
-						/* if we are in expression,
-						   not safe to print directly */
+					/* we don't want implicit struct for class::func
+					   note that classtype is not valid coming from
+					   "struct " path, but then decl.implicit == 0 */
+					if (*next != ':' && decl.implicit) {
+						/* unsafe to print directly in expression */
 						if (state == STMTSTART)
 							print_implicit_struct(
 								parser, classtype, name);
@@ -4563,7 +4735,6 @@ static void parse_function(struct parser *parser, char *next)
 								tmplpos, "", next, CONTINUE_AFTER);
 						}
 					}
-				  decl_or_cast:
 					if (state == STMTSTART) {
 						nextstate = DECLVAR;
 					} else if (seqparen >= 2 && exprdecl[parenlevel-2]
@@ -4714,7 +4885,7 @@ static void parse_function(struct parser *parser, char *next)
 					&& target->pointerlevel == expr->pointerlevel
 					&& target->pointerlevel <= 1)
 				insertancestor(parser, exprstart[parenlevel],
-						name, curr, target->u.class, expr);
+						name, curr, target, expr);
 			exprstart[parenlevel] = NULL;
 		}
 		if (initializer && (*curr == ',' || *curr == ';')) {
@@ -4807,6 +4978,7 @@ static void parse_function(struct parser *parser, char *next)
 				immdecl.type = AT_CLASS;
 				immdecl.u.class = member->definition;
 				immdecl.pointerlevel = 1;
+				immdecl.from_tp = 0;
 				goto accessinherited;
 			} else if (to_class(&decl)) {
 				immdecl = decl;

@@ -8,7 +8,7 @@ SUFFIXES:=
 %: SCCS/s.%
 CFLAGS=-Iinc -I.. -Wall -Wextra -Wno-unused-parameter -g
 CC=gcc
-TESTS:=$(patsubst %.coo,%.coo.c,$(wildcard fail*.coo))
+TESTS:=$(patsubst %.coo,%_run,$(wildcard fail*.coo))
 TESTS:=$(TESTS) $(patsubst %.coo,%_exe,$(wildcard good*.coo))
 TESTS:=$(TESTS) $(patsubst %.coo,%_dbg,$(wildcard good*.coo))
 TESTS:=$(TESTS) $(patsubst %.coo,%_run,$(wildcard good*.coo))
@@ -24,15 +24,14 @@ coortlopt.o: ../coortl.c
 	$(CC) $(CFLAGS) -O2 -c -o $@ $<
 coortldbg.o: ../coortl.c
 	$(CC) $(CFLAGS) -c -o $@ $<
-fail%.coo.c: fail%.coo fail%.exp ../coo
+fail%_run: fail%.coo fail%.exp ../coo
 	../coo $< 2>&1 | diff -u fail$*.exp -
 good%.coo.c: good%.coo good%.exp ../coo
-	../coo $< 2>&1
+	../coo $< 2>&1 && touch good$*.coo.c
 	diff -u good$*.exp good$*.coo.c
 good%_exe: good%.coo.c coortlopt.o
 	$(CC) $(CFLAGS) -O2 -o $@ $^
 good%_dbg: good%.coo.c coortldbg.o
 	$(CC) $(CFLAGS) -o $@ $^
-good%_run: good%_exe
+good%_run: good%_exe good%.ref
 	./$< | diff -u good$*.ref -
-.PHONY: example.coo.c good*_run

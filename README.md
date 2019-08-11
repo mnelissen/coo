@@ -466,6 +466,7 @@ allocated with malloc / realloc / free.
 * cleanup parser memory after use, add destroy_parser function
 * remove get_vmt_name, replace with vmt->class->name or vmt->modified->class->name
 * check dynarr memleaks in anytype local variables
+* save param_types directly to target in parse_parameters_to
 
 ## License
 

@@ -27,6 +27,11 @@ struct M {
 	int m;
 };
 
+void B::set_b2(U arg)
+{
+	b2 = arg;
+}
+
 void C::set_b1_c1(T arg)
 {
 	c1 = arg;
@@ -35,17 +40,21 @@ void C::set_b1_c1(T arg)
 
 int main(void)
 {
+	A a1, a2;
 	B<L*,A*> *b_a;
 	C<L*> *c = new C<L*>;
 	D<L*,M*> *d = new D<L*,M*>;
 	L l1, l2;
 	b_a = c;
 	c->set_b1_c1(&l1);
-	b_a->b1->l = 5;
-	printf("l=%d ", l1.l);
+	c->set_b2(&a1);
+	b_a->b2->a = 2;
+	b_a->b1->l = 3;
 	b_a = d;
 	d->set_b1_c1(&l2);
+	d->set_b2(&a2);
+	b_a->b2->a = 5;
 	b_a->b1->l = 6;
-	printf("l=%d\n", l2.l);
+	printf("a1=%d l1=%d a2=%d l2=%d", a1.a, l1.l, a2.a, l2.l);
 	return 0;
 }

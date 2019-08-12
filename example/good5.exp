@@ -38,6 +38,11 @@ struct M {
 };
 
 #line 30 "good5.coo"
+static void B_set_b2(struct B *this, void *arg)
+{
+	this->b2 = arg;
+}
+
 void C_set_b1_c1(struct C *this, void *arg)
 {
 	this->c1 = arg;
@@ -46,27 +51,37 @@ void C_set_b1_c1(struct C *this, void *arg)
 
 int main(void)
 {
+	struct A a1, a2;
 	struct B *b_a;
 	struct C *c = (struct C*)malloc(sizeof(struct C));
 	struct D *d = (struct D*)malloc(sizeof(struct D));
 	struct L l1, l2;
 	b_a = &c->B;
 	C_set_b1_c1(c, &l1);
-	((struct L*)b_a->b1)->l = 5;
-	printf("l=%d ", l1.l);
+	B_set_b2(&c->B, &a1);
+	((struct A*)b_a->b2)->a = 2;
+	((struct L*)b_a->b1)->l = 3;
 	b_a = &d->C.B;
 	C_set_b1_c1(&d->C, &l2);
+	B_set_b2(&d->C.B, &a2);
+	((struct A*)b_a->b2)->a = 5;
 	((struct L*)b_a->b1)->l = 6;
-	printf("l=%d\n", l2.l);
+	printf("a1=%d l1=%d a2=%d l2=%d", a1.a, l1.l, a2.a, l2.l);
 	return 0;
 }
 
-#line 65 "good5.coo.c"
+#line 74 "good5.coo.c"
 #include <stddef.h>
 #include <stdint.h>
 #pragma pack(8)
 const struct C_coo_class {
 	uint32_t num_parents;
 } C_coo_class = {
+	0,
+};
+
+const struct B_coo_class {
+	uint32_t num_parents;
+} B_coo_class = {
 	0,
 };

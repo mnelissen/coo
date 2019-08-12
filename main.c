@@ -318,6 +318,13 @@ struct parse_file {
 	char coo_rtl_included;    /* included coortl.h? */
 };
 
+struct allocator {
+	void *memory;             /* first memory block for allocation */
+	void *memblock;           /* current memory block for allocation */
+	size_t memptr;            /* pointer to next available memory */
+	size_t memavail;          /* available memory in current block */
+};
+
 struct parser {
 	struct parse_file pf;     /* parse state for currently parsing file */
 	char *include_ext_in;     /* parse only include files with this ext */
@@ -339,9 +346,8 @@ struct parser {
 	struct dynarr *inserts;       /* either inserts_arr or a initializer's */
 	struct hash files_seen;       /* struct file_id pointers */
 	char *newfilename_end;        /* pointer to end of new input filename */
-	char *memblock;               /* current memory block for allocation */
-	char *memptr;                 /* pointer to next available memory */
-	size_t memavail;              /* available memory in current block */
+	struct allocator global_mem;  /* global memory for structs/global vars */
+	struct allocator func_mem;    /* function memory for local vars */
 	struct class *class;          /* parsing function of this class */
 	char *last_parentname;        /* cache to optimize parentname init */
 	int include_ext_in_len;       /* length of include_ext_in, optimization */
@@ -366,32 +372,65 @@ DEFINE_STRHASH_FIND_E(parser, methodptrtypes, methodptr, methodptr)
 
 pid_t g_pid;
 
-static void *palloc(struct parser *parser, size_t alignmask, size_t size)
+static void init_allocator(struct allocator *alloc)
 {
-	char *newblock;
+	/* init memblock to point to "memory", a pointer to NULL
+	   this will trigger block allocation upon first use/alloc
+	   and then initialize alloc->memory to point to first block */
+	alloc->memblock = &alloc->memory;
+}
+
+/* init allocator to start using provided block */
+static void *useblock(struct allocator *alloc, void *block)
+{
+	alloc->memblock = block;
+	alloc->memptr = (size_t)block + sizeof(void*);
+	alloc->memavail = MEMBLOCK_SIZE - sizeof(void*);
+	return block;
+}
+
+static void *nextblock(struct allocator *alloc)
+{
+	char *nextblock = *(void**)alloc->memblock;
+
+	if (nextblock == NULL) {
+		nextblock = malloc(MEMBLOCK_SIZE);
+		if (!nextblock)
+			return NULL;
+
+		/* simple linked list */
+		*(void**)alloc->memblock = nextblock;
+		*(void**)nextblock = NULL;
+	}
+	return useblock(alloc, nextblock);
+}
+
+static void areset(struct allocator *alloc)
+{
+	useblock(alloc, alloc->memory);
+}
+
+static void *aalloc(struct allocator *alloc, size_t alignmask, size_t size)
+{
+	size_t newaddr, nextptr;
 
 	/* sanity check, only meant for small blocks */
 	if (size > MEMBLOCK_SIZE / 2)
 		return NULL;
-	if (parser->memavail < size) {
-		newblock = malloc(MEMBLOCK_SIZE);
-		if (!newblock)
-			return NULL;
-		/* simple linked list */
-		*(void**)newblock = parser->memblock;
-		parser->memblock = newblock;
-		parser->memptr = newblock + sizeof(void*);
-		parser->memavail = MEMBLOCK_SIZE - sizeof(void*);
-	}
+	if (alloc->memavail < size && nextblock(alloc) == NULL)
+		return NULL;
 
-	newblock = (void*)((size_t)(parser->memptr + alignmask) & ~alignmask);
-	parser->memavail -= newblock + size - parser->memptr;
-	parser->memptr = newblock + size;
-	return newblock;
+	newaddr = (alloc->memptr + alignmask) & ~alignmask;
+	nextptr = newaddr + size;
+	alloc->memavail -= nextptr - alloc->memptr;
+	alloc->memptr = nextptr;
+	return (void*)newaddr;
 }
 
-#define pstralloc(s) palloc(parser,0,s)
-#define pgenalloc(s) palloc(parser,sizeof(void*)-1,s)
+#define astralloc(s) aalloc(alloc,0,s)
+#define xgenalloc(a,s) aalloc(a,sizeof(void*)-1,s)
+#define agenalloc(s) xgenalloc(alloc,s)
+#define pgenalloc(s) xgenalloc(&parser->global_mem,s)
 
 static void parser_nextline(struct parser *parser, char *pos)
 {
@@ -694,16 +733,18 @@ static char *strdupto(char *dest, const char *src)
 	return stredupto(dest, src, src + strlen(src));
 }
 
-static char *pstredup(struct parser *parser, const char *src, const char *until)
+static char *astredup(struct allocator *alloc, const char *src, const char *until)
 {
 	int len = until-src;
-	char *newdest = pstralloc(len+1);
+	char *newdest = astralloc(len+1);
 	if (newdest == NULL)
 		return NULL;
 	memcpy(newdest, src, len);
 	newdest[len] = 0;
 	return newdest;
 }
+
+#define pstredup(src, until) astredup(&parser->global_mem, src, until)
 
 static char *replace_ext_temp(char *filename, char *strend, char *bufend, char *new_ext)
 {
@@ -761,7 +802,7 @@ static attr_format(3,4) char *smaprintf(char *buffer, size_t size, const char *f
 	return vsmaprintf(buffer, size, format, va_args);
 }
 
-static attr_format(2,3) char *psaprintf(struct parser *parser, const char *format, ...)
+static attr_format(2,3) char *aaprintf(struct allocator *alloc, const char *format, ...)
 {
 	va_list va_args, va2;
 	char *str;
@@ -771,11 +812,13 @@ static attr_format(2,3) char *psaprintf(struct parser *parser, const char *forma
 	va_copy(va2, va_args);
 	len = vsnprintf(NULL, 0, format, va2);
 	va_end(va2);
-	if ((len < 0) || (str = pstralloc(len+1)) == NULL)
+	if ((len < 0) || (str = astralloc(len+1)) == NULL)
 		return NULL;
 	vsnprintf(str, len+1, format, va_args);
 	return str;
 }
+
+#define psaprintf(p, ...) aaprintf(&parser->global_mem, __VA_ARGS__)
 
 #ifdef _WIN32
 
@@ -1079,16 +1122,13 @@ static void close_tempscope(struct parser *parser, char *pos)
 
 /*** parser helpers ***/
 
-static void *realloc_namestruct(struct parser *parser, void *ptr,
+static void *realloc_namestruct(struct allocator *alloc, void *ptr,
 		size_t structsize, char *name, char *nameend)
 {
 	size_t len = nameend-name, allocsize = structsize + len + 1;
 	char *ret, *dest;
 
-	if (parser)
-		ret = pgenalloc(allocsize);
-	else
-		ret = realloc(ptr, allocsize);
+	ret = agenalloc(allocsize);
 	if (ret == NULL)
 		return NULL;
 	/* if never allocated yet, zero-initialize */
@@ -1119,7 +1159,7 @@ static struct class *addclass(struct parser *parser, char *classname, char *name
 {
 	struct class *class;
 
-	class = alloc_namestruct(parser, struct class, classname, nameend);
+	class = alloc_namestruct(&parser->global_mem, struct class, classname, nameend);
 	if (class == NULL)
 		return NULL;
 
@@ -1139,7 +1179,7 @@ static struct classtype *addclasstype(struct parser *parser, char *typename,
 {
 	struct classtype *type;
 
-	type = alloc_namestruct(parser, struct classtype, typename, nameend);
+	type = alloc_namestruct(&parser->global_mem, struct classtype, typename, nameend);
 	if (type == NULL)
 		return NULL;
 
@@ -1161,7 +1201,7 @@ static struct templpar *addtemplpar(struct parser *parser,
 	if (grow_dynarr(&class->templ_arr) < 0)
 		return NULL;
 
-	tp = alloc_namestruct(parser, struct templpar, typename, nameend);
+	tp = alloc_namestruct(&parser->global_mem, struct templpar, typename, nameend);
 	if (tp == NULL)
 		return NULL;
 
@@ -1299,7 +1339,7 @@ static int cmp_templ_args(struct anytype *from,
 	return 0;
 }
 
-static struct anytype *addargtype(struct dynarr *templ_map)
+static struct anytype *addargtype(struct allocator *alloc, struct dynarr *templ_map)
 {
 	struct anytype *rettype;
 
@@ -1307,10 +1347,10 @@ static struct anytype *addargtype(struct dynarr *templ_map)
 		return NULL;
 	rettype = templ_map->mem[templ_map->num];
 	if (!rettype) {
-		/* TODO: free memory */
-		rettype = calloc(1, sizeof(struct anytype));
+		rettype = agenalloc(sizeof(*rettype));
 		if (!rettype)
 			return NULL;
+		memset(&rettype->args, 0, sizeof(rettype->args));
 		templ_map->mem[templ_map->num] = rettype;
 	}
 	templ_map->num++;
@@ -1322,12 +1362,12 @@ typedef void (*new_param_cb)(struct parser *parser, int position,
 		struct class *class, struct anytype *decl, char *name, char *next);
 typedef void (*check_name_cb)(struct parser *parser, char *name, char *next);
 
-static char *parse_templargs(struct parser *parser, struct class *class,
+static char *parse_templargs(struct parser *parser, struct allocator *alloc, struct class *class,
 		struct class *parentclass, char *next, struct dynarr *templ_map);
 
-static char *parse_parameters(struct parser *parser, struct class *class, char *params,
-		new_insert_cb new_insert, new_param_cb new_param,
-		check_name_cb check_name)
+static char *parse_parameters(struct parser *parser, struct allocator *alloc,
+		struct class *class, char *params, new_insert_cb new_insert,
+		new_param_cb new_param, check_name_cb check_name)
 {
 	struct classtype *classtype;
 	struct anytype decl;
@@ -1396,7 +1436,7 @@ static char *parse_parameters(struct parser *parser, struct class *class, char *
 				decl.type = AT_CLASS;
 				if (*next == '<') {
 					decl.type = AT_TEMPLINST;
-					next = parse_templargs(parser, class,
+					next = parse_templargs(parser, alloc, class,
 						decl.u.class, next, &decl.args);
 				}
 				state = DECLVAR;
@@ -1445,7 +1485,7 @@ static struct member *allocmember_e(struct parser *parser, struct class *class,
 {
 	struct member *member;
 
-	member = alloc_namestruct(parser, struct member, membername, nameend);
+	member = alloc_namestruct(&parser->global_mem, struct member, membername, nameend);
 	if (member == NULL)
 		return NULL;
 	/* translate destructor ~ character */
@@ -1552,14 +1592,14 @@ static char *insert_implicit_structs(struct parser *parser, char *src, char *src
 	return params_new;
 }
 
-static void parse_parameters_to(struct parser *parser, struct class *class,
-	char *params, char **params_out, struct dynarr *param_types)
+static void parse_parameters_to(struct parser *parser, struct allocator *alloc,
+	struct class *class, char *params, char **params_out, struct dynarr *param_types)
 {
 	char *paramsend;
 
 	/* save_param_class stores params in parser->param_types */
 	parser->param_inserts_delta = 0;
-	paramsend = parse_parameters(parser, class, params,
+	paramsend = parse_parameters(parser, alloc, class, params,
 		params_out ? save_param_insert : NULL, save_param_type, NULL);
 	/* move the dynarr (array pointer etc) to requested array */
 	memcpy(param_types, &parser->param_types, sizeof(*param_types));
@@ -1616,7 +1656,7 @@ static struct member *addmember(struct parser *parser, struct class *class,
 	if (props.is_abstract)
 		class->num_abstract++;
 	if (rettype->type == AT_METHOD && !params) {
-		copy_anytype(&member->rettype, rettype);
+		move_anytype(&member->rettype, rettype);
 		member->rettypestr = rettype->u.mp->rettypestr;
 		member->paramstext = "";
 		memcpy(&member->params, &rettype->u.mp->params, sizeof(member->params));
@@ -1629,7 +1669,7 @@ static struct member *addmember(struct parser *parser, struct class *class,
 		if (is_void_params(params))
 			member->paramstext = ")";
 		else
-			parse_parameters_to(parser, class,
+			parse_parameters_to(parser, &parser->global_mem, class,
 				params, &member->paramstext, &member->params);
 	}
 	if (props.is_virtual) {
@@ -1701,7 +1741,7 @@ static struct member *addmember(struct parser *parser, struct class *class,
 		} else if (retend == retstr) {
 			member->rettypestr = "";
 		} else
-			member->rettypestr = pstredup(parser, retstr, retend);
+			member->rettypestr = pstredup(retstr, retend);
 	}
 
 	/* in case of defining functions on the fly,
@@ -1747,8 +1787,8 @@ static struct variable *addvariable_common(struct parser *parser, unsigned block
 	if (grow_dynarr(dynarr) < 0)
 		return NULL;
 
-	/* variables are volatile, use reallocable memory, not parser */
-	variable = realloc_namestruct(NULL, dynarr->mem[dynarr->num],
+	/* variables are only used in functions */
+	variable = realloc_namestruct(&parser->func_mem, dynarr->mem[dynarr->num],
 		offsetof(struct variable, name), membername, nameend);
 	if (variable == NULL)
 		return NULL;
@@ -1776,7 +1816,8 @@ static struct variable *addvariable(struct parser *parser, struct class *class,
 	if (variable == NULL)
 		return NULL;
 	if (params)
-		parse_parameters_to(parser, class, params, NULL, &variable->params);
+		parse_parameters_to(parser, &parser->func_mem,
+			class, params, NULL, &variable->params);
 	return variable;
 }
 
@@ -1806,7 +1847,7 @@ static struct methodptr *allocmethodptrtype(struct parser *parser,
 {
 	struct methodptr *mptype;
 
-	mptype = alloc_namestruct(parser, struct methodptr, name, nameend);
+	mptype = alloc_namestruct(&parser->global_mem, struct methodptr, name, nameend);
 	if (mptype == NULL)
 		return NULL;
 	if (strhash_insert(&parser->methodptrtypes, mptype))
@@ -1825,8 +1866,8 @@ static struct methodptr *addmethodptrtype(struct parser *parser, struct anytype 
 	if (mptype == NULL)
 		return NULL;
 
-	mptype->rettypestr = pstredup(parser, rettypestr, rettypeend);
-	parse_parameters_to(parser, NULL, params, NULL, &mptype->params);
+	mptype->rettypestr = pstredup(rettypestr, rettypeend);
+	parse_parameters_to(parser, &parser->global_mem, NULL, params, NULL, &mptype->params);
 	return mptype;
 }
 
@@ -2075,8 +2116,8 @@ enum print_implicit {
 	PRINT_IMPLICIT,
 };
 
-static char *parse_type(struct parser *parser, struct class *class, char *pos,
-		struct anytype *rettype, enum print_implicit print_implicit)
+static char *parse_type(struct parser *parser, struct allocator *alloc, struct class *class,
+		char *pos, struct anytype *rettype, enum print_implicit print_implicit)
 {
 	struct classtype *classtype;
 	char *name, *next;
@@ -2119,8 +2160,8 @@ static char *parse_type(struct parser *parser, struct class *class, char *pos,
 			rettype->from_tp = 0;
 			if (*next == '<') {
 				rettype->type = AT_TEMPLINST;
-				next = parse_templargs(parser, class, classtype->class,
-						next, &rettype->args);
+				next = parse_templargs(parser, alloc, class,
+						classtype->class, next, &rettype->args);
 			}
 			break;
 		}
@@ -2144,8 +2185,9 @@ static char *parse_type(struct parser *parser, struct class *class, char *pos,
 	return next;
 }
 
-static char *parse_templargs(struct parser *parser, struct class *class,
-		struct class *parentclass, char *next, struct dynarr *templ_map)
+static char *parse_templargs(struct parser *parser, struct allocator *alloc,
+		struct class *class, struct class *parentclass,
+		char *next, struct dynarr *templ_map)
 {
 	struct anytype *argtype;
 	char *name, *sep;
@@ -2160,11 +2202,11 @@ static char *parse_templargs(struct parser *parser, struct class *class,
 			pr_err(name, "expected a name");
 			break;
 		}
-		argtype = addargtype(templ_map);
+		argtype = addargtype(alloc, templ_map);
 		if (!argtype)
 			goto next;
 
-		next = parse_type(parser, class, name, argtype, SKIP_IMPLICIT);
+		next = parse_type(parser, alloc, class, name, argtype, SKIP_IMPLICIT);
 		if (argtype->type == AT_UNKNOWN)
 			pr_err(name, "unknown template type");
 		if (argtype->type != AT_TEMPLPAR && argtype->pointerlevel == 0)
@@ -3033,7 +3075,8 @@ static char *parse_templpars(struct parser *parser, struct class *class, char *n
 				pr_err(name, "expected a type");
 				goto nextpar;
 			}
-			next = parse_type(parser, class, implstr, &tp->impl, SKIP_IMPLICIT);
+			next = parse_type(parser, &parser->global_mem,
+					class, implstr, &tp->impl, SKIP_IMPLICIT);
 			if (tp->impl.type != AT_CLASS) {
 				pr_err(implstr, "expected a class type");
 				goto nextpar;
@@ -3144,7 +3187,7 @@ static struct class *parse_struct(struct parser *parser, char *openbrace)
 			/* check template types to be mapped */
 			next = skip_whitespace(parser, nameend);
 			if (*next == '<')
-				next = parse_templargs(parser, class,
+				next = parse_templargs(parser, &parser->global_mem, class,
 					parentclass, next, &parent->templ_map);
 
 			numexp = parentclass->templpars.num_entries;
@@ -3354,7 +3397,7 @@ static struct class *parse_struct(struct parser *parser, char *openbrace)
 		} else {
 			/* for constructor, parse_type detects rettype wrong */
 			if (retend > declbegin) {
-				parse_type(parser, class, declbegin,
+				parse_type(parser, &parser->global_mem, class, declbegin,
 					&rettype, PRINT_IMPLICIT);
 			} else {
 				rettype.type = AT_UNKNOWN;
@@ -3960,7 +4003,7 @@ static void parse_typedef(struct parser *parser, char *declend)
 
 	/* check if a class is aliased to a new name */
 	typestr = parser->pf.pos;
-	next = parse_type(parser, NULL, typestr, &type, PRINT_IMPLICIT);
+	next = parse_type(parser, &parser->global_mem, NULL, typestr, &type, PRINT_IMPLICIT);
 	if (strprefixcmp("(*::", next)) {
 		parse_methodptr_typedef(parser, &type, typestr, next, declend);
 		return;
@@ -4293,8 +4336,8 @@ static void parse_function(struct parser *parser, char *next)
 				flush(parser);
 				outputs(parser, "static ");
 				/* add as member so others can call from further down */
-				parse_type(parser, thisptr.u.class, thisfuncret,
-					&rettype, PRINT_IMPLICIT);
+				parse_type(parser, &parser->func_mem, thisptr.u.class,
+					thisfuncret, &rettype, PRINT_IMPLICIT);
 				props.is_function = 1;
 				member = addmember(parser, thisptr.u.class, &rettype,
 					thisfuncret, classname, funcname, nameend, params, props);
@@ -4387,8 +4430,8 @@ static void parse_function(struct parser *parser, char *next)
 	next++;
 
 	/* store parameters as variables */
-	if (parse_parameters(parser, thisptr.u.class, params, NULL, param_to_variable,
-			check_conflict_param_member) == NULL)
+	if (parse_parameters(parser, &parser->func_mem, thisptr.u.class, params, NULL,
+			param_to_variable, check_conflict_param_member) == NULL)
 		return;
 
 	if (thispath) {
@@ -4481,8 +4524,8 @@ static void parse_function(struct parser *parser, char *next)
 						next = curr + 13;
 						goto dyncast;
 					}
-					next = parse_type(parser, thisptr.u.class, curr+13,
-						&rettype, SKIP_IMPLICIT);
+					next = parse_type(parser, &parser->func_mem,
+						thisptr.u.class, curr+13, &rettype, SKIP_IMPLICIT);
 					if (next[0] != '>' || next[1] != '(')
 						pr_err(next, "'>' expected");
 					next++;
@@ -4579,8 +4622,9 @@ static void parse_function(struct parser *parser, char *next)
 				if (*next == '<') {
 					tmplpos = next;
 					immdecl.type = AT_TEMPLINST;
-					next = parse_templargs(parser, thisptr.u.class,
-						immdecl.u.class, next, &immdecl.args);
+					next = parse_templargs(parser, &parser->func_mem,
+						thisptr.u.class, immdecl.u.class,
+						next, &immdecl.args);
 					/* don't print template arguments */
 					addinsert(parser, -1, tmplpos, "", next, CONTINUE_AFTER);
 				}
@@ -4712,8 +4756,9 @@ static void parse_function(struct parser *parser, char *next)
 					if (*next == '<') {
 						tmplpos = next;
 						decl.type = AT_TEMPLINST;
-						next = parse_templargs(parser, thisptr.u.class,
-							decl.u.class, next, &decl.args);
+						next = parse_templargs(parser, &parser->func_mem,
+							thisptr.u.class, decl.u.class,
+							next, &decl.args);
 					}
 					/* we don't want implicit struct for class::func
 					   note that classtype is not valid coming from
@@ -5099,6 +5144,9 @@ static void parse_function(struct parser *parser, char *next)
 		parser->pf.lines_coo += lines_coo;
 		switch_line_pragma(parser, LINE_PRAGMA_INPUT);
 	}
+
+	/* free this function's variable/type memory */
+	areset(&parser->func_mem);
 	parser->pf.pos = next;
 }
 
@@ -5783,7 +5831,8 @@ static void parse_global(struct parser *parser, char *next)
 		parser->pf.writepos = skip_whitespace(parser, next + 1);
 	}
 
-	name = parse_type(parser, NULL, parser->pf.pos, &vartype, PRINT_IMPLICIT);
+	name = parse_type(parser, &parser->global_mem, NULL,
+			parser->pf.pos, &vartype, PRINT_IMPLICIT);
 	if (!to_class(&vartype) && !to_mp(&vartype))
 		return;
 	if (coo_class_var) {
@@ -5796,7 +5845,7 @@ static void parse_global(struct parser *parser, char *next)
 
 	/* global variable definition */
 	end = skip_word(name);
-	variable = alloc_namestruct(parser, struct variable, name, end);
+	variable = alloc_namestruct(&parser->global_mem, struct variable, name, end);
 	if (variable == NULL)
 		return;
 
@@ -6055,6 +6104,8 @@ static int initparser(struct parser *parser)
 	parser->header_ext_out = ".coo.h";
 	parser->line_pragmas = 1;
 	parser->inserts = &parser->inserts_arr;
+	init_allocator(&parser->global_mem);
+	init_allocator(&parser->func_mem);
 	return strhash_init(&parser->classes, 64, class) < 0 ||
 		strhash_init(&parser->classtypes, 64, classtype) < 0 ||
 		strhash_init(&parser->globals, 64, variable) < 0 ||

@@ -1,3 +1,5 @@
+/* Copyright 2019, Micha Nelissen, BSD-3-clause, see README.md */
+
 #include <stdio.h>
 #include <stdint.h>
 #include "coortl.h"

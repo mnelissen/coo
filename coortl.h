@@ -1,5 +1,5 @@
 /* This file is part of the COO project.
-   Copyright 2018  Micha Nelissen
+   Copyright 2019  Micha Nelissen
    It is licensed under BSD-3-clause. */
 #ifndef _COO_RTL_H
 #define _COO_RTL_H

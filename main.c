@@ -1,3 +1,5 @@
+/* Copyright 2019, Micha Nelissen, GPLv3 license, see README.md */
+
 #include <stdio.h>
 #include <ctype.h>
 #include <limits.h>

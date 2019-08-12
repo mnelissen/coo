@@ -467,12 +467,13 @@ allocated with malloc / realloc / free.
 * remove get_vmt_name, replace with vmt->class->name or vmt->modified->class->name
 * check dynarr memleaks in anytype local variables
 * save param_types directly to target in parse_parameters_to
+* sync line numbers better in struct (remove force resync at end)
 
 ## License
 
-This program is licensed under GPLv3 or later. Processed output of this program,
-in particular macro defines that are part of the program source code are licensed
-under BSD-3-clause.
+This program is licensed under GPLv3 or later (see file COPYING). Processed output
+of this program, in particular macro defines that become part of the output program
+source code are licensed under BSD-3-clause (see file COPYING.BSD).
 
 Copyright 2018-2019 Micha Nelissen
 

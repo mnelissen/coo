@@ -455,8 +455,7 @@ like class names, field names etc. Therefore, there is a simple memory
 allocator in the parser, in the variables memblock / memptr / memavail.
 This also allows multiple string pointers to point to the same string
 memory without needing reference count, as all string memory is owned by
-the parser anyway. More dynamic strings like stack variable names are
-allocated with malloc / realloc / free.
+the parser anyway.
 
 ## TODO
 
@@ -465,9 +464,10 @@ allocated with malloc / realloc / free.
 * parse parameters, type without name skipped
 * cleanup parser memory after use, add destroy_parser function
 * remove get_vmt_name, replace with vmt->class->name or vmt->modified->class->name
-* check dynarr memleaks in anytype local variables
 * save param_types directly to target in parse_parameters_to
 * sync line numbers better in struct (remove force resync at end)
+* transform dynarrs to linked lists where possible
+* use allocdynitem more?
 
 ## License
 

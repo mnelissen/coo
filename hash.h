@@ -40,7 +40,12 @@ void *hash_find(struct hash *table, size_t hash, void *key);
 void *hash_find_custom(struct hash *table, size_t hash, hash_cmp_cb compare, void *key);
 struct hash_entry *hash_insert(struct hash *table, struct hash_entry *entry, size_t hash);
 void *hash_next(struct hash *table, void *user);
+/* remove given hash_entry node from hash table */
 int hash_remove(struct hash *table, struct hash_entry *entry);
+/* lookup a hash entry and remove it from the table using custom function */
+int hash_remove_custom_key(struct hash *table, size_t hash, hash_cmp_cb compare, void *key);
+/* lookup a hash entry and remove it from the table */
+int hash_remove_key(struct hash *table, size_t hash, void *key);
 int hash_destroy(struct hash *table);
 
 #define hash_foreach(u, h) \

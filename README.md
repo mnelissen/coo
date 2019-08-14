@@ -468,6 +468,7 @@ the parser anyway.
 * sync line numbers better in struct (remove force resync at end)
 * transform dynarrs to linked lists where possible
 * use allocdynitem more?
+* class->templ_arr use?
 
 ## License
 

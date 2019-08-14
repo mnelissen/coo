@@ -21,6 +21,7 @@ typedef uint32_t pid_t;
 #include <sys/types.h>
 #define DIRSEP '/'
 #endif
+#include "list.h"
 #include "hash.h"
 #include "hasho.h"
 
@@ -124,7 +125,7 @@ struct class {
 	struct hash templpars;       /* template parameters for this class (types) */
 	struct dynarr templ_arr;     /* ... in order of declaration for parent mapping */
 	struct hasho ancestors;      /* class => ancestor, all classes inherited from */
-	struct dynarr vmts;          /* struct vmt *, all applicable vmts */
+	declare_flist(struct vmt, vmts);  /* vmts for this class */
 	struct dynarr descendants;   /* struct parent *, inheriting from this class */
 	struct vmt *vmt;             /* from primary parent (or new here)  */
 	struct member *constructor;  /* (parent) constructor defined for this class */
@@ -195,6 +196,7 @@ struct vmt {
 	struct vmt *modified;      /* parent most recently modified */
 	struct vmt *parent;        /* pointer to same origin vmt in parent */
 	struct vmt *child;         /* temp.during struct definition child */
+	struct vmt *next;          /* next vmt for owning class */
 	char *path;                /* path to reach this vmt (in ancestor) */
 	char *access;              /* path->vmt or path.vmt? */
 	char *sec_name;            /* name for use as secondary vmt */
@@ -1181,6 +1183,7 @@ static struct class *initclass(struct parser *parser, struct class *class)
 	strhash_init(&class->members, 8, member);
 	strhash_init(&class->templpars, 4, templpar);
 	hasho_init(&class->ancestors, 8);
+	init_flist(&class->vmts);
 	if (hash_insert(&parser->classes, &class->node, strhash(class->name))) {
 		/* already exists */
 		return NULL;
@@ -2513,9 +2516,6 @@ static struct vmt *addvmt(struct parser *parser, struct class *class, struct vmt
 {
 	struct vmt *vmt;
 
-	if (grow_dynarr(&parser->global_mem, &class->vmts) < 0)
-		return NULL;
-
 	vmt = pgenzalloc(sizeof(*vmt));
 	if (vmt == NULL)
 		return NULL;
@@ -2527,7 +2527,7 @@ static struct vmt *addvmt(struct parser *parser, struct class *class, struct vmt
 	vmt->is_primary = class->vmt == NULL;
 	vmt->is_parent_virtual = parent_virtual;
 	vmt->from_virtual = parent_virtual;
-	class->vmts.mem[class->vmts.num++] = vmt;
+	add_flist(&class->vmts, vmt, next);
 	if (parent_vmt) {
 		vmt->is_primary = vmt->is_primary && parent_vmt->is_primary && !parent_virtual;
 		vmt->from_virtual |= parent_vmt->from_virtual;
@@ -2544,14 +2544,11 @@ static struct vmt *addvmt(struct parser *parser, struct class *class, struct vmt
 static struct vmt *find_vmt_origin(struct class *class, struct class *vmt_origin)
 {
 	struct vmt *vmt;
-	unsigned i;
 
 	/* find same vmt in this class (same origin) */
-	for (i = 0; i < class->vmts.num; i++) {
-		vmt = class->vmts.mem[i];
+	foreach_flist(vmt, &class->vmts, next)
 		if (vmt->origin == vmt_origin)
 			return vmt;
-	}
 
 	return NULL;
 }
@@ -2572,8 +2569,7 @@ static void import_parent(struct parser *parser, char *parsepos,
 		pr_err(parsepos, "cannot inherit from final class %s", parentclass->name);
 
 	/* inherit vmts */
-	for (i = 0; i < parentclass->vmts.num; i++) {
-		parentvmt = parentclass->vmts.mem[i];
+	foreach_flist(parentvmt, &parentclass->vmts, next) {
 		vmtorigin = parentvmt->origin;
 		sec_name = vmtorigin->name;
 		diverged = 0;
@@ -2710,7 +2706,7 @@ static void import_parent(struct parser *parser, char *parsepos,
 		return;
 
 	/* count dynamic castable parents */
-	if (parentclass->vmts.num && !parentclass->no_dyncast) {
+	if (!flist_empty(&parentclass->vmts) && !parentclass->no_dyncast) {
 		class->num_dync_parents++;
 		if (!class->dync_parents)
 			class->dync_parents = parent;
@@ -2874,10 +2870,9 @@ static void print_vmt_type(struct parser *parser, struct class *class)
 	struct class *thisclass, *prvmtclass;
 	struct member *member;
 	struct vmt *vmt, *prvmt;
-	unsigned i, j;
+	unsigned j;
 
-	for (i = 0; i < class->vmts.num; i++) {
-		vmt = class->vmts.mem[i];
+	foreach_flist(vmt, &class->vmts, next) {
 		if (vmt->parent)
 			vmt->parent->child = NULL;
 		if (vmt->modified != vmt)
@@ -2918,7 +2913,7 @@ static void print_vmt_type(struct parser *parser, struct class *class)
 
 static void print_coo_class_var(struct parser *parser, struct class *class)
 {
-	if (class->vmts.num == 0 || class->no_dyncast)
+	if (flist_empty(&class->vmts) || class->no_dyncast)
 		return;
 
 	switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
@@ -5259,7 +5254,6 @@ static void print_root_constructor(struct parser *parser, struct class *class)
 	struct hasho_entry *entry;
 	struct class *parentclass, *rootclass;
 	struct vmt *vmt;
-	unsigned i;
 
 	if (!class->gen_root_constructor)
 		return;
@@ -5298,8 +5292,7 @@ static void print_root_constructor(struct parser *parser, struct class *class)
 		} while (ancestor);
 	}
 	/* vmt inits */
-	for (i = 0; i < rootclass->vmts.num; i++) {
-		vmt = rootclass->vmts.mem[i];
+	foreach_flist(vmt, &rootclass->vmts, next) {
 		get_vmt_path(parser, vmt, &vmtpath, &vmtaccess);
 		outprintf(parser, "\tthis->%s%svmt = &%s.vmt_base;\n",
 			vmtpath, vmtaccess, get_vmt_name(parser, vmt));
@@ -5619,7 +5612,6 @@ static void print_class_impl(struct parser *parser)
 {
 	struct class *class;
 	struct vmt *vmt;
-	unsigned i;
 
 	hash_foreach(class, &parser->classes) {
 		if (!class->is_implemented)
@@ -5637,8 +5629,7 @@ static void print_class_impl(struct parser *parser)
 		if (class->num_abstract)
 			continue;
 
-		for (i = 0; i < class->vmts.num; i++) {
-			vmt = class->vmts.mem[i];
+		foreach_flist(vmt, &class->vmts, next) {
 			if (vmt->modified != vmt)
 				continue;
 

@@ -125,8 +125,9 @@ struct class {
 	struct hash templpars;       /* template parameters for this class (types) */
 	struct dynarr templ_arr;     /* ... in order of declaration for parent mapping */
 	struct hasho ancestors;      /* class => ancestor, all classes inherited from */
-	declare_flist(struct vmt, vmts);  /* vmts for this class */
-	struct dynarr descendants;   /* struct parent *, inheriting from this class */
+	flist(struct vmt, vmts);     /* vmts for this class */
+	rlist(struct parent, descendants);   /* classes inheriting from this class */
+	flist(struct parent, dync_parents);  /* parents that can dyncast to us */
 	struct vmt *vmt;             /* from primary parent (or new here)  */
 	struct member *constructor;  /* (parent) constructor defined for this class */
 	struct member *root_constructor;  /* root constructor defined for this class */
@@ -137,8 +138,6 @@ struct class {
 	struct class *freer_class;   /* usable class (this or parent) to free() 'this' */
 	struct rootclass *rootclass; /* root class for missing virtual base(s), if any */
 	struct hash_entry node;      /* node in parser.classes hash */
-	struct parent *dync_parents; /* linked list of dyncastable parents */
-	struct parent *dync_lastp;   /* last dyncastable parent to add after */
 	char *funcinsert;            /* insert in front of function call "class_" */
 	unsigned num_parent_constr;  /* number of parent constructors */
 	unsigned num_parent_destr;   /* number of parent destructors */
@@ -170,6 +169,7 @@ struct class {
 struct parent {
 	struct class *class;       /* parent class */
 	struct class *child;       /* inheriting class */
+	struct parent *next_desc;  /* next parent in class->descendants */
 	struct parent *next_dync;  /* next dyncastable parent */
 	struct dynarr templ_map;   /* struct templpar of child */
 	unsigned char is_primary;
@@ -1183,7 +1183,8 @@ static struct class *initclass(struct parser *parser, struct class *class)
 	strhash_init(&class->members, 8, member);
 	strhash_init(&class->templpars, 4, templpar);
 	hasho_init(&class->ancestors, 8);
-	init_flist(&class->vmts);
+	flist_init(&class->vmts);
+	flist_init(&class->dync_parents);
 	if (hash_insert(&parser->classes, &class->node, strhash(class->name))) {
 		/* already exists */
 		return NULL;
@@ -2304,10 +2305,8 @@ static void addmember_to_children(struct parser *parser, char *parsepos,
 		struct class *class, struct member *member)
 {
 	struct parent *parent;
-	unsigned i;
 
-	for (i = 0; i < class->descendants.num; i++) {
-		parent = class->descendants.mem[i];
+	rlist_foreach(parent, &class->descendants, next_desc) {
 		/* possibly different parent path, clear cache */
 		parser->last_parentname = NULL;
 		inheritmember(parser, parsepos, parent->child, parent, member);
@@ -2527,7 +2526,7 @@ static struct vmt *addvmt(struct parser *parser, struct class *class, struct vmt
 	vmt->is_primary = class->vmt == NULL;
 	vmt->is_parent_virtual = parent_virtual;
 	vmt->from_virtual = parent_virtual;
-	add_flist(&class->vmts, vmt, next);
+	flist_add(&class->vmts, vmt, next);
 	if (parent_vmt) {
 		vmt->is_primary = vmt->is_primary && parent_vmt->is_primary && !parent_virtual;
 		vmt->from_virtual |= parent_vmt->from_virtual;
@@ -2546,7 +2545,7 @@ static struct vmt *find_vmt_origin(struct class *class, struct class *vmt_origin
 	struct vmt *vmt;
 
 	/* find same vmt in this class (same origin) */
-	foreach_flist(vmt, &class->vmts, next)
+	flist_foreach(vmt, &class->vmts, next)
 		if (vmt->origin == vmt_origin)
 			return vmt;
 
@@ -2569,7 +2568,7 @@ static void import_parent(struct parser *parser, char *parsepos,
 		pr_err(parsepos, "cannot inherit from final class %s", parentclass->name);
 
 	/* inherit vmts */
-	foreach_flist(parentvmt, &parentclass->vmts, next) {
+	flist_foreach(parentvmt, &parentclass->vmts, next) {
 		vmtorigin = parentvmt->origin;
 		sec_name = vmtorigin->name;
 		diverged = 0;
@@ -2701,24 +2700,16 @@ static void import_parent(struct parser *parser, char *parsepos,
 		ignoreorigin = origin;
 	}
 
-	/* only add class after origin checks */
-	if (grow_dynarr(&parser->global_mem, &parentclass->descendants) < 0)
-		return;
-
 	/* count dynamic castable parents */
 	if (!flist_empty(&parentclass->vmts) && !parentclass->no_dyncast) {
 		class->num_dync_parents++;
-		if (!class->dync_parents)
-			class->dync_parents = parent;
-		else
-			class->dync_lastp->next_dync = parent;
-		class->dync_lastp = parent;
+		flist_add(&class->dync_parents, parent, next_dync);
 	} else if (class->ancestors.num_entries == 0)
 		class->need_dync_p0_dummy = 1;
 
 	/* add parents after vmt duplication check */
 	add_ancestors(parser, class, parent);
-	parentclass->descendants.mem[parentclass->descendants.num++] = parent;
+	rlist_add(&parentclass->descendants, parent, next_desc);
 }
 
 static struct member *implmember(struct parser *parser, char *parsepos,
@@ -2872,7 +2863,7 @@ static void print_vmt_type(struct parser *parser, struct class *class)
 	struct vmt *vmt, *prvmt;
 	unsigned j;
 
-	foreach_flist(vmt, &class->vmts, next) {
+	flist_foreach(vmt, &class->vmts, next) {
 		if (vmt->parent)
 			vmt->parent->child = NULL;
 		if (vmt->modified != vmt)
@@ -5292,7 +5283,7 @@ static void print_root_constructor(struct parser *parser, struct class *class)
 		} while (ancestor);
 	}
 	/* vmt inits */
-	foreach_flist(vmt, &rootclass->vmts, next) {
+	flist_foreach(vmt, &rootclass->vmts, next) {
 		get_vmt_path(parser, vmt, &vmtpath, &vmtaccess);
 		outprintf(parser, "\tthis->%s%svmt = &%s.vmt_base;\n",
 			vmtpath, vmtaccess, get_vmt_name(parser, vmt));
@@ -5524,7 +5515,7 @@ static void print_coo_class(struct parser *parser, struct class *class)
 	outprintf(parser, "} %s_coo_class = {\n"
 		"\t%u,\n", class->name, num_parents);
 	if (num_parents > 0) {
-		parent = class->dync_parents;
+		parent = class->dync_parents.first;
 		/* dummy means first parent is not at affset 0 =>
 		   no dummy means first parent is at offset 0, then skip first parent */
 		if (!class->need_dync_p0_dummy && parent)
@@ -5537,7 +5528,7 @@ static void print_coo_class(struct parser *parser, struct class *class)
 		if (class->need_dync_p0_dummy)
 			outputs(parser, "\t{ NULL");
 		first = !class->need_dync_p0_dummy;
-		for (parent = class->dync_parents; parent; parent = parent->next_dync) {
+		flist_foreach(parent, &class->dync_parents, next_dync) {
 			outprintf(parser, "%s &%s_coo_class",
 				first ? "\t{" : ",\n\t ", parent->class->name);
 			first = 0;
@@ -5629,7 +5620,7 @@ static void print_class_impl(struct parser *parser)
 		if (class->num_abstract)
 			continue;
 
-		foreach_flist(vmt, &class->vmts, next) {
+		flist_foreach(vmt, &class->vmts, next) {
 			if (vmt->modified != vmt)
 				continue;
 

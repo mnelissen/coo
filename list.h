@@ -2,25 +2,52 @@
 #define _COO_LIST_H
 
 /* forward list, declare a 'next' variable yourself in the item type */
-#define flist(type, flist)   struct { type *first, **last; } flist
+#define flist(type)          struct { type *first, **last; }
 #define flist_init(flist)    (flist)->last = &(flist)->first
 #define flist_empty(flist)   !(flist)->first
 #define flist_first(flist)   (flist)->first
 #define flist_add(flist, item, fieldname_next) \
         *(flist)->last = item, (flist)->last = &(item)->fieldname_next
-#define flist_foreach(iter, flist, ...) \
-        for (iter = (flist)->first; iter; iter = (iter)->__VA_ARGS__)
-#define flist_foreach_continue(iter, flist, ...) \
-        for (; iter; (iter)->__VA_ARGS__)
+/* iterate forwards, provide item, address of flist, fieldname of item next pointer */
+#define flist_foreach(item, flist, ...) \
+        for (item = (flist)->first; item; item = (item)->__VA_ARGS__)
+#define flist_foreach_continue(item, flist, ...) \
+        for (; item; (item)->__VA_ARGS__)
 
-/* reverse list (stack), declare a 'prev' variable yourself in the item type */
-#define rlist(type, rlist)   struct { type *rlast; } rlist
-#define rlist_empty(rlist)   !(rlist)->rlast
-#define rlist_add(rlist, item, fieldname_prev) \
-        (item)->fieldname_prev = (rlist)->rlast, (rlist)->rlast = item
-#define rlist_foreach(iter, rlist, fieldname_prev) \
-        for (iter = (rlist)->rlast; iter; iter = (iter)->fieldname_prev)
+/* backward list (stack), declare a 'prev' variable yourself in the item type */
+#define blist(type)          struct { type *rlast; }
+#define blist_empty(blist)   !(blist)->rlast
+#define blist_add(blist, item, fieldname_prev) \
+        (item)->fieldname_prev = (blist)->rlast, (blist)->rlast = item
+#define blist_foreach_rev(item, blist, ...) \
+        for (item = (blist)->rlast; item; item = (item)->__VA_ARGS__)
 
-/* bidirectional list */
+/* double linked list, iname is variable name for list item prev/next pointers */
+#define dlist(type)            struct { type *dprev, *dnext; }
+#define dlist_item(type)       struct { type *iprev, *inext; }
+#define dlist_empty(dlist)     (dlist)->dprev == (dlist)->dnext
+#define dlist_init(dlist, iname) \
+        (dlist)->dnext = NULL, (dlist)->dprev = (dlist)->dnext = \
+        (void*)((size_t)(dlist) - (size_t)(&(dlist)->dnext->iname.iprev))
+#define dlist_insert(item, newitem, iname) \
+        (newitem)->iname.iprev = (item)->iname.iprev, (newitem)->iname.inext = item, \
+        (item)->iname.iprev->iname.inext = newitem, (item)->iname.iprev = newitem
+#define dlist_add(dlist, newitem, iname) \
+        (newitem)->iname.iprev = (dlist)->dprev, (newitem)->iname.inext = \
+                (void*)((size_t)(dlist) - ((size_t)&(item)->iname) - (size_t)(item)), \
+        (dlist)->dprev->iname.inext = newitem, (dlist)->dprev = newitem
+#define dlist_remove(item, iname) \
+        (item)->iname.iprev->iname.inext = (item)->iname.inext, \
+        (item)->iname.inext->iname.iprev = (item)->iname.iprev
+#define dlist_remove_and_null(item, iname) \
+        dlist_remove(item, iname), (item)->iname.iprev = (item)->iname.inext = NULL
+#define dlist_foreach(item, dlist, iname) \
+        for (item = (dlist)->dnext; \
+                &(item)->iname.inext != &(dlist)->dnext; \
+                item = (item)->iname.inext)
+#define dlist_foreach_rev(item, dlist, iname) \
+        for (item = (dlist)->dprev; \
+                &(item)->iname.iprev != &(dlist)->dprev; \
+                item = (item)->iname.iprev)
 
 #endif

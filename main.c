@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <ctype.h>
 #include <limits.h>
+#include <alloca.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -121,13 +122,13 @@ struct anytype {
 
 struct class {
 	struct hash members;
-	struct dynarr members_arr;
+	flist(struct member) members_list;
 	struct hash templpars;       /* template parameters for this class (types) */
 	struct dynarr templ_arr;     /* ... in order of declaration for parent mapping */
 	struct hasho ancestors;      /* class => ancestor, all classes inherited from */
-	flist(struct vmt, vmts);     /* vmts for this class */
-	rlist(struct parent, descendants);   /* classes inheriting from this class */
-	flist(struct parent, dync_parents);  /* parents that can dyncast to us */
+	flist(struct vmt) vmts;     /* vmts for this class */
+	blist(struct parent) descendants;   /* classes inheriting from this class */
+	flist(struct parent) dync_parents;  /* parents that can dyncast to us */
 	struct vmt *vmt;             /* from primary parent (or new here)  */
 	struct member *constructor;  /* (parent) constructor defined for this class */
 	struct member *root_constructor;  /* root constructor defined for this class */
@@ -142,8 +143,8 @@ struct class {
 	unsigned num_parent_constr;  /* number of parent constructors */
 	unsigned num_parent_destr;   /* number of parent destructors */
 	unsigned num_init_vars;      /* number of members needing root construction call */
+	unsigned num_destr_vars;     /* number of members needing destructor call */
 	unsigned num_abstract;       /* number of abstract virtual methods */
-	unsigned num_dync_parents;   /* number of parents for dyncasting to */
 	char need_dync_p0_dummy;     /* first dync.parent is not at offset 0 */
 	char declare_complete;       /* inside or after struct declaration? */
 	char is_final;               /* final class, cannot be inherited from */
@@ -171,7 +172,7 @@ struct parent {
 	struct class *child;       /* inheriting class */
 	struct parent *next_desc;  /* next parent in class->descendants */
 	struct parent *next_dync;  /* next dyncastable parent */
-	struct dynarr templ_map;   /* struct templpar of child */
+	struct dynarr templ_map;   /* map parent's index to child's templpar */
 	unsigned char is_primary;
 	unsigned char is_virtual;
 	unsigned char need_vmt;    /* has own vmt or overrides parent's vmt */
@@ -180,7 +181,7 @@ struct parent {
 struct ancestor {   /* link to parent, or parent of parent, etc.. */
 	struct parent *parent;
 	struct ancestor *next;     /* alternate path to same origin (interface) */
-	struct dynarr templ_map;   /* struct templpar of owned class */
+	struct dynarr templ_map;   /* map ancestor's index to child's templpar */
 	unsigned from_virtual;
 	char path[];   /* full path to ancestor */
 };
@@ -217,6 +218,7 @@ struct templpar {
 
 struct member {
 	struct hash_entry node;    /* entry in class->members */
+	struct member *next;       /* next member in class->members_list */
 	char *rettypestr;          /* literal text of return type */
 	struct anytype rettype;    /* return type of member */
 	struct class *origin;      /* origin class where member was defined */
@@ -944,7 +946,7 @@ static void *read_file(FILE *fp, char *buffer)
 static int grow_dynarr_to(struct allocator *alloc, struct dynarr *dynarr, unsigned minimum)
 {
 	if (minimum > dynarr->max) {
-		unsigned newmax = minimum >= 16 ? minimum * 2 : 16;
+		unsigned newmax = minimum >= 4 ? minimum * 2 : 4;
 		void **newmem = arealloc(alloc, dynarr->mem,
 				dynarr->max * sizeof(void*), newmax * sizeof(void*));
 		if (newmem == NULL)
@@ -1183,6 +1185,7 @@ static struct class *initclass(struct parser *parser, struct class *class)
 	strhash_init(&class->members, 8, member);
 	strhash_init(&class->templpars, 4, templpar);
 	hasho_init(&class->ancestors, 8);
+	flist_init(&class->members_list);
 	flist_init(&class->vmts);
 	flist_init(&class->dync_parents);
 	if (hash_insert(&parser->classes, &class->node, strhash(class->name))) {
@@ -1500,13 +1503,11 @@ static char *parse_parameters(struct parser *parser, struct allocator *alloc,
 	}
 }
 
-static int insertmember(struct parser *parser, struct class *class,
+static int insertmember(struct class *class,
 		struct member *member, struct member **dupmember)
 {
 	struct hash_entry *entry;
 
-	if (grow_dynarr(&parser->global_mem, &class->members_arr) < 0)
-		return -1;
 	/* check already exists */
 	if ((entry = strhash_insert(&class->members, member))) {
 		if (hash_insert_nomem(entry))
@@ -1515,8 +1516,7 @@ static int insertmember(struct parser *parser, struct class *class,
 		return -1;
 	}
 
-	class->members_arr.mem[class->members_arr.num] = member;
-	class->members_arr.num++;
+	flist_add(&class->members_list, member, next);
 	return 0;
 }
 
@@ -1536,7 +1536,7 @@ static struct member *allocmember_e(struct parser *parser, struct class *class,
 	} else {
 		member->implprefix = "";
 	}
-	if (insertmember(parser, class, member, dupmember) < 0)
+	if (insertmember(class, member, dupmember) < 0)
 		return NULL;
 	return member;
 }
@@ -1552,7 +1552,7 @@ static struct member *dupmemberto(struct parser *parser, struct class *class,
 		return NULL;
 
 	memcpy(member, parentmember, size);
-	if (insertmember(parser, class, member, dupmember) < 0)
+	if (insertmember(class, member, dupmember) < 0)
 		return NULL;
 	return member;
 }
@@ -2306,7 +2306,7 @@ static void addmember_to_children(struct parser *parser, char *parsepos,
 {
 	struct parent *parent;
 
-	rlist_foreach(parent, &class->descendants, next_desc) {
+	blist_foreach_rev(parent, &class->descendants, next_desc) {
 		/* possibly different parent path, clear cache */
 		parser->last_parentname = NULL;
 		inheritmember(parser, parsepos, parent->child, parent, member);
@@ -2556,11 +2556,10 @@ static void import_parent(struct parser *parser, char *parsepos,
 		struct class *class, struct parent *parent)
 {
 	struct member *parentmember, *member;
-	struct dynarr *parentmembers;
 	struct class *origin, *currorigin, *ignoreorigin, *intforigin, *mergeorigin;
 	struct class *vmtorigin, *parentclass = parent->class;
 	struct vmt *vmt, *parentvmt;
-	unsigned i, diverged;
+	unsigned diverged;
 	char *sec_name;
 	int ret;
 
@@ -2620,10 +2619,8 @@ static void import_parent(struct parser *parser, char *parsepos,
 		vmt->sec_name = sec_name;
 	}
 
-	parentmembers = &parentclass->members_arr;
 	currorigin = ignoreorigin = intforigin = mergeorigin = NULL;
-	for (i = 0; i < parentmembers->num; i++) {
-		parentmember = parentmembers->mem[i];
+	flist_foreach(parentmember, &parentclass->members_list, next) {
 		/* hide grand-parent constructors behind parent constructor, except
 		   the ones from virtual bases, those are called from root constr. */
 		if (parentmember->parent_constructor && parentclass->has_constructor
@@ -2702,14 +2699,13 @@ static void import_parent(struct parser *parser, char *parsepos,
 
 	/* count dynamic castable parents */
 	if (!flist_empty(&parentclass->vmts) && !parentclass->no_dyncast) {
-		class->num_dync_parents++;
 		flist_add(&class->dync_parents, parent, next_dync);
 	} else if (class->ancestors.num_entries == 0)
 		class->need_dync_p0_dummy = 1;
 
 	/* add parents after vmt duplication check */
 	add_ancestors(parser, class, parent);
-	rlist_add(&parentclass->descendants, parent, next_desc);
+	blist_add(&parentclass->descendants, parent, next_desc);
 }
 
 static struct member *implmember(struct parser *parser, char *parsepos,
@@ -2861,7 +2857,6 @@ static void print_vmt_type(struct parser *parser, struct class *class)
 	struct class *thisclass, *prvmtclass;
 	struct member *member;
 	struct vmt *vmt, *prvmt;
-	unsigned j;
 
 	flist_foreach(vmt, &class->vmts, next) {
 		if (vmt->parent)
@@ -2886,8 +2881,7 @@ static void print_vmt_type(struct parser *parser, struct class *class)
 		for (prvmt = vmt; prvmt->is_diverged; prvmt = prvmt->parent)
 			;
 		prvmtclass = prvmt->class;
-		for (j = 0; j < prvmtclass->members_arr.num; j++) {
-			member = prvmtclass->members_arr.mem[j];
+		flist_foreach(member, &prvmtclass->members_list, next) {
 			if (member->vmt != prvmt)
 				continue;
 
@@ -2992,7 +2986,6 @@ static void print_member_decls(struct parser *parser, struct class *class)
 	struct ancestor *ancestor;
 	struct member *member;
 	char *params;
-	unsigned i;
 
 	if (class->root_constructor) {
 		switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
@@ -3019,9 +3012,7 @@ static void print_member_decls(struct parser *parser, struct class *class)
 		}
 	}
 
-	for (i = 0; i < class->members_arr.num; i++) {
-		member = class->members_arr.mem[i];
-
+	flist_foreach(member, &class->members_list, next) {
 		/* optimize virtual function calls to actual calls for final classes */
 		if (class->is_final && member->props.is_virtual) {
 			member->props.is_virtual = 0;
@@ -3124,7 +3115,7 @@ static struct class *parse_struct(struct parser *parser, char *openbrace)
 	struct anytype rettype;
 	struct member *member;
 	char namebuf[128];
-	unsigned i, numexp;
+	unsigned numexp;
 
 	/* skip "struct " */
 	classname = strskip_whitespace(parser->pf.pos + 7);
@@ -3423,8 +3414,10 @@ static struct class *parse_struct(struct parser *parser, char *openbrace)
 				if (member && is_lit_var) {
 					if (rettype.u.class->root_constructor)
 						class->num_init_vars++;
-					if (rettype.u.class->destructor)
+					if (rettype.u.class->destructor) {
+						class->num_destr_vars++;
 						need_destructor = 1;
+					}
 				}
 			}
 		}
@@ -3481,8 +3474,7 @@ static struct class *parse_struct(struct parser *parser, char *openbrace)
 
 	/* check if multiple parents override same member, without final override */
 	if (class->has_duplicates) {
-		for (i = 0; i < class->members_arr.num; i++) {
-			member = class->members_arr.mem[i];
+		flist_foreach(member, &class->members_list, next) {
 			if (member->definition == NULL) {
 				pr_err(next, "duplicate inheritance, need override "
 					"for member %s", member->name);
@@ -4298,7 +4290,7 @@ static void parse_function(struct parser *parser, char *next)
 	int is_constructor, expr_is_oneword, blocklevel, parenlevel, seqparen, numwords;
 	int have_retvar, need_retvar, used_retvar, void_retvar;
 	int retblocknr, next_retblocknr, in_delete, insert_index;
-	unsigned i, num_constr_called, num_constr, ptrlvl;
+	unsigned num_constr_called, num_constr, ptrlvl;
 
 	thisfuncret = parser->pf.pos;
 	funcname = NULL, classname = next;
@@ -5115,8 +5107,7 @@ static void parse_function(struct parser *parser, char *next)
 	}
 
 	if (num_constr_called < num_constr) {
-		for (i = 0; i < thisptr.u.class->members_arr.num; i++) {
-			member = thisptr.u.class->members_arr.mem[i];
+		flist_foreach(member, &thisptr.u.class->members_list, next) {
 			if (member->constructor_called)
 				continue;
 			if (member->parent_constructor) {
@@ -5223,10 +5214,8 @@ static void print_construct_parents(struct parser *parser, struct class *class,
 		char *rootprefix, char *sep, enum parent_virtual virtual_parents)
 {
 	struct member *member;
-	unsigned i;
 
-	for (i = 0; i < class->members_arr.num; i++) {
-		member = class->members_arr.mem[i];
+	flist_foreach(member, &class->members_list, next) {
 		if (!member->parent_constructor)
 			continue;
 		if (virtual_parents != member->props.from_virtual)
@@ -5316,15 +5305,13 @@ static void print_constructor(struct parser *parser, struct class *class)
 {
 	struct class *memberclass;
 	struct member *member;
-	unsigned i;
 
 	if (!class->gen_constructor)
 		return;
 
 	print_func_header(parser, class, class->constructor);
 	print_construct_parents(parser, class, "", "", LITERAL_PARENT);
-	for (i = 0; i < class->members_arr.num; i++) {
-		member = class->members_arr.mem[i];
+	flist_foreach(member, &class->members_list, next) {
 		if (!member_needs_init(class, member))
 			continue;
 		memberclass = member->rettype.u.class;
@@ -5338,16 +5325,21 @@ static void print_destruct_parents(struct parser *parser, struct class *class,
 		enum parent_virtual virtual_parents)
 {
 	struct class *parentclass;
-	struct member *member;
-	unsigned i;
+	struct member *member, **destruct_parents;
+	unsigned i = 0;
 
-	for (i = class->members_arr.num; i > 0; i++) {
-		member = class->members_arr.mem[i-1];
+	/* first gather parent destructors */
+	destruct_parents = alloca(class->num_parent_destr * sizeof(member));
+	flist_foreach(member, &class->members_list, next) {
 		if (!member->parent_destructor)
 			continue;
 		if (virtual_parents != member->props.from_virtual)
 			continue;
-
+		destruct_parents[i++] = member;
+	}
+	/* reverse walk our gathered array */
+	while (i--) {
+		member = destruct_parents[i];
 		parentclass = member->origin;
 		outprintf(parser, "\t%s_d_%s(&this->%s);\n",
 			parentclass->name, parentclass->name, member->parentname);
@@ -5378,17 +5370,23 @@ static void print_root_destructor(struct parser *parser, struct class *class)
 static void print_destructor(struct parser *parser, struct class *class)
 {
 	struct class *memberclass;
-	struct member *member, *destructor;
-	unsigned i;
+	struct member *member, *destructor, **destruct_members;
+	unsigned i = 0;
 
 	if (!class->gen_destructor)
 		return;
 
+	/* first gather member destructors */
+	destruct_members = alloca(class->num_destr_vars * sizeof(member));
 	print_func_header(parser, class, class->destructor);
-	for (i = class->members_arr.num; i > 0; i--) {
-		member = class->members_arr.mem[i-1];
+	flist_foreach(member, &class->members_list, next) {
 		if (!member_needs_dispose(class, member))
 			continue;
+		destruct_members[i++] = member;
+	}
+	/* reverse walk our gathered array */
+	while (i--) {
+		member = destruct_members[i];
 		memberclass = member->rettype.u.class;
 		destructor = memberclass->destructor;
 		outprintf(parser, "\t%s_%s%s(&this->%s);\n",
@@ -5430,7 +5428,6 @@ static void print_trampolines(struct parser *parser, struct class *class, struct
 	char *vmtpath, *vmtaccess, *funcmiddle, *structsuffix, *thisaccess, *thismember;
 	struct class *prclass, *implclass, *vmtclass;
 	struct vmt *prvmt;
-	unsigned i;
 
 	get_vmt_path(parser, vmt, &vmtpath, &vmtaccess);
 	for (prvmt = vmt; prvmt->is_diverged; prvmt = prvmt->parent)
@@ -5447,8 +5444,7 @@ static void print_trampolines(struct parser *parser, struct class *class, struct
 		thisaccess = "&this->";
 		thismember = class->name;
 	}
-	for (i = 0; i < prclass->members_arr.num; i++) {
-		member = prclass->members_arr.mem[i];
+	flist_foreach(member, &prclass->members_list, next) {
 		if (member->vmt != prvmt)
 			continue;
 
@@ -5488,13 +5484,15 @@ static void print_trampolines(struct parser *parser, struct class *class, struct
 static void print_coo_class(struct parser *parser, struct class *class)
 {
 	struct parent *parent;
-	unsigned num_parents, first;
+	unsigned num_dync_parents, first;
 	struct class *rootclass;
 
 	rootclass = class->rootclass ? &class->rootclass->class : class;
-	num_parents = class->num_dync_parents;
-	if (num_parents && class->need_dync_p0_dummy)
-		num_parents++;
+	num_dync_parents = 0;
+	flist_foreach(parent, &class->dync_parents, next_dync)
+		num_dync_parents++;
+	if (num_dync_parents && class->need_dync_p0_dummy)
+		num_dync_parents++;
 	switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
 	/* disable packing so 'void* parents[]' is aligned */
 	if (!parser->coo_includes_pr) {
@@ -5508,13 +5506,13 @@ static void print_coo_class(struct parser *parser, struct class *class)
 		"\tuint32_t num_parents;\n", class->name);
 	/* offsets are between parents, assmption is that first parent is located
 	   at offset zero; if this does not hold, then need_dummy is set */
-	if (num_parents > 1)
-		outprintf(parser, "\tuint32_t offsets[%u];\n", num_parents - 1);
-	if (num_parents > 0)
-		outprintf(parser, "\tconst void *parents[%u];\n", num_parents);
+	if (num_dync_parents > 1)
+		outprintf(parser, "\tuint32_t offsets[%u];\n", num_dync_parents - 1);
+	if (num_dync_parents > 0)
+		outprintf(parser, "\tconst void *parents[%u];\n", num_dync_parents);
 	outprintf(parser, "} %s_coo_class = {\n"
-		"\t%u,\n", class->name, num_parents);
-	if (num_parents > 0) {
+		"\t%u,\n", class->name, num_dync_parents);
+	if (num_dync_parents > 0) {
 		parent = class->dync_parents.first;
 		/* dummy means first parent is not at affset 0 =>
 		   no dummy means first parent is at offset 0, then skip first parent */
@@ -5541,13 +5539,12 @@ static void print_coo_class(struct parser *parser, struct class *class)
 
 static void print_vmt(struct parser *parser, struct class *class, struct vmt *vmt)
 {
-	struct member *member;
+	struct member *member, *prmember;
 	const char *vmt_name;
 	char *classsep, *classsuffix, *vmtpre, *vmtpreacc, *vmtaccess, *vmtpath;
 	struct ancestor *ancestor;
 	struct class *rootclass, *prclass;
 	struct vmt *prvmt;
-	unsigned i;
 
 	rootclass = class->rootclass ? &class->rootclass->class : class;
 	vmt_name = get_vmt_name(parser, vmt);
@@ -5577,13 +5574,13 @@ static void print_vmt(struct parser *parser, struct class *class, struct vmt *vm
 	for (prvmt = vmt; prvmt->is_diverged; prvmt = prvmt->parent)
 		;
 	prclass = prvmt->class;
-	for (i = 0; i < prclass->members_arr.num; i++) {
-		member = prclass->members_arr.mem[i];
-		if (member->vmt != prvmt)
+	flist_foreach(prmember, &prclass->members_list, next) {
+		if (prmember->vmt != prvmt)
 			continue;
 		/* need to print our members, not parent's, find it */
+		member = prmember;
 		if (vmt->is_diverged) {
-			if ((member = find_eqv_member(parser, class, member)) == NULL)
+			if ((member = find_eqv_member(parser, class, prmember)) == NULL)
 				continue;
 			if (get_impl_this_class(member) == member->origin)
 				classsep = classsuffix = "";

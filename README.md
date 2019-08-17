@@ -464,7 +464,6 @@ the parser anyway.
 * parse parameters, type without name skipped
 * cleanup parser memory after use, add destroy_parser function
 * remove get_vmt_name, replace with vmt->class->name or vmt->modified->class->name
-* save param_types directly to target in parse_parameters_to
 * sync line numbers better in struct (remove force resync at end)
 * transform dynarrs to linked lists where possible
 * use allocdynitem more?

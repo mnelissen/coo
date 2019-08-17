@@ -346,7 +346,7 @@ struct parser {
 	struct dynarr inserts_arr;    /* struct insert pointers (outer layer) */
 	struct dynarr includepaths;   /* char pointers */
 	struct dynarr file_stack;     /* struct parse_file pointers */
-	struct dynarr param_types;    /* struct anytype *, collect params of funcs */
+	struct dynarr *param_types;   /* struct anytype *, collect params of funcs */
 	struct dynarr param_inserts;  /* 3x char *, replace from/text/to */
 	struct dynarr *inserts;       /* either inserts_arr or a initializer's */
 	struct hash files_seen;       /* struct file_id pointers */
@@ -1588,10 +1588,9 @@ static void save_param_insert(struct parser *parser, char *from, char *text, cha
 static void save_param_type(struct parser *parser, struct allocator *alloc, int position,
 		struct class *class, struct anytype *decl, char *name, char *next)
 {	(void)class; (void)name; (void)next;
-	struct dynarr *dynarr = &parser->param_types;
 	struct anytype *newtype;
 
-	if (grow_dynarr_to(alloc, dynarr, position+1) < 0)
+	if (grow_dynarr_to(alloc, parser->param_types, position+1) < 0)
 		return;
 
 	newtype = agenalloc(sizeof(*newtype));
@@ -1599,8 +1598,8 @@ static void save_param_type(struct parser *parser, struct allocator *alloc, int 
 		return;
 
 	memcpy(newtype, decl, sizeof(*newtype));
-	dynarr->mem[position] = newtype;
-	dynarr->num = position+1;
+	parser->param_types->mem[position] = newtype;
+	parser->param_types->num = position+1;
 }
 
 static void addmember_to_children(struct parser *parser, char *parsepos,
@@ -1642,11 +1641,10 @@ static void parse_parameters_to(struct parser *parser, struct allocator *alloc,
 
 	/* save_param_class stores params in parser->param_types */
 	parser->param_inserts_delta = 0;
+	parser->param_types = param_types;
 	paramsend = parse_parameters(parser, alloc, class, params,
 		params_out ? save_param_insert : NULL, save_param_type, NULL);
-	/* move the dynarr (array pointer etc) to requested array */
-	memcpy(param_types, &parser->param_types, sizeof(*param_types));
-	memset(&parser->param_types, 0, sizeof(parser->param_types));
+	parser->param_types = NULL;
 	if (params_out)
 		*params_out = print_param_inserts(parser, alloc, params, paramsend);
 }

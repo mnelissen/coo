@@ -1958,19 +1958,10 @@ static int addinsert(struct parser *parser, int insert_index,
 {
 	struct insert *insert, **before_pos, **end_pos;
 
-	if (grow_dynarr(&parser->global_mem, parser->inserts) < 0)
+	if (!allocdynitem(&parser->global_mem, parser->inserts, &insert))
 		return -1;
 
-	end_pos = (struct insert **)&parser->inserts->mem[parser->inserts->num];
-	insert = *end_pos;
-	if (!insert) {
-		/* inserts kept in parser->inserts, reuse over all functions */
-		insert = pgenalloc(sizeof(*insert));
-		if (insert == NULL)
-			return -1;
-		*end_pos = insert;
-	}
-
+	end_pos = (struct insert **)&parser->inserts->mem[parser->inserts->num-1];
 	if (insert_index < 0) {
 		/* check flush ordering to be incremental */
 		for (before_pos = end_pos;; before_pos--) {
@@ -1990,8 +1981,8 @@ static int addinsert(struct parser *parser, int insert_index,
 	if (before_pos < end_pos && is_nop_insert(*before_pos)) {
 		/* reuse, so inserts->num doesn't increase */
 		insert = *before_pos;
+		parser->inserts->num--;
 	} else {
-		parser->inserts->num++;
 		if (before_pos < end_pos) {
 			memmove(before_pos+1, before_pos, (char*)end_pos-(char*)before_pos);
 			*before_pos = insert;
@@ -2096,22 +2087,8 @@ static int addincludepath(struct parser *parser, char *path)
 
 static struct parse_file *addfilestack(struct parser *parser)
 {
-	struct dynarr *dynarr = &parser->file_stack;
-	struct parse_file *parse_file;
-
-	if (grow_dynarr(&parser->global_mem, dynarr) < 0)
-		return NULL;
-
-	parse_file = dynarr->mem[dynarr->num];
-	if (!parse_file) {
-		parse_file = pgenzalloc(sizeof(*parse_file));
-		if (parse_file == NULL)
-			return NULL;
-		dynarr->mem[dynarr->num] = parse_file;
-	}
-
-	dynarr->num++;
-	return parse_file;
+	return allocdynitem_size(&parser->global_mem,
+			&parser->file_stack, sizeof(struct parse_file));
 }
 
 static void remove_locals(struct parser *parser, unsigned blocklevel)

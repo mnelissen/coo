@@ -462,11 +462,9 @@ the parser anyway.
 * add syntax to zero-initialize a class automatically
 * optimize duplicated parentname strings == ancestor->path?
 * parse parameters, type without name skipped
-* cleanup parser memory after use, add destroy_parser function
 * remove get_vmt_name, replace with vmt->class->name or vmt->modified->class->name
 * sync line numbers better in struct (remove force resync at end)
 * transform dynarrs to linked lists where possible
-* use allocdynitem more?
 * class->templ_arr use?
 
 ## License

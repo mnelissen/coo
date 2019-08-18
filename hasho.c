@@ -120,7 +120,7 @@ int hasho_remove(struct hasho *table, void *key)
 	}
 }
 
-int hasho_destroy(struct hasho *table)
+int hasho_deinit(struct hasho *table)
 {
 	free(table->entries);
 	table->entries = NULL;

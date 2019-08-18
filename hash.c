@@ -244,7 +244,7 @@ int hash_remove_custom_key(struct hash *table, size_t hash, hash_cmp_cb compare,
 
 	table_index = hash & table->mask;
 	prev_pnext = &table->entries[table_index];
-	for (; entry = (*prev_pnext)->next; prev_pnext = &entry->next) {
+	for (; (entry = (*prev_pnext)->next) != NULL; prev_pnext = &entry->next) {
 		/* hash is equal, check if really equal, that is a fail */
 		if (entry->hash == hash && compare(to_cmp(table, entry), key) == 0) {
 			*prev_pnext = entry->next;
@@ -262,7 +262,7 @@ int hash_remove_key(struct hash *table, size_t hash, void *key)
 	return hash_remove_custom_key(table, hash, table->compare, key);
 }
 
-int hash_destroy(struct hash *table)
+int hash_deinit(struct hash *table)
 {
 	free(table->entries);
 	table->entries = NULL;

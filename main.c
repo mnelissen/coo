@@ -386,6 +386,16 @@ static void init_allocator(struct allocator *alloc)
 	alloc->memblock = &alloc->memory;
 }
 
+static void deinit_allocator(struct allocator *alloc)
+{
+	void *memblock, *next;
+
+	for (memblock = alloc->memory; memblock; memblock = next) {
+		next = *(void**)memblock;
+		free(memblock);
+	}
+}
+
 /* init allocator to start using provided block */
 static void *useblock(struct allocator *alloc, void *block)
 {
@@ -1035,7 +1045,7 @@ static int prepare_output_file(struct parser *parser)
 	return 0;
 }
 
-static void outwrite(struct parser *parser, const void *buffer, size_t size)
+static void outwrite(struct parser *parser, const char *buffer, size_t size)
 {
 	/* if in comparing mode, compare instead of write */
 	if (parser->pf.out == NULL) {
@@ -1046,6 +1056,9 @@ static void outwrite(struct parser *parser, const void *buffer, size_t size)
 			parser->pf.outpos += size;
 			return;
 		}
+		/* do not trigger creating file only for line pragma */
+		if (strprefixcmp("#line", buffer))
+			return;
 		/* input changed compared to output, start writing */
 		if (prepare_output_file(parser) < 0)
 			return;
@@ -1180,7 +1193,7 @@ static void *alloc_namestruct_s(struct allocator *alloc,
 
 #define alloc_namestruct(p,s,n,e) alloc_namestruct_s(p, offsetof(s, name), n, e)
 
-static struct class *initclass(struct parser *parser, struct class *class)
+static struct class *init_class(struct parser *parser, struct class *class)
 {
 	strhash_init(&class->members, 8, member);
 	strhash_init(&class->templpars, 4, templpar);
@@ -1195,6 +1208,13 @@ static struct class *initclass(struct parser *parser, struct class *class)
 	return class;
 }
 
+static void deinit_class(struct class *class)
+{
+	hash_deinit(&class->members);
+	hash_deinit(&class->templpars);
+	hasho_deinit(&class->ancestors);
+}
+
 static struct class *addclass(struct parser *parser, char *classname, char *nameend)
 {
 	struct class *class;
@@ -1203,7 +1223,7 @@ static struct class *addclass(struct parser *parser, char *classname, char *name
 	if (class == NULL)
 		return NULL;
 
-	return initclass(parser, class);
+	return init_class(parser, class);
 }
 
 static char *get_class_funcinsert(struct parser *parser, struct class *class)
@@ -2787,7 +2807,7 @@ static struct rootclass *addrootclass(struct parser *parser, struct class *paren
 	class->parent.child = &class->class;
 	class->parent.is_primary = 1;
 	class->class.is_rootclass = 1;
-	return initclass(parser, &class->class) ? class : NULL;
+	return init_class(parser, &class->class) ? class : NULL;
 }
 
 static void print_root_classes(struct parser *parser, struct class *class)
@@ -5739,6 +5759,7 @@ static int try_include_file(struct parser *parser, char *dir, char *nameend)
 	outbuffer = parser->pf.outbuffer;
 	outfilename = parser->pf.outfilename;
 	memcpy(&parser->pf, parse_file, sizeof(parser->pf));
+
 	parse_file->buffer = buffer;
 	parse_file->bufend = bufend;
 	parse_file->filename = filename;
@@ -6109,6 +6130,35 @@ static int initparser(struct parser *parser)
 			64, offsetof(struct file_id, node), 0) < 0;
 }
 
+static void deinit_parser(struct parser *parser)
+{
+	void *item;
+	unsigned i;
+
+	hash_foreach(item, &parser->classes)
+		deinit_class(item);
+	hash_deinit(&parser->classes);
+	hash_deinit(&parser->classtypes);
+	hash_deinit(&parser->globals);
+	hash_deinit(&parser->locals);
+	hash_deinit(&parser->methodptrtypes);
+	hash_deinit(&parser->files_seen);
+	for (i = 0; i < parser->file_stack.max; i++) {
+		struct parse_file *pf = parser->file_stack.mem[i];
+		if (pf == NULL)
+			break;
+		free(pf->buffer);
+		free(pf->filename);
+		free(pf->outbuffer);
+		free(pf->outfilename);
+	}
+	free(parser->pf.buffer);
+	free(parser->pf.outfilename);
+	free(parser->pf.outbuffer);
+	deinit_allocator(&parser->global_mem);
+	deinit_allocator(&parser->func_mem);
+}
+
 int main(int argc, char **argv)
 {
 	struct parser parser_s, *parser = &parser_s;
@@ -6144,5 +6194,6 @@ int main(int argc, char **argv)
 	if (parser->pf.filename == NULL)
 		parse_stdin(parser);
 
+	deinit_parser(parser);
 	return parser->num_errors > 0;
 }

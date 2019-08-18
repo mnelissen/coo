@@ -33,6 +33,7 @@ size_t memhash(const void *mem, size_t size);
 /* pass offset from userdata to compare data in user_cmp_offset */
 int hash_init(hash_t *table, hash_cmp_cb compare, unsigned size,
         int user_entry_offset, int user_cmp_offset);
+int hash_deinit(struct hash *table);
 void hash_clear(struct hash *table);
 /* find user entry with provided address of compare data as key, return NULL if not found */
 void *hash_find(struct hash *table, size_t hash, void *key);
@@ -46,7 +47,6 @@ int hash_remove(struct hash *table, struct hash_entry *entry);
 int hash_remove_custom_key(struct hash *table, size_t hash, hash_cmp_cb compare, void *key);
 /* lookup a hash entry and remove it from the table */
 int hash_remove_key(struct hash *table, size_t hash, void *key);
-int hash_destroy(struct hash *table);
 
 #define hash_foreach(u, h) \
   for (u = NULL; (u = hash_next(h, u)) != NULL;)

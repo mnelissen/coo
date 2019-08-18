@@ -8,7 +8,7 @@ SUFFIXES:=
 %.c: %.w %.ch
 %.tex: %.w %.ch
 CFLAGS=-Wall -Wextra -g
-all: coo coortl.o coortl.oo
+all: coo coo_opt coortl.o coortl.oo
 coo: main.o hash.o hasho.o
 	gcc $(LDFLAGS) -o $@ $^
 coo_opt: main.oo hash.oo hasho.oo
@@ -26,7 +26,7 @@ testcpp.o: testcpp.cpp
 %.o: %.c %.h
 	gcc $(CFLAGS) -c -o $@ $<
 %.oo: %.c %.h
-	gcc $(CFLAGS) -O2 -c -o $@ $<
+	gcc $(CFLAGS) -Os -c -o $@ $<
 main.h:
 clean:
 	rm -f *.o

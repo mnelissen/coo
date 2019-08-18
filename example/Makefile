@@ -6,6 +6,7 @@ SUFFIXES:=
 %: RCS/%
 %: RCS/%,v
 %: SCCS/s.%
+COO=../coo_opt
 CFLAGS=-Iinc -I.. -Wall -Wextra -Wno-unused-parameter -g
 CC=gcc
 TESTS:=$(patsubst %.coo,%_run,$(wildcard fail*.coo))
@@ -19,15 +20,15 @@ clean:
 example: example.coo.c
 	$(CC) $(CFLAGS) -o $@ $<
 example.coo.c: example.coo
-	../coo $(EXTRA) -Iinc $<
+	$(COO) $(EXTRA) -Iinc $<
 coortlopt.o: ../coortl.c
 	$(CC) $(CFLAGS) -O2 -c -o $@ $<
 coortldbg.o: ../coortl.c
 	$(CC) $(CFLAGS) -c -o $@ $<
-fail%_run: fail%.coo fail%.exp ../coo
-	../coo $< 2>&1 | diff -u fail$*.exp -
-good%.coo.c: good%.coo good%.exp ../coo
-	../coo $< 2>&1 && touch good$*.coo.c
+fail%_run: fail%.coo fail%.exp $(COO)
+	$(COO) $< 2>&1 | diff -u fail$*.exp -
+good%.coo.c: good%.coo good%.exp $(COO)
+	$(COO) $< 2>&1 && touch good$*.coo.c
 	diff -u good$*.exp good$*.coo.c
 good%_exe: good%.coo.c coortlopt.o
 	$(CC) $(CFLAGS) -O2 -o $@ $^

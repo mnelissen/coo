@@ -464,7 +464,6 @@ the parser anyway.
 * parse parameters, type without name skipped
 * remove get_vmt_name, replace with vmt->class->name or vmt->modified->class->name
 * sync line numbers better in struct (remove force resync at end)
-* class->templ_arr use?
 
 ## License
 

@@ -124,7 +124,6 @@ struct class {
 	struct hash members;
 	flist(struct member) members_list;
 	struct hash templpars;       /* template parameters for this class (types) */
-	struct dynarr templ_arr;     /* ... in order of declaration for parent mapping */
 	struct hasho ancestors;      /* class => ancestor, all classes inherited from */
 	flist(struct vmt) vmts;     /* vmts for this class */
 	blist(struct parent) descendants;   /* classes inheriting from this class */
@@ -212,7 +211,7 @@ struct templpar {
 	struct hash_entry node;    /* entry in class->templpars */
 	struct anytype impl;       /* implementation, unknown => "void *" */
 	char *implstr;             /* representation string of impl */
-	unsigned index;            /* this type's index into class->templ_arr */
+	unsigned index;            /* this par's index in class declaration */
 	char name[];               /* declared name of template type */
 };
 
@@ -1259,25 +1258,20 @@ static struct templpar *addtemplpar(struct parser *parser,
 {
 	struct templpar *tp;
 
-	if (grow_dynarr(&parser->global_mem, &class->templ_arr) < 0)
-		return NULL;
-
 	tp = alloc_namestruct(&parser->global_mem, struct templpar, typename, nameend);
 	if (tp == NULL)
 		return NULL;
 
+	tp->index = class->templpars.num_entries;
 	if (strhash_insert(&class->templpars, tp)) {
 		/* already exists (tp allocated in parser memory, can't free) */
 		return NULL;
 	}
 
-	tp->index = class->templ_arr.num;
 	tp->impl.type = AT_UNKNOWN;
 	tp->impl.args.mem = NULL;
 	tp->impl.args.max = 0;
 	tp->implstr = "void *";
-	class->templ_arr.mem[tp->index] = tp;
-	class->templ_arr.num++;
 	return tp;
 }
 

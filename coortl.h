@@ -5,6 +5,7 @@
 #define _COO_RTL_H
 
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef _MSC_VER
 #define coo_inline __forceinline

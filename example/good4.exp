@@ -127,6 +127,7 @@ int main(void)
 #line 128 "good4.coo.c"
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #pragma pack(8)
 const struct S_base_coo_class {
 	uint32_t num_parents;

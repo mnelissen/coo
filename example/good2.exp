@@ -78,6 +78,7 @@ int main(void)
 #line 81 "good2.coo.c"
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #pragma pack(8)
 const struct C_coo_class {
 	uint32_t num_parents;

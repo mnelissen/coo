@@ -23,10 +23,9 @@ testc.o: testc.c
 	gcc $(CFLAGS) -ansi -pedantic -c -o $@ $<
 testcpp.o: testcpp.cpp
 	g++ $(CFLAGS) -ansi -pedantic -c -o $@ $<
-%.o: %.c %.h
+%.o: %.c $(wildcard %.h)
 	gcc $(CFLAGS) -c -o $@ $<
-%.oo: %.c %.h
+%.oo: %.c $(wildcard %.h)
 	gcc $(CFLAGS) -Os -c -o $@ $<
-main.h:
 clean:
 	rm -f *.o

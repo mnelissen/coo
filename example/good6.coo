@@ -1,0 +1,33 @@
+#include <stdio.h>
+
+struct X {
+  int x;
+};
+
+struct Base<T> {
+  T a;
+  Base(T init_a);
+};
+
+struct Derived<T:X*> : Base<T> {
+  T multiply(T x);
+};
+
+Base::Base(T init_a)
+{
+  a = init_a;
+}
+
+T Derived::multiply(T x)
+{
+  a->x *= x->x;
+  return x;
+}
+
+int main(void)
+{
+  X f = { 2 }, x = { 3 };
+  Derived<X*> d(&x);
+  d.multiply(&f);
+  printf("%d\n", d.a->x);
+}

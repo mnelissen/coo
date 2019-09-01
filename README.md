@@ -32,6 +32,7 @@ not available.
 * virtual methods
 * inheritance
 * dynamic casting
+* templates (generics, typesafe containers)
 * tiny runtime library (for dynamic casting)
 
 Planned:
@@ -39,7 +40,6 @@ Planned:
 * structured error handling (in some form)
 * protected classes
 * special case for interfaces? (only virtual methods, no variables)
-* typesafe containers
 * reference counted classes
 * function overloading? (in some form)
 
@@ -415,6 +415,66 @@ int main(void)
   cb(3);          /* call methodptr: c.set_c1(3) */
   printf("cb resulted in c.c1: %d\n", c.c1);
   return 0;
+}
+```
+
+### Templates/generics
+
+Although in the COO implementation called templates, COO templates
+actually work more like generics in C#. Think of them as typesafe
+containers. Template parameter types are always pointer types.
+Template classes are compiled immediately where they are defined.
+(In C++ they are compiled where they are instantiated.) This
+improves compile speed and reduces code bloat. It does mean though
+they are less flexible than in C++, e.g. you can't perform meta-
+programming using them.
+
+Syntax: declaring template struct add '<>' after the class name,
+in which the template parameter types are declared. These are
+new type names that exist in this class' context. They can have
+an optional 'declared type', which means that the user of the
+template class has to specialize it with a class that is a
+descendant of the declared type (or the declared type itself).
+If there is no declared type, then the type is effectively
+void *. This is useful for generic container data structure
+applications. Using a declared type for the template parameter
+allows the implementation of the template class to use
+whatever fields and methods defined in the declared type. This
+is useful when the declared type is an interface, and the user
+of the template class specializes it with a class that implements
+this interface.
+
+``` cpp
+struct X {
+  int x;
+};
+
+struct Base<T> {
+  T a;
+  Base(T init_a);
+};
+
+struct Derived<T:X*> : Base<T> {
+  T multiply(T x);
+};
+
+Base::Base(T init_a)
+{
+  a = init_a;
+}
+
+T Derived::multiply(T x)
+{
+  a->x *= x->x;
+  return x;
+}
+
+int main(void)
+{
+  X f = { 2 }, x = { 3 };
+  Derived<X*> d(&x);
+  d.multiply(&f);
+  printf("%d\n", d.a->x);
 }
 ```
 

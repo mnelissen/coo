@@ -30,9 +30,11 @@
         for (item = (blist)->rlast; item; item = (item)->__VA_ARGS__)
 
 /* double linked list, iname is variable name for list item prev/next pointers */
-#define dlist(type)            struct { type *dprev, *dnext; }
-#define dlist_item(type)       struct { type *iprev, *inext; }
-#define dlist_empty(dlist)     ((dlist)->dprev == (dlist)->dnext)
+#define dlist(type)                struct { type *dprev, *dnext; }
+#define dlist_item(type)           struct { type *iprev, *inext; }
+#define dlist_empty(dlist, iname)  ((dlist)->dnext->iname.inext == (dlist)->dnext)
+#define dlist_first(dlist)         (dlist)->dnext
+#define dlist_last(dlist)          (dlist)->dprev
 #define dlist_head(dlist, iname) \
         (void*)((size_t)(dlist) - ((size_t)(&(dlist)->dnext->iname.iprev) - (size_t)(dlist)->dnext))
 #define dlist_init(dlist, iname) \

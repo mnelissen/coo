@@ -1,0 +1,81 @@
+#line 1 "good6.coo"
+#include <stdio.h>
+
+struct X {
+  int x;
+};
+
+#line 7 "good6.coo"
+struct Base {
+  void *a;
+};
+
+#line 14 "good6.coo.c"
+struct Base *new_Base(void *init_a);
+struct Base *Base_Base(struct Base *this, void *init_a);
+#line 12 "good6.coo"
+struct Derived {
+	struct Base Base;
+};
+
+#line 22 "good6.coo.c"
+#include <coortl.h>
+struct Derived *new_Derived(void *init_a);
+struct X *Derived_multiply(struct Derived *this, struct X *x);
+#line 16 "good6.coo"
+struct Base *Base_Base(struct Base *this, void *init_a)
+{
+  this->a = init_a;
+#line 30 "good6.coo.c"
+	return this;
+#line 19 "good6.coo"
+}
+
+struct X *Derived_multiply(struct Derived *this, struct X *x)
+{
+  ((struct X*)this->Base.a)->x *= x->x;
+  return x;
+}
+
+int main(void)
+{
+  struct X f = { 2 }, x = { 3 };
+  struct Derived d;
+#line 30
+  Base_Base(&d.Base, &x);
+#line 31
+  Derived_multiply(&d, &f);
+  printf("%d\n", ((struct X*)d.Base.a)->x);
+}
+
+#line 52 "good6.coo.c"
+#include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
+#pragma pack(8)
+const struct Base_coo_class {
+	uint32_t num_parents;
+} Base_coo_class = {
+	0,
+};
+
+struct Base *new_Base(void *init_a)
+{
+	struct Base *this = malloc(sizeof(*this));
+	if (this == NULL) return NULL;
+	return Base_Base(this, init_a);
+}
+
+const struct Derived_coo_class {
+	uint32_t num_parents;
+} Derived_coo_class = {
+	0,
+};
+
+struct Derived *new_Derived(void *init_a)
+{
+	struct Derived *this = malloc(sizeof(*this));
+	if (this == NULL) return NULL;
+	Base_Base(&this->Base, init_a);
+	return this;
+}

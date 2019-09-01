@@ -8,6 +8,7 @@ struct A {
 struct B<T,U> : A {
 	T b1;
 	U b2;
+	U set_b2(U arg);
 };
 
 struct C<T> : B<T,A*> {
@@ -27,9 +28,28 @@ struct M {
 	int m;
 };
 
-void B::set_b2(U arg)
+struct N : M {
+	int n;
+};
+
+struct O : N {
+	int o;
+};
+
+struct E<T:M*,U:M*> : C<T> {
+	T e1, e2;
+	U e3, e4;
+	E(T n_e1, T n_e2);
+};
+
+struct F<T:N*> : E<T,N*> {
+	int f;
+};
+
+U B::set_b2(U arg)
 {
 	b2 = arg;
+	return arg;
 }
 
 void C::set_b1_c1(T arg)
@@ -38,12 +58,39 @@ void C::set_b1_c1(T arg)
 	b1 = c1;
 }
 
+void E::E(T n_e1, T n_e2)
+{
+	e1 = n_e1;
+	e2 = n_e2;
+}
+
+void E::use_t(void)
+{
+	e1->m = 6;
+	e2->m = 7;
+}
+
+U E::set_e3(U arg)
+{
+	e3 = arg;
+	return e3;
+}
+
+void F::use_t_f(void)
+{
+	e1->n = 8;
+	e2->n = 9;
+}
+
 int main(void)
 {
 	A a1, a2;
 	B<L*,A*> *b_a;
 	C<L*> *c = new C<L*>;
 	D<L*,M*> *d = new D<L*,M*>;
+	O o1, o2;
+	N *p_n1;
+	F<O*> f(&o1, &o2);
 	L l1, l2;
 	b_a = c;
 	c->set_b1_c1(&l1);
@@ -53,8 +100,12 @@ int main(void)
 	b_a = d;
 	d->set_b1_c1(&l2);
 	d->set_b2(&a2);
-	b_a->b2->a = 5;
-	b_a->b1->l = 6;
-	printf("a1=%d l1=%d a2=%d l2=%d", a1.a, l1.l, a2.a, l2.l);
+	b_a->b2->a = 4;
+	b_a->b1->l = 5;
+	f.use_t();
+	f.use_t_f();
+	p_n1 = f.set_e3(&o1);
+	printf("a1=%d l1=%d a2=%d l2=%d o1.m=%d o2.m=%d o2.n=%d o2.n=%d p_n1->n=%d",
+		a1.a, l1.l, a2.a, l2.l, o1.m, o2.m, o1.n, o2.n, p_n1->n);
 	return 0;
 }

@@ -549,30 +549,6 @@ static int iswordstart(int ch)
 	return isalpha(ch) || ch == '_';
 }
 
-static char *rev_linestart(const char *bufstart, char *position)
-{
-	while (position > bufstart && islinespace(position[-1]))
-		position--;
-	return position;
-}
-
-static char *rev_lineend(const char *bufstart, char *position)
-{
-	position = rev_linestart(bufstart, position);
-	if (position == bufstart)
-		return position;
-	/* reverse through line ending, but only one */
-	if (*(position-1) != '\n')
-		return position;
-	/* skip LF */
-	if (--position == bufstart)
-		return position;
-	if (*(position-1) != '\r')
-		return position;
-	/* skip CR */
-	return position - 1;
-}
-
 /* assumes pos[0] == '/' was matched, starting a possible comment */
 static int skip_comment(struct parser *parser, char **retpos)
 {
@@ -1120,8 +1096,6 @@ static void switch_line_pragma(struct parser *parser, enum line_pragma_mode newm
 		return;
 
 	parser->pf.line_pragma_mode = newmode;
-	/* update lines_coo before printing because needs to match next line */
-	parser->pf.lines_coo++;
 	lineno = parser->pf.lineno;
 	/* note that line pragmas must be relative from current directory!
 	   you might expect relative from file location, but no */
@@ -1131,7 +1105,8 @@ static void switch_line_pragma(struct parser *parser, enum line_pragma_mode newm
 		filename = parser->pf.outfilename;
 		lineno += parser->pf.lines_coo;
 	}
-	outprintf(parser, "\n#line %d \"%s\"", lineno, filename);
+	outprintf(parser, "#line %d \"%s\"\n", lineno, filename);
+	parser->pf.lines_coo++;
 }
 
 static char *open_tempscope(struct parser *parser, int *varnr)
@@ -2115,7 +2090,7 @@ static void remove_locals(struct parser *parser, unsigned blocklevel)
 static void pr_lineno(struct parser *parser, int lineno)
 {
 	if (parser->line_pragmas && parser->pf.line_pragma_mode == LINE_PRAGMA_INPUT) {
-		outprintf(parser, "\n#line %d", lineno);
+		outprintf(parser, "#line %d\n", lineno);
 		parser->pf.lines_coo++;
 	}
 }
@@ -2869,8 +2844,8 @@ static void print_root_classes(struct parser *parser, struct class *class)
 			if (rootclass == NULL) {
 				name = class->name;
 				switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
-				outprintf(parser, "\nstruct %s_root {\n"
-					"\tstruct %s %s;\n", name, name, name);
+				outprintf(parser, "struct %s_root {\n"
+					"\tstruct %s %s;\n\n", name, name, name);
 				/* 3 lines here, 1 for closing '}' */
 				parser->pf.lines_coo += 4;
 				class->rootclass = addrootclass(parser, class);
@@ -2916,7 +2891,7 @@ static void include_coortl(struct parser *parser)
 		return;
 
 	switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
-	outputs(parser, "\n#include <coortl.h>");
+	outputs(parser, "#include <coortl.h>\n");
 	parser->pf.coo_rtl_included = 1;
 	parser->pf.lines_coo++;
 }
@@ -2936,7 +2911,7 @@ static void print_vmt_type(struct parser *parser, struct class *class)
 
 		switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
 		include_coortl(parser);
-		outprintf(parser, "\nextern const struct %s {\n"
+		outprintf(parser, "extern const struct %s {\n"
 			"\tstruct coo_vmt vmt_base;\n", get_vmt_name(parser, vmt));
 		/* 3 lines here, 1 to close struct */
 		parser->pf.lines_coo += 4;
@@ -2956,7 +2931,7 @@ static void print_vmt_type(struct parser *parser, struct class *class)
 				member->paramstext);
 			parser->pf.lines_coo++;
 		}
-		outprintf(parser, "} %s;\n", get_vmt_name(parser, vmt));
+		outprintf(parser, "} %s;\n\n", get_vmt_name(parser, vmt));
 	}
 }
 
@@ -2966,7 +2941,7 @@ static void print_coo_class_var(struct parser *parser, struct class *class)
 		return;
 
 	switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
-	outprintf(parser, "\nextern const struct %s_coo_class %s_coo_class;\n",
+	outprintf(parser, "extern const struct %s_coo_class %s_coo_class;\n\n",
 		class->name, class->name);
 	parser->pf.lines_coo += 2;
 }
@@ -3038,7 +3013,7 @@ static void print_func_decl(struct parser *parser,
 	empty = member->paramstext[0] == ')';
 	thisclass = get_impl_this_class(member);
 	rootclass = member->is_root_constructor && class->rootclass ? "_root" : "";
-	outprintf(parser, "\n%s%s_%s%s(struct %s%s *this%s%s;",
+	outprintf(parser, "%s%s_%s%s(struct %s%s *this%s%s;\n",
 		member->rettypestr, class->name, member->implprefix, member->implname,
 		thisclass->name, rootclass, empty ? "" : ", ", member->paramstext);
 	parser->pf.lines_coo++;
@@ -3055,21 +3030,21 @@ static void print_member_decls(struct parser *parser, struct class *class)
 		switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
 		params = class->root_constructor->paramstext;
 		params = params[0] == ')' ? "void)" : params;
-		outprintf(parser, "\nstruct %s *new_%s(%s;", class->name,
+		outprintf(parser, "struct %s *new_%s(%s;\n", class->name,
 			class->name, params);
 		parser->pf.lines_coo++;
 	}
 	freer_class = class->freer_class;
 	if (freer_class == class) {
 		switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
-		outprintf(parser, "\nvoid free_%s(struct %s *this);",
+		outprintf(parser, "void free_%s(struct %s *this);\n",
 			class->name, class->name);
 		parser->pf.lines_coo++;
 	} else if (freer_class) {
 		ancestor = hasho_find(&class->ancestors, freer_class);
 		if (ancestor) {
 			switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
-			outprintf(parser, "\n#define free_%s(this) free_%s(%s(this)->%s)",
+			outprintf(parser, "#define free_%s(this) free_%s(%s(this)->%s)\n",
 				class->name, freer_class->name,
 				ancestor->parent->is_virtual ? "" : "&", ancestor->path);
 			parser->pf.lines_coo++;
@@ -3109,7 +3084,7 @@ static void print_member_decls(struct parser *parser, struct class *class)
 		if (member->props.is_function) {
 			print_func_decl(parser, class, member);
 		} else {
-			outprintf(parser, "\nextern %s%s_%s;",
+			outprintf(parser, "extern %s%s_%s;\n",
 				member->rettypestr, class->name, member->name);
 			parser->pf.lines_coo++;
 		}
@@ -3605,13 +3580,9 @@ static struct class *parse_struct(struct parser *parser, char *openbrace)
 			break;
 		next = declend;
 	}
-	/* skip till next declaration, but flush until end of previous line
-	   as our prints all start with '\n' output; so also compensate lines_coo */
-	next = skip_whitespace(parser, declend + 1);
-	parser->pf.pos = rev_lineend(parser->pf.writepos, next);
+	/* skip till next declaration */
+	parser->pf.pos = skip_whitespace(parser, declend + 1);
 	flush(parser);
-	parser->pf.pos = next;
-	parser->pf.lines_coo--;
 	if (parser->pf.defined_tp_impl)
 		include_coortl(parser);
 	print_root_classes(parser, class);
@@ -3619,7 +3590,6 @@ static struct class *parse_struct(struct parser *parser, char *openbrace)
 	print_coo_class_var(parser, class);
 	print_member_decls(parser, class);
 	switch_line_pragma(parser, LINE_PRAGMA_INPUT);
-	parser->pf.lines_coo++;
 	return class;
 }
 
@@ -4180,15 +4150,15 @@ static void print_initializers(struct parser *parser, char *position, unsigned b
 	if (parser->initializers.num == 0)
 		return;
 
-	/* go back to start of line, so we can print full line statements
-	   copy the indentation to our added lines */
-	linestart = rev_lineend(parser->pf.writepos, position);
+	/* copy the indentation to our added lines, note parser linestart has
+	   offset -1 so that diagnostic messages start counting at column 1 */
+	linestart = parser->pf.linestart + 1;
 	flush_until(parser, linestart);
 	/* define a return variable if needed */
 	if (retvartype) {
 		outwrite(parser, linestart, position - linestart);
 		outwrite(parser, retvartype, retvartypeend - retvartype);
-		outwrite(parser, "__coo_ret;", 10);
+		outwrite(parser, "__coo_ret;\n", 11);
 		parser->pf.lines_coo++;
 	}
 	lineno = 0;
@@ -4235,7 +4205,7 @@ static void print_initializers(struct parser *parser, char *position, unsigned b
 		}
 		print_inserts(parser, &initializer->inserts);
 		flush_until(parser, initializer->end);
-		outwrite(parser, ";", 1);
+		outwrite(parser, ";\n", 2);
 	}
 	parser->initializers.num = 0;
 	parser->pf.writepos = linestart;
@@ -4265,14 +4235,14 @@ static void print_disposers(struct parser *parser, char *position,
 		retblocknr = disposer->retblocknr;
 	}
 
-	/* go back to start of line, so we can print full line statements
-	   copy the indentation to our added lines */
-	linestart = rev_lineend(parser->pf.writepos, position);
+	/* copy the indentation to our added lines, note parser linestart has
+	   offset -1 so that diagnostic messages start counting at column 1 */
+	linestart = parser->pf.linestart + 1;
 	flush_until(parser, linestart);
 	switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
 	for (;;) {
 		if (next_retblocknr != retblocknr) {
-			outprintf(parser, "\n__coo_out%d:", retblocknr);
+			outprintf(parser, "__coo_out%d:\n", retblocknr);
 			parser->pf.lines_coo++;
 			next_retblocknr = retblocknr;
 			/* in case no disposers, just to print label */
@@ -4281,7 +4251,7 @@ static void print_disposers(struct parser *parser, char *position,
 		}
 		outwrite(parser, linestart, position - linestart);
 		member = disposer->class->destructor;
-		outprintf(parser, "\t%s_%s%s(&%s);", member->origin->name,
+		outprintf(parser, "\t%s_%s%s(&%s);\n", member->origin->name,
 			member->implprefix, member->implname, disposer->name);
 		parser->pf.lines_coo++;
 		if (--i == 0)
@@ -4294,7 +4264,7 @@ static void print_disposers(struct parser *parser, char *position,
 
 	if (blocklevel == 1 && need_retvar) {
 		outwrite(parser, linestart, position - linestart);
-		outprintf(parser, "\treturn __coo_ret;");
+		outprintf(parser, "\treturn __coo_ret;\n");
 		parser->pf.lines_coo++;
 	}
 	parser->disposers.num = i;
@@ -5270,21 +5240,11 @@ static void parse_function(struct parser *parser, char *next)
 	}
 
 	if (is_constructor) {
-		int lines_coo = 1;
-		for (; curr > parser->pf.buffer && isspace(curr[-1]); curr--) {
-			if (curr[-1] == '\n') {
-				/* move line back, so have to compensate output lineno */
-				lines_coo = 2;
-				parser->pf.lines_coo--;
-				curr--;
-				break;
-			}
-		}
 		flush_until(parser, curr);
 		parser->pf.writepos = curr;
 		switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
-		outwrite(parser, "\n\treturn this;", 14);
-		parser->pf.lines_coo += lines_coo;
+		outwrite(parser, "\treturn this;\n", 14);
+		parser->pf.lines_coo++;
 		switch_line_pragma(parser, LINE_PRAGMA_INPUT);
 	}
 
@@ -5500,7 +5460,7 @@ static void print_root_destructor(struct parser *parser, struct class *class)
 	if (!class->gen_root_destructor)
 		return;
 
-	outprintf(parser, "\nvoid %s_d_%s_root(struct %s *this)\n{\n",
+	outprintf(parser, "void %s_d_%s_root(struct %s *this)\n{\n",
 		class->name, class->name, class->name);
 	if (class->rootclass)
 		outprintf(parser, "\tstruct %s *root_this = container_of(this, struct %s, %s);",
@@ -5644,7 +5604,7 @@ static void print_coo_class(struct parser *parser, struct class *class)
 	switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
 	/* disable packing so 'void* parents[]' is aligned */
 	if (!parser->coo_includes_pr) {
-		outputs(parser, "\n"
+		outputs(parser,
 			"#include <stddef.h>\n"
 			"#include <stdint.h>\n"
 			"#include <stdlib.h>\n"
@@ -5756,6 +5716,9 @@ static void print_class_impl(struct parser *parser)
 
 		if (parser->pf.writepos != parser->pf.pos) {
 			flush(parser);
+			/* separation newline between user and coo-generated block */
+			outwrite(parser, "\n", 1);
+			parser->pf.lines_coo++;
 			switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
 		}
 

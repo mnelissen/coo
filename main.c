@@ -313,7 +313,7 @@ struct disposer {
 	unsigned retblocknr;    /* block number for return goto(s), disposers */
 };
 
-enum line_pragma_mode { LINE_PRAGMA_INPUT, LINE_PRAGMA_OUTPUT };
+enum line_pragma_mode { LINE_PRAGMA_INPUT, LINE_PRAGMA_OUTPUT, LINE_PRAGMA_INVALID };
 
 struct parse_file {
 	FILE *out;                /* file writing to */
@@ -551,10 +551,8 @@ static int iswordstart(int ch)
 
 static char *rev_linestart(const char *bufstart, char *position)
 {
-	for (; position > bufstart; position--) {
-		if (!islinespace(*(position-1)))
-			break;
-	}
+	while (position > bufstart && islinespace(position[-1]))
+		position--;
 	return position;
 }
 
@@ -633,28 +631,6 @@ static char *skip_whitespace(struct parser *parser, char *p)
 				p++;
 		} else
 			break;
-	}
-	return p;
-}
-
-/* skip whitespace and comments for this line only */
-static char *skip_whiteline(struct parser *parser, char *p)
-{
-	for (;;) {
-		if (islinespace(*p))
-			p++;
-		else if (*p == '/') {
-			if (!skip_comment(parser, &p))
-				break;
-		} else
-			break;
-	}
-	/* skip one line ending, not all */
-	if (*p == '\r')
-		p++;
-	if (*p == '\n') {
-		parser_nextline(parser, p);
-		p++;
 	}
 	return p;
 }
@@ -3200,7 +3176,7 @@ static struct class *parse_struct(struct parser *parser, char *openbrace)
 	char *declbegin, *retend, *membername, *nameend, *params, *declend, *next;
 	char *classname, *classnameend, *parentname, *prevdeclend, *prevnext;
 	int level, parent_primary, parent_virtual, is_lit_var, len, prevdeclend_lineno;
-	int first_virtual_warn, first_vmt_warn, empty_line, need_destructor, have_retbase;
+	int first_virtual_warn, first_vmt_warn, need_destructor, have_retbase;
 	struct classtype *parentclasstype, *classtype, *defclasstype;
 	struct parent *parent, *firstparent;
 	const struct anytype *retbasetype;
@@ -3481,9 +3457,12 @@ static struct class *parse_struct(struct parser *parser, char *openbrace)
 			insert_handler = save_type_insert;
 			rettypestr = NULL;  /* to be constructed */
 			flush_skipto(parser, prevdeclend, prevdeclend_lineno, next + 1);
+			/* force emit new line pragma when switching back */
+			parser->pf.line_pragma_mode = LINE_PRAGMA_INVALID;
 		} else {
 			insert_handler = print_type_insert;
 			rettypestr = declbegin;
+			switch_line_pragma(parser, LINE_PRAGMA_INPUT);
 		}
 
 		if (memberprops.is_override) {
@@ -3626,36 +3605,21 @@ static struct class *parse_struct(struct parser *parser, char *openbrace)
 			break;
 		next = declend;
 	}
-	parser->pf.pos = skip_whiteline(parser, declend + 1);
+	/* skip till next declaration, but flush until end of previous line
+	   as our prints all start with '\n' output; so also compensate lines_coo */
+	next = skip_whitespace(parser, declend + 1);
+	parser->pf.pos = rev_lineend(parser->pf.writepos, next);
 	flush(parser);
+	parser->pf.pos = next;
+	parser->pf.lines_coo--;
 	if (parser->pf.defined_tp_impl)
 		include_coortl(parser);
 	print_root_classes(parser, class);
 	print_vmt_type(parser, class);
 	print_coo_class_var(parser, class);
 	print_member_decls(parser, class);
-	/* skip line endings, so we put resync at next declaration line */
-	for (empty_line = 0;; parser->pf.pos++) {
-		if (*parser->pf.pos != '\r' && *parser->pf.pos != '\n')
-			break;
-		if (parser->pf.pos[0] == '\r' && parser->pf.pos[1] == '\n')
-			parser->pf.pos++;
-		parser->pf.lineno++;
-		parser->pf.linestart = parser->pf.pos;
-		empty_line = 1;
-	}
-	/* many reasons why lineno could have gone out of sync, always resync
-	   (e.g. skipped function declaration lines) */
-	if (parser->line_pragmas) {
-		/* flush line endings just skipped in above loop */
-		flush(parser);
-		/* switch back line pragma to input mode, but hard
-		   to reuse because we want to force a resync here */
-		outprintf(parser, "%s#line %d \"%s\"\n", empty_line ? "" : "\n",
-			parser->pf.lineno, parser->pf.filename);
-		parser->pf.line_pragma_mode = LINE_PRAGMA_INPUT;
-		parser->pf.lines_coo += !empty_line + 1;
-	}
+	switch_line_pragma(parser, LINE_PRAGMA_INPUT);
+	parser->pf.lines_coo++;
 	return class;
 }
 

@@ -11,12 +11,11 @@ struct S_plain {
 	int a, b;
 };
 
-#line 13 "good4.coo"
 struct S_base {
 	int c, d;
 };
 
-#line 20 "good4.coo.c"
+#line 19 "good4.coo.c"
 struct S_base *new_S_base(void);
 void free_S_base(struct S_base *this);
 struct S_base *S_base_S_base(struct S_base *this);
@@ -27,7 +26,7 @@ struct S_inherit_pri {
 	int e, f;
 };
 
-#line 31 "good4.coo.c"
+#line 30 "good4.coo.c"
 struct S_inherit_pri *new_S_inherit_pri(void);
 #define free_S_inherit_pri(this) free_S_base(&(this)->S_base)
 void S_inherit_pri_func_pri(struct S_inherit_pri *this);
@@ -38,7 +37,7 @@ struct S_inherit_sec {
 	int g, h;
 };
 
-#line 42 "good4.coo.c"
+#line 41 "good4.coo.c"
 struct S_inherit_sec *new_S_inherit_sec(void);
 void free_S_inherit_sec(struct S_inherit_sec *this);
 void S_inherit_sec_func_sec(struct S_inherit_sec *this);
@@ -47,7 +46,7 @@ struct S_alt_base {
 	int a, b;
 };
 
-#line 51 "good4.coo.c"
+#line 50 "good4.coo.c"
 struct S_alt_base *new_S_alt_base(void);
 void free_S_alt_base(struct S_alt_base *this);
 struct S_alt_base *S_alt_base_S_alt_base(struct S_alt_base *this);
@@ -59,7 +58,7 @@ struct S_both {
 	int g, h;
 };
 
-#line 63 "good4.coo.c"
+#line 62 "good4.coo.c"
 struct S_both *new_S_both(void);
 #define free_S_both(this) free_S_base(&(this)->S_base)
 void S_both_func_both(struct S_both *this);
@@ -69,7 +68,7 @@ struct S_base *S_base_S_base(struct S_base *this)
 {
 	this->c = 10;
 	this->d = 11;
-#line 73 "good4.coo.c"
+#line 72 "good4.coo.c"
 	return this;
 #line 44 "good4.coo"
 }
@@ -93,7 +92,7 @@ struct S_alt_base *S_alt_base_S_alt_base(struct S_alt_base *this)
 {
 	this->a = 20;
 	this->b = 21;
-#line 97 "good4.coo.c"
+#line 96 "good4.coo.c"
 	return this;
 #line 65 "good4.coo"
 }
@@ -124,7 +123,7 @@ int main(void)
 }
 
 
-#line 128 "good4.coo.c"
+#line 127 "good4.coo.c"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>

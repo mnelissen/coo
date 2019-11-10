@@ -6,14 +6,13 @@ struct A {
 	int a;
 };
 
-#line 8 "good5.coo"
 struct B {
 	struct A A;
 	void *b1;
 	void *b2;
 };
 
-#line 17 "good5.coo.c"
+#line 16 "good5.coo.c"
 void *B_set_b2(struct B *this, void *arg);
 #line 14 "good5.coo"
 struct C {
@@ -21,7 +20,7 @@ struct C {
 	void *c1;
 };
 
-#line 25 "good5.coo.c"
+#line 24 "good5.coo.c"
 void C_set_b1_c1(struct C *this, void *arg);
 #line 19 "good5.coo"
 struct D {
@@ -29,36 +28,31 @@ struct D {
 	int d;
 };
 
-#line 23 "good5.coo"
 struct L {
 	int l;
 };
 
-#line 27 "good5.coo"
 struct M {
 	int m;
 };
 
-#line 31 "good5.coo"
 struct N {
 	struct M M;
 	int n;
 };
 
-#line 35 "good5.coo"
 struct O {
 	struct N N;
 	int o;
 };
 
-#line 39 "good5.coo"
 struct E {
 	struct C C;
 	struct M *e1, *e2;
 	struct M *e3, *e4;
 };
 
-#line 62 "good5.coo.c"
+#line 56 "good5.coo.c"
 #include <coortl.h>
 struct E *new_E(struct M *n_e1, struct M *n_e2);
 struct E *E_E(struct E *this, struct M *n_e1, struct M *n_e2);
@@ -68,7 +62,7 @@ struct F {
 	int f;
 };
 
-#line 72 "good5.coo.c"
+#line 66 "good5.coo.c"
 struct F *new_F(struct M *n_e1, struct M *n_e2);
 #line 49 "good5.coo"
 void *B_set_b2(struct B *this, void *arg)
@@ -87,7 +81,7 @@ struct E *E_E(struct E *this, struct M *n_e1, struct M *n_e2)
 {
 	this->e1 = n_e1;
 	this->e2 = n_e2;
-#line 91 "good5.coo.c"
+#line 85 "good5.coo.c"
 	return this;
 #line 65 "good5.coo"
 }
@@ -141,7 +135,7 @@ int main(void)
 	return 0;
 }
 
-#line 145 "good5.coo.c"
+#line 139 "good5.coo.c"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>

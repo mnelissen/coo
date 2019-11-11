@@ -523,7 +523,6 @@ the parser anyway.
 * optimize duplicated parentname strings == ancestor->path?
 * parse parameters, type without name skipped
 * remove get_vmt_name, replace with vmt->class->name or vmt->modified->class->name
-* abort everywhere on all memory allocation fails
 
 ## License
 

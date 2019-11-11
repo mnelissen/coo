@@ -342,6 +342,7 @@ struct allocator {
 	void *memblock;           /* current memory block for allocation */
 	size_t memptr;            /* pointer to next available memory */
 	size_t memavail;          /* available memory in current block */
+	int *memerror;            /* out-of-memory condition */
 };
 
 struct parser {
@@ -374,6 +375,7 @@ struct parser {
 	int num_errors;               /* user errors, prevent spam */
 	int tempscope_varnr;          /* unique nr for vars in tempscope */
 	int type_inserts_delta;       /* delta type_inserts text to insert - to skip */
+	int memerror;                 /* allocator out of memory */
 	char line_pragmas;            /* print line pragmas for compiler lineno */
 	char saw_nodyncast;           /* saw the nodyncast keyword */
 	char saw_final;               /* saw the final keyword */
@@ -392,12 +394,13 @@ DEFINE_STRHASH_FIND_E(parser, methodptrtypes, methodptr, methodptr)
 
 pid_t g_pid;
 
-static void init_allocator(struct allocator *alloc)
+static void init_allocator(struct allocator *alloc, int *memerror)
 {
 	/* init memblock to point to "memory", a pointer to NULL
 	   this will trigger block allocation upon first use/alloc
 	   and then initialize alloc->memory to point to first block */
 	alloc->memblock = &alloc->memory;
+	alloc->memerror = memerror;
 }
 
 static void deinit_allocator(struct allocator *alloc)
@@ -425,8 +428,10 @@ static void *nextblock(struct allocator *alloc)
 
 	if (nextblock == NULL) {
 		nextblock = malloc(MEMBLOCK_SIZE);
-		if (!nextblock)
+		if (!nextblock) {
+			*alloc->memerror = 1;
 			return NULL;
+		}
 
 		/* simple linked list */
 		*(void**)alloc->memblock = nextblock;
@@ -5977,7 +5982,7 @@ static void parse(struct parser *parser)
 	}
 
 	/* search for start of struct or function */
-	for (;;) {
+	while (!parser->memerror) {
 		parser->pf.pos = skip_whitespace(parser, parser->pf.pos);
 		if (*parser->pf.pos == '#') {
 			parser->pf.pos++;
@@ -6099,6 +6104,8 @@ static int parse_source_size(struct parser *parser, char *filename,
 	/* start parsing! */
 	prev_num_errors = parser->num_errors;
 	parse(parser);
+	if (parser->memerror)
+		return -1;
 	new_errors = parser->num_errors > prev_num_errors;
 	if (!new_errors)
 		print_class_impl(parser);  /* vmt(s), alloc, constr. */
@@ -6167,7 +6174,7 @@ static void parse_from_file(struct parser *parser, char *filename, char *ext_out
 
 	in = fopen(filename, "rb");
 	if (!in) {
-		fprintf(stderr, "Cannot open file '%s'\n", filename);
+		fprintf(stderr, "cannot open file '%s'\n", filename);
 		return;
 	}
 
@@ -6177,14 +6184,16 @@ static void parse_from_file(struct parser *parser, char *filename, char *ext_out
 	}
 
 	parser->newfilename_end = strend;
-	parse_source(parser, filename, in, ext_out);
+	if (parse_source(parser, filename, in, ext_out) < 0)
+		fprintf(stderr, "out of memory\n");
 }
 
-static int parse_stdin(struct parser *parser)
+static void parse_stdin(struct parser *parser)
 {
 	parser->pf.out = stdout;
-	return parse_source_size(parser,
-		"<stdin>", stdin, STDIN_BUFSIZE, parser->source_ext_out);
+	if (parse_source_size(parser, "<stdin>", stdin, STDIN_BUFSIZE,
+			parser->source_ext_out) < 0)
+		fprintf(stderr, "out of memory\n");
 }
 
 static void usage(void)
@@ -6223,8 +6232,8 @@ static int initparser(struct parser *parser)
 	parser->header_ext_out = ".coo.h";
 	parser->line_pragmas = 1;
 	parser->inserts = &parser->inserts_list;
-	init_allocator(&parser->global_mem);
-	init_allocator(&parser->func_mem);
+	init_allocator(&parser->global_mem, &parser->memerror);
+	init_allocator(&parser->func_mem, &parser->memerror);
 	dlist_init(&parser->inserts_list, item);
 	return strhash_init(&parser->classes, 64, class) < 0 ||
 		strhash_init(&parser->classtypes, 64, classtype) < 0 ||
@@ -6300,5 +6309,5 @@ int main(int argc, char **argv)
 		parse_stdin(parser);
 
 	deinit_parser(parser);
-	return parser->num_errors > 0;
+	return parser->memerror + parser->num_errors > 0;
 }

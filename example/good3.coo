@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-struct H {
+nozeroinit struct H {
 	int xh;
 	void H();
 };
@@ -11,7 +11,7 @@ struct A {
 	H h;
 };
 
-struct B : A {
+nozeroinit struct B : A {
 	int g;
 };
 

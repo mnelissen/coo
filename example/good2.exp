@@ -79,6 +79,7 @@ int main(void)
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #pragma pack(8)
 const struct C_coo_class {
 	uint32_t num_parents;

@@ -134,8 +134,35 @@ void A::helperfunc(void)
 void A::somefunc(void)
 {
   helperfunc();
-  printf("%d", a);
+  printf("%d", x);
 }
+```
+
+### Zero initialization
+
+When classes have variables and use COO features like (virtual) functions
+or visibility indicators, then the class is automatically zero initialized.
+Automatic initialization works for both heap allocations (using operator
+new) and stack allocations. This behavior can be overruled by specifying
+nozeroinit in front of the 'struct' keyword to inhibit this automatic
+initialization. This is useful for small classes where the constructor
+explicitly initializes all fields already anyway. To enable automatic
+zero initialization on a C struct (with only variables), specify zeroinit
+in front. Examples:
+
+``` cpp
+/* instances of class A are zero-initialized
+   even though not using COO features */
+zeroinit struct A {
+  int x;
+};
+
+/* instances of class B are not zero-initialized
+   even though using COO features (function declared in struct) */
+nozeroinit struct B {
+  int y;
+  void func(int y1);
+};
 ```
 
 ### Visibility
@@ -519,7 +546,6 @@ the parser anyway.
 
 ## TODO
 
-* add syntax to zero-initialize a class automatically
 * optimize duplicated parentname strings == ancestor->path?
 * parse parameters, type without name skipped
 * remove get_vmt_name, replace with vmt->class->name or vmt->modified->class->name

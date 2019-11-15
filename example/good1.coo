@@ -39,7 +39,7 @@ struct D : B, C {
 	override handle_pass_C;
 };
 
-struct E : A {
+nozeroinit struct E : A {
 	int e1, e2;
 	E();
 };

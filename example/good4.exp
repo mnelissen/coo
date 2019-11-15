@@ -17,6 +17,7 @@ struct S_base {
 
 #line 19 "good4.coo.c"
 struct S_base *new_S_base(void);
+void S_base_S_base_zi(struct S_base *this);
 void free_S_base(struct S_base *this);
 struct S_base *S_base_S_base(struct S_base *this);
 void S_base_d_S_base(struct S_base *this);
@@ -26,8 +27,9 @@ struct S_inherit_pri {
 	int e, f;
 };
 
-#line 30 "good4.coo.c"
+#line 31 "good4.coo.c"
 struct S_inherit_pri *new_S_inherit_pri(void);
+void S_inherit_pri_S_base_zi(struct S_inherit_pri *this);
 #define free_S_inherit_pri(this) free_S_base(&(this)->S_base)
 void S_inherit_pri_func_pri(struct S_inherit_pri *this);
 #line 24 "good4.coo"
@@ -37,8 +39,9 @@ struct S_inherit_sec {
 	int g, h;
 };
 
-#line 41 "good4.coo.c"
+#line 43 "good4.coo.c"
 struct S_inherit_sec *new_S_inherit_sec(void);
+void S_inherit_sec_S_base_zi(struct S_inherit_sec *this);
 void free_S_inherit_sec(struct S_inherit_sec *this);
 void S_inherit_sec_func_sec(struct S_inherit_sec *this);
 #line 29 "good4.coo"
@@ -46,8 +49,9 @@ struct S_alt_base {
 	int a, b;
 };
 
-#line 50 "good4.coo.c"
+#line 53 "good4.coo.c"
 struct S_alt_base *new_S_alt_base(void);
+void S_alt_base_S_alt_base_zi(struct S_alt_base *this);
 void free_S_alt_base(struct S_alt_base *this);
 struct S_alt_base *S_alt_base_S_alt_base(struct S_alt_base *this);
 void S_alt_base_d_S_alt_base(struct S_alt_base *this);
@@ -58,8 +62,9 @@ struct S_both {
 	int g, h;
 };
 
-#line 62 "good4.coo.c"
+#line 66 "good4.coo.c"
 struct S_both *new_S_both(void);
+void S_both_S_both_zi(struct S_both *this);
 #define free_S_both(this) free_S_base(&(this)->S_base)
 void S_both_func_both(struct S_both *this);
 struct S_both *S_both_S_both(struct S_both *this);
@@ -68,7 +73,7 @@ struct S_base *S_base_S_base(struct S_base *this)
 {
 	this->c = 10;
 	this->d = 11;
-#line 72 "good4.coo.c"
+#line 77 "good4.coo.c"
 	return this;
 #line 44 "good4.coo"
 }
@@ -92,7 +97,7 @@ struct S_alt_base *S_alt_base_S_alt_base(struct S_alt_base *this)
 {
 	this->a = 20;
 	this->b = 21;
-#line 96 "good4.coo.c"
+#line 101 "good4.coo.c"
 	return this;
 #line 65 "good4.coo"
 }
@@ -123,10 +128,11 @@ int main(void)
 }
 
 
-#line 127 "good4.coo.c"
+#line 132 "good4.coo.c"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #pragma pack(8)
 const struct S_base_coo_class {
 	uint32_t num_parents;
@@ -136,9 +142,15 @@ const struct S_base_coo_class {
 
 struct S_base *new_S_base(void)
 {
-	struct S_base *this = malloc(sizeof(*this));
+	struct S_base *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
 	return S_base_S_base(this);
+}
+
+void S_base_S_base_zi(struct S_base *this)
+{
+	memset(this, 0, sizeof(*this));
+	S_base_S_base(this);
 }
 
 void free_S_base(struct S_base *this)
@@ -155,9 +167,15 @@ const struct S_both_coo_class {
 
 struct S_both *new_S_both(void)
 {
-	struct S_both *this = malloc(sizeof(*this));
+	struct S_both *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
 	return S_both_S_both(this);
+}
+
+void S_both_S_both_zi(struct S_both *this)
+{
+	memset(this, 0, sizeof(*this));
+	S_both_S_both(this);
 }
 
 struct S_both *S_both_S_both(struct S_both *this)
@@ -175,10 +193,16 @@ const struct S_inherit_sec_coo_class {
 
 struct S_inherit_sec *new_S_inherit_sec(void)
 {
-	struct S_inherit_sec *this = malloc(sizeof(*this));
+	struct S_inherit_sec *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
 	S_base_S_base(&this->S_base);
 	return this;
+}
+
+void S_inherit_sec_S_base_zi(struct S_inherit_sec *this)
+{
+	memset(this, 0, sizeof(*this));
+	S_base_S_base(&this->S_base);
 }
 
 void free_S_inherit_sec(struct S_inherit_sec *this)
@@ -195,9 +219,15 @@ const struct S_alt_base_coo_class {
 
 struct S_alt_base *new_S_alt_base(void)
 {
-	struct S_alt_base *this = malloc(sizeof(*this));
+	struct S_alt_base *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
 	return S_alt_base_S_alt_base(this);
+}
+
+void S_alt_base_S_alt_base_zi(struct S_alt_base *this)
+{
+	memset(this, 0, sizeof(*this));
+	S_alt_base_S_alt_base(this);
 }
 
 void free_S_alt_base(struct S_alt_base *this)
@@ -214,8 +244,14 @@ const struct S_inherit_pri_coo_class {
 
 struct S_inherit_pri *new_S_inherit_pri(void)
 {
-	struct S_inherit_pri *this = malloc(sizeof(*this));
+	struct S_inherit_pri *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
 	S_base_S_base(&this->S_base);
 	return this;
+}
+
+void S_inherit_pri_S_base_zi(struct S_inherit_pri *this)
+{
+	memset(this, 0, sizeof(*this));
+	S_base_S_base(&this->S_base);
 }

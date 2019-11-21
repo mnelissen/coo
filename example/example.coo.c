@@ -18,17 +18,19 @@ extern const struct A_vmt {
 extern const struct A_coo_class A_coo_class;
 
 struct A *new_A(void);
+void A_A_root_zi(struct A *this);
 void A_vfunc_a(struct A *this, int a2);
 struct A *A_A(struct A *this);
 struct A *A_A_root(struct A *this);
 #line 11 "example.coo"
 struct B {
 	struct A A;
+#line 14 "example.coo"
 	int b1;
 	struct A a_local;
 };
 
-#line 32 "example.coo.c"
+#line 34 "example.coo.c"
 extern const struct B_vmt {
 	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct B *this, int a2);
@@ -38,6 +40,7 @@ extern const struct B_vmt {
 extern const struct B_coo_class B_coo_class;
 
 struct B *new_B(void);
+void B_B_root_zi(struct B *this);
 void B_vfunc_a(struct B *this, int a2);
 void B_vfunc_b(struct B *this, int b2);
 struct B *B_B(struct B *this);
@@ -49,12 +52,11 @@ struct C {
 	const struct coo_vmt *vmt;
 };
 
-#line 53 "example.coo.c"
+#line 56 "example.coo.c"
 struct C_root {
 	struct C C;
 	struct A A;
 };
-
 extern const struct C_A_vmt {
 	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct A *this, int a2);
@@ -69,6 +71,7 @@ extern const struct C_vmt {
 extern const struct C_coo_class C_coo_class;
 
 struct C *new_C(void);
+void C_C_root_zi(struct C_root *this);
 void C_vfunc_a(struct C *this, int a2);
 void C_vfunc_c(struct C *this, int c2);
 void C_vfunc_c3(struct C *this, int c3);
@@ -77,10 +80,11 @@ struct C *C_C_root(struct C_root *this);
 struct D {
 	struct B B;
 	struct C C;
+#line 28 "example.coo"
 	int d1;
 };
 
-#line 84 "example.coo.c"
+#line 88 "example.coo.c"
 extern const struct D_vmt {
 	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct D *this, int a2);
@@ -97,6 +101,7 @@ extern const struct D_C_vmt {
 extern const struct D_coo_class D_coo_class;
 
 struct D *new_D(struct A *a);
+void D_D_root_zi(struct D *this, struct A *a);
 void D_vfunc_a(struct D *this, int a2);
 void D_vfunc_b(struct D *this, int b2);
 void D_vfunc_c3(struct C *this, int c3);
@@ -109,7 +114,7 @@ struct E {
 	int e1;
 };
 
-#line 113 "example.coo.c"
+#line 118 "example.coo.c"
 extern const struct E_vmt {
 	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct D *this, int a2);
@@ -120,6 +125,7 @@ extern const struct E_vmt {
 extern const struct E_coo_class E_coo_class;
 
 struct E *new_E(void);
+void E_E_root_zi(struct E *this);
 void free_E(struct E *this);
 void E_vfunc_b(struct E *this, int b2);
 void E_vfunc_d(struct E *this, struct A* a, struct B *b);
@@ -138,7 +144,7 @@ static void D_test(struct D *this)
 	printf("%d %d %d %d\n", this->B.A.a1, this->B.b1, this->C.c1, this->d1);
 }
 
-void * foo_get_foo(struct foo *this, int a)
+void *foo_get_foo(struct foo *this, int a)
 {
 	printf("get_foo a=%d\n", a);
 	return this;
@@ -177,7 +183,7 @@ void foo_vfunc(struct foo *this, int arg1, float *arg2)
 struct A *A_A(struct A *this)
 {
 	this->a1 = -1;
-#line 181 "example.coo.c"
+#line 187 "example.coo.c"
 	return this;
 #line 93 "example.coo"
 }
@@ -191,7 +197,7 @@ struct B *B_B(struct B *this)
 {
 	A_A(&this->A);
 	A_A_root(&this->a_local);
-#line 195 "example.coo.c"
+#line 201 "example.coo.c"
 	return this;
 #line 104 "example.coo"
 }
@@ -247,7 +253,7 @@ struct D *D_D(struct D *this, struct A *a)
 {
 	this->B.b1 = -5;
 	B_B(&this->B);
-#line 251 "example.coo.c"
+#line 257 "example.coo.c"
 	return this;
 #line 157 "example.coo"
 }
@@ -256,7 +262,7 @@ struct E *E_E(struct E *this)
 {
 	this->D.B.A.a1 = -6;
 	D_D(&this->D, &this->D.B.A);
-#line 260 "example.coo.c"
+#line 266 "example.coo.c"
 	return this;
 #line 163 "example.coo"
 }
@@ -290,13 +296,15 @@ int main(int argc, char **argv)
 
 	int __coo_ret;
 #line 184
-	A_A_root(&a); A_A_root(&a_a);
+	A_A_root_zi(&a);
+ A_A_root_zi(&a_a);
 	aa1 = a.a1;
-	B_B_root(&b);
+	B_B_root_zi(&b);
 	C_C_root(&c);
-	D_D_root(&d, &(&c)->A); db1 = d.B.b1;
-	E_E_root(&e);
-	foo_foo_root(&foo);
+	D_D_root_zi(&d, &(&c)->A);
+ db1 = d.B.b1;
+	E_E_root_zi(&e);
+	foo_foo_root_zi(&foo);
 #line 192
 	a.a1 = 10;
 	((struct A_vmt*)a.vmt)->vfunc_a(&a, 11);
@@ -310,7 +318,7 @@ int main(int argc, char **argv)
 
 	struct E e2;
 #line 202
-	E_E_root(&e2);
+	E_E_root_zi(&e2);
 #line 203
 	c.A.a1 = 30;
 	c.C.c1 = 31;
@@ -359,7 +367,7 @@ int main(int argc, char **argv)
 	printf("%d %d\n", aa1, db1);
 
 	__coo_ret = 0;
-#line 364 "example.coo.c"
+#line 369 "example.coo.c"
 __coo_out1:
 	E_d_E(&e2);
 __coo_out0:
@@ -368,9 +376,11 @@ __coo_out0:
 #line 250 "example.coo"
 }
 
-#line 372 "example.coo.c"
+#line 378 "example.coo.c"
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 #pragma pack(8)
 const struct foo_coo_class {
 	uint32_t num_parents;
@@ -386,9 +396,15 @@ const struct foo_vmt foo_vmt = {
 
 struct foo *new_foo(void)
 {
-	struct foo *this = malloc(sizeof(*this));
+	struct foo *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
 	return foo_foo_root(this);
+}
+
+void foo_foo_root_zi(struct foo *this)
+{
+	memset(this, 0, sizeof(*this));
+	foo_foo_root(this);
 }
 
 struct foo *foo_foo_root(struct foo *this)
@@ -425,10 +441,16 @@ const struct C_vmt C_vmt = {
 
 struct C *new_C(void)
 {
-	struct C_root *this = malloc(sizeof(*this));
+	struct C_root *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
 	C_C_root(this);
 	return &this->C;
+}
+
+void C_C_root_zi(struct C_root *this)
+{
+	memset(this, 0, sizeof(*this));
+	C_C_root(this);
 }
 
 struct C *C_C_root(struct C_root *this)
@@ -457,9 +479,15 @@ const struct B_vmt B_vmt = {
 
 struct B *new_B(void)
 {
-	struct B *this = malloc(sizeof(*this));
+	struct B *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
 	return B_B_root(this);
+}
+
+void B_B_root_zi(struct B *this)
+{
+	memset(this, 0, sizeof(*this));
+	B_B_root(this);
 }
 
 struct B *B_B_root(struct B *this)
@@ -482,9 +510,15 @@ const struct A_vmt A_vmt = {
 
 struct A *new_A(void)
 {
-	struct A *this = malloc(sizeof(*this));
+	struct A *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
 	return A_A_root(this);
+}
+
+void A_A_root_zi(struct A *this)
+{
+	memset(this, 0, sizeof(*this));
+	A_A_root(this);
 }
 
 struct A *A_A_root(struct A *this)
@@ -511,9 +545,15 @@ const struct E_vmt E_vmt = {
 
 struct E *new_E(void)
 {
-	struct E *this = malloc(sizeof(*this));
+	struct E *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
 	return E_E_root(this);
+}
+
+void E_E_root_zi(struct E *this)
+{
+	memset(this, 0, sizeof(*this));
+	E_E_root(this);
 }
 
 struct E *E_E_root(struct E *this)
@@ -558,9 +598,15 @@ const struct D_C_vmt D_C_vmt = {
 
 struct D *new_D(struct A *a)
 {
-	struct D *this = malloc(sizeof(*this));
+	struct D *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
 	return D_D_root(this, a);
+}
+
+void D_D_root_zi(struct D *this, struct A *a)
+{
+	memset(this, 0, sizeof(*this));
+	D_D_root(this, a);
 }
 
 struct D *D_D_root(struct D *this, struct A *a)

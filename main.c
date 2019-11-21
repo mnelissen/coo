@@ -1082,14 +1082,6 @@ static void flush(struct parser *parser)
 	parser->pf.writepos = parser->pf.pos;
 }
 
-static void flush_skipto(struct parser *parser,
-		char *until, int until_lineno, char *continue_at)
-{
-	flush_until(parser, until);
-	parser->pf.writepos = continue_at;
-	parser->pf.lines_coo -= parser->pf.lineno - until_lineno;
-}
-
 static void print_implicit_struct(struct parser *parser, char *position)
 {
 	/* print "struct " if this type X was implicitly declared by struct X {};
@@ -3033,7 +3025,7 @@ static void print_func_decl(struct parser *parser,
 
 static void print_member_decls(struct parser *parser, struct class *class)
 {
-	struct class* freer_class;
+	struct class *freer_class, *rootclass;
 	struct ancestor *ancestor;
 	struct member *member;
 	char *params, *sep, *ret_pre, *ret_type, *ret_post;
@@ -3056,9 +3048,13 @@ static void print_member_decls(struct parser *parser, struct class *class)
 				ret_type = class->name;
 				ret_post = " *";
 			}
+			if (class->rootclass)
+				rootclass = &class->rootclass->class;
+			else
+				rootclass = class;
 			outprintf(parser, "%s%s%s%s_%s_zi(struct %s *this%s%s;\n",
 				ret_pre, ret_type, ret_post, class->name,
-				class->root_constructor->name, class->name, sep, params);
+				class->root_constructor->name, rootclass->name, sep, params);
 			parser->pf.lines_coo++;
 		}
 	} else {
@@ -3183,15 +3179,15 @@ static struct class *parse_struct(struct parser *parser, char *openbrace)
 	struct class *class, *parentclass, *varclass;
 	struct memberprops memberprops = { 0 };
 	char *declbegin, *retend, *membername, *nameend, *params, *declend, *next;
-	char *classname, *classnameend, *parentname, *prevdeclend, *prevnext;
+	char *classname, *classnameend, *parentname, *prevnext;
 	int level, parent_primary, parent_virtual, is_lit_var, len, prevdeclend_lineno;
 	int first_virtual_warn, first_vmt_warn, need_destructor, have_retbase;
-	int is_coo_class, parent_zeroinit, has_vars;
+	int is_coo_class, parent_zeroinit, has_vars, flushdecl_lineno, last_linestart_lineno;
 	struct classtype *parentclasstype, *classtype, *defclasstype;
 	struct parent *parent, *firstparent;
 	const struct anytype *retbasetype;
 	struct member *member;
-	char namebuf[128], *rettypestr;
+	char namebuf[128], *rettypestr, *last_linestart, *indent_start, *indent_end;
 	unsigned numexp, extra_pointerlevel;
 	new_insert_cb insert_handler;
 	anyptr rettype;
@@ -3334,8 +3330,9 @@ static struct class *parse_struct(struct parser *parser, char *openbrace)
 	}
 
 	level = 1;  /* next is at opening brace '{' */
-	declbegin = retend = NULL;
+	declbegin = retend = indent_start = indent_end = NULL;
 	membername = next = openbrace;  /* make compiler happy */
+	flushdecl_lineno = 0;
 	for (;;) {
 		/* search (sub)struct or end of variable or function prototype */
 		prevnext = next + 1;
@@ -3343,7 +3340,18 @@ static struct class *parse_struct(struct parser *parser, char *openbrace)
 			prevdeclend_lineno = parser->pf.lineno;
 		next = skip_whitespace(parser, prevnext);
 		if (declbegin == NULL) {
-			prevdeclend = prevnext;
+			/* last linestart is the last linestart in front of this
+			   declaration, if no newline in between then end of last decl
+			   note that pf.linestart has offset 1 for messages, column 1 */
+			last_linestart = parser->pf.linestart + 1;
+			last_linestart_lineno = parser->pf.lineno;
+			if (last_linestart < prevnext) {
+				last_linestart = prevnext;
+				last_linestart_lineno = prevdeclend_lineno;
+			} else {
+				indent_start = last_linestart;
+				indent_end = next;
+			}
 			declbegin = next;
 			have_retbase = 0;
 		}
@@ -3374,7 +3382,10 @@ static struct class *parse_struct(struct parser *parser, char *openbrace)
 				memberprops.visibility = PRIVATE;
 			else
 				pr_err(declbegin, "unrecognized visibility modifier");
-			flush_skipto(parser, prevdeclend, prevdeclend_lineno, next + 1);
+			if (!flushdecl_lineno) {
+				flush_until(parser, last_linestart);
+				flushdecl_lineno = last_linestart_lineno;
+			}
 			is_coo_class = 1;
 			declbegin = NULL;
 			continue;
@@ -3449,17 +3460,35 @@ static struct class *parse_struct(struct parser *parser, char *openbrace)
 			continue;
 		}
 
+		/* do not print functions or static variables inside the struct */
+		if (memberprops.is_function || memberprops.is_static) {
+			insert_handler = save_type_insert;
+			rettypestr = NULL;  /* to be constructed */
+			if (!flushdecl_lineno) {
+				flush_until(parser, last_linestart);
+				flushdecl_lineno = last_linestart_lineno;
+			}
+			/* force emit new line pragma when switching back */
+			parser->pf.line_pragma_mode = LINE_PRAGMA_INVALID;
+		} else {
+			insert_handler = print_type_insert;
+			rettypestr = declbegin;
+			if (flushdecl_lineno) {
+				parser->pf.writepos = last_linestart;
+				parser->pf.lines_coo -= parser->pf.lineno - flushdecl_lineno;
+				flushdecl_lineno = 0;
+			}
+			switch_line_pragma(parser, LINE_PRAGMA_INPUT);
+		}
+
 		/* no need to check virtual and static because cannot both at declbegin */
 		if (memberprops.is_virtual) {
 			/* new members need a primary vmt to put them in */
 			if (!memberprops.is_override && !class->vmt) {
 				class->need_root_constructor = 1;
 				addvmt(parser, class, NULL, class, LITERAL_PARENT);
-				/* flush to front of virtual function */
-				flush_until(parser, declbegin);
-				outputs(parser, "const struct coo_vmt *vmt;");
-				/* set writepos such that flush below is no-op */
-				parser->pf.writepos = prevdeclend;
+				outwrite(parser, indent_start, indent_end - indent_start);
+				outputs(parser, "const struct coo_vmt *vmt;\n");
 				parser->pf.lines_coo++;
 			}
 			declbegin += 8;  /* skip "virtual " */
@@ -3471,20 +3500,7 @@ static struct class *parse_struct(struct parser *parser, char *openbrace)
 		if (!memberprops.is_function)
 			has_vars = 1;
 
-		/* do not print functions or static variables inside the struct */
 		next = declend;
-		if (memberprops.is_function || memberprops.is_static) {
-			insert_handler = save_type_insert;
-			rettypestr = NULL;  /* to be constructed */
-			flush_skipto(parser, prevdeclend, prevdeclend_lineno, next + 1);
-			/* force emit new line pragma when switching back */
-			parser->pf.line_pragma_mode = LINE_PRAGMA_INVALID;
-		} else {
-			insert_handler = print_type_insert;
-			rettypestr = declbegin;
-			switch_line_pragma(parser, LINE_PRAGMA_INPUT);
-		}
-
 		if (memberprops.is_override) {
 			/* cannot add member, should have inherited already from parent */
 			implmember(parser, membername, class, membername, nameend, memberprops);
@@ -3543,6 +3559,11 @@ static struct class *parse_struct(struct parser *parser, char *openbrace)
 
 		if (*declend == ';')
 			declbegin = retend = NULL;
+	}
+
+	if (flushdecl_lineno) {
+		parser->pf.writepos = last_linestart;
+		parser->pf.lines_coo -= parser->pf.lineno - flushdecl_lineno;
 	}
 
 	if (!class)
@@ -3624,12 +3645,14 @@ skip_noclass:
 		if (next != classname) {
 			if (class && parser->saw.k.typdef) {
 				defclasstype = addclasstype(parser, classname, next);
-				if (defclasstype == NULL)
-					return NULL;
-				defclasstype->t.type = AT_CLASS;
-				defclasstype->t.u.class = class;
-				defclasstype->t.implicit = 1;
-				defclasstype->t.pointerlevel = extra_pointerlevel;
+				if (defclasstype) {
+					defclasstype->t.type = AT_CLASS;
+					defclasstype->t.u.class = class;
+					defclasstype->t.implicit = 1;
+					defclasstype->t.pointerlevel = extra_pointerlevel;
+				} else {
+					pr_warn(classname, "class type already exists");
+				}
 			} else {
 				/* TODO: addglobal() */
 			}
@@ -4747,6 +4770,8 @@ static void parse_function(struct parser *parser, char *next)
 					} else {
 						dyncast[parenlevel] = DYNCAST_EXPR;
 					}
+					if (typ(exprdecl[parenlevel])->type == AT_UNKNOWN)
+						exprdecl[parenlevel] = rettype;
 					continue;
 				}
 			} else if (strprefixcmp("return", curr) && !isalnum(curr[6])) {
@@ -5131,7 +5156,7 @@ static void parse_function(struct parser *parser, char *next)
 		}
 		if (*curr == '(') {
 			memberstart[parenlevel] = curr;
-			if (immdecl) {
+			if (typ(immdecl)->type != AT_UNKNOWN) {
 				exprdecl[parenlevel] = immdecl;
 				immdecl = unknown_typeptr;
 			}
@@ -5155,13 +5180,17 @@ static void parse_function(struct parser *parser, char *next)
 					dyncast[parenlevel] = DYNCAST_NONE;
 				}
 				parenlevel--;
-				immdecl = unknown_typeptr;
 				if (targetparams[parenlevel].params) {
 					/* reset paraminfo if was parsing function arguments
 					   for functions, don't copy the last type upwards */
 					targetparams[parenlevel].params = NULL;
-				} else if (!exprdecl[parenlevel] && exprdecl[parenlevel+1])
-					exprdecl[parenlevel] = exprdecl[parenlevel+1];
+				} else if (typ(exprdecl[parenlevel])->type == AT_UNKNOWN) {
+					if (typ(exprdecl[parenlevel+1])->type != AT_UNKNOWN)
+						exprdecl[parenlevel] = exprdecl[parenlevel+1];
+					else
+						exprdecl[parenlevel] = immdecl;
+				}
+				immdecl = unknown_typeptr;
 			}
 			state = FINDVAR;
 		} else if (*curr == '*') {
@@ -5201,8 +5230,8 @@ static void parse_function(struct parser *parser, char *next)
 			curr++;
 		} else if (*curr == ':' && curr[1] == ':') {
 			if (member && member->is_constructor) {
-				/* inserting "this", no additional pointer */
-				immdecl = thisptr;
+				/* recognized a class name as constructor member */
+				immdecl = to_anyptr(&member->origin->t, 0);
 				goto accessinherited;
 			} else if (to_class(decl)) {
 				immdecl = to_anyptr(decl, 0);
@@ -5372,6 +5401,7 @@ static void print_class_zeroinit(struct parser *parser, struct class *class)
 	char *params, *sep, *ret_pre, *ret_type, *ret_post, *ret_oper;
 	char *constr_addr, *constr_arrow, *constr_path;
 	struct ancestor *ancestor;
+	struct class *rootclass;
 
 	if (!class->zeroinit)
 		return;
@@ -5389,6 +5419,10 @@ static void print_class_zeroinit(struct parser *parser, struct class *class)
 			ret_post = " *";
 			ret_oper = "return ";
 		}
+		if (class->rootclass)
+			rootclass = &class->rootclass->class;
+		else
+			rootclass = class;
 		if (rootconstr->definition != class) {
 			ancestor = hasho_find(&class->ancestors, rootconstr->definition);
 			if (!ancestor) {
@@ -5404,7 +5438,7 @@ static void print_class_zeroinit(struct parser *parser, struct class *class)
 		outprintf(parser, "\n%s%s%s%s_%s_zi(struct %s *this%s%s\n"
 			"{\n\tmemset(this, 0, sizeof(*this));\n"
 			"\t%s%s_%s(%sthis%s%s", ret_pre, ret_type, ret_post, class->name,
-			rootconstr->name, class->name, sep, params,
+			rootconstr->name, rootclass->name, sep, params,
 			ret_oper, rootconstr->definition->name, rootconstr->name,
 			constr_addr, constr_arrow, constr_path);
 		print_param_names(parser, rootconstr->paramstext);
@@ -5585,7 +5619,8 @@ static void print_root_destructor(struct parser *parser, struct class *class)
 		outprintf(parser, "\tstruct %s *root_this = container_of(this, struct %s, %s);",
 			class->name, class->name, class->name);
 	if (class->has_destructor) {
-		outprintf(parser, "\t%s_d_%s(this);\n\t", class->name, class->name);
+		outprintf(parser, "\t%s_d_%s(&this->%s);\n\t",
+			class->name, class->name, class->name);
 	} else {
 		/* no destructor, need to call all parents here then */
 		print_destruct_parents(parser, class, LITERAL_PARENT);
@@ -6091,6 +6126,7 @@ static void parse(struct parser *parser)
 	char *curr, *next;
 
 	/* write line directives for useful compiler messages */
+	parser->pf.linestart = parser->pf.pos - 1;
 	if (parser->line_pragmas) {
 		outprintf(parser, "#line 1 \"%s\"\n", parser->pf.filename);
 		/* 1 here, and start at 1 */

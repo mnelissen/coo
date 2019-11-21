@@ -19,7 +19,7 @@ clean:
 	rm -f example $(TESTS)
 example: example.coo.c
 	$(CC) $(CFLAGS) -o $@ $<
-example.coo.c: example.coo
+example.coo.c: example.coo $(COO)
 	$(COO) $(EXTRA) -Iinc $<
 coortlopt.o: ../coortl.c
 	$(CC) $(CFLAGS) -O2 -c -o $@ $<

@@ -1,2 +1,8 @@
-B::vfunc_a(3)
-C::vfunc_b(4)
+B::vfunc_a(10) b=1
+C::vfunc_b(11) b=1 c=2
+B::vfunc_a(20) b=1
+C::vfunc_b(21) b=1 c=2
+B::vfunc_a(30) b=1
+B::vfunc_a(31) b=1
+D::funcD(32) d=3
+E::funcE(40) b=1 c=2 d=3 e=4

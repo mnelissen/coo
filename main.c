@@ -5816,7 +5816,8 @@ static void print_trampolines(struct parser *parser, struct class *class, struct
 {
 	struct member *member;
 	char *vmtpath, *vmtaccess, *funcmiddle, *sep, *structsuffix, *thisaccess, *thismember;
-	struct class *implclass, *vmtclass;
+	struct class *implclass, *previmplclass, *vmtclass;
+	struct ancestor *ancestor;
 
 	get_vmt_path(parser, vmt, &vmtpath, &vmtaccess);
 	if (vmt->from_virtual) {
@@ -5830,16 +5831,40 @@ static void print_trampolines(struct parser *parser, struct class *class, struct
 		thisaccess = "this";
 		thismember = "";
 	}
+	previmplclass = NULL;
 	flist_foreach(member, &class->members_list, next) {
 		if (!is_vmt_member(member, vmt))
 			continue;
 
-		/* need trampoline for calls from virtual base
-		   and for alternate vmts */
-		if (member->vmt_impl == vmt && !member->props.from_virtual)
-			continue;
+		/* need trampoline for calls from virtual base */
+		if (!vmt->from_virtual) {
+			/* ... and for alternate vmts */
+			if (member->vmt_impl == vmt)
+				continue;
 
-		implclass = member->implemented;
+			/* non-primary parent-inherited destructor is special because it isn't
+			   merged with our destructor so get_impl_this_class does not work */
+			implclass = member != vmt->destructor ? get_impl_this_class(member)
+								: member->implemented;
+			if (implclass != previmplclass) {
+				previmplclass = implclass;
+				if (implclass != class) {
+					ancestor = hasho_find(&class->ancestors, implclass);
+					if (ancestor == NULL) {
+						pr_err(NULL, "(ierr) cannot find ancestor "
+							"%s for trampoline of %s::%s",
+							implclass->name,
+							class->name, member->name);
+						continue;
+					}
+					thisaccess = "&this->";
+					thismember = ancestor->path;
+				} else {
+					thisaccess = "this";
+					thismember = "";
+				}
+			}
+		}
 		vmtclass = get_vmt_this_class(member, vmt);
 		sep = member->paramstext[0] == ')' ? "" : ", ";
 		outprintf(parser, "\nstatic %s%s_%s_%s%s(struct %s *__this%s%s\n"
@@ -5849,7 +5874,7 @@ static void print_trampolines(struct parser *parser, struct class *class, struct
 			member->rettypestr, class->name, funcmiddle,
 			  member->implprefix, member->implname,
 			  vmtclass->name, sep, member->paramstext,
-			implclass->name, structsuffix, implclass->name,
+			class->name, structsuffix, class->name,
 			  structsuffix, vmtpath,
 			is_void_rettype(member->rettypestr) ? "" : "return ",
 			  member->implemented->name, member->implprefix,
@@ -5924,7 +5949,7 @@ static void print_vmt(struct parser *parser, struct class *class, struct vmt *vm
 	const char *vmt_name;
 	char *classsep, *classsuffix, *vmtpre, *vmtpreacc, *vmtaccess, *vmtpath;
 	struct ancestor *ancestor;
-	struct class *rootclass;
+	struct class *rootclass, *implclass;
 
 	rootclass = class->rootclass ? &class->rootclass->class : class;
 	vmt_name = get_vmt_name(parser, vmt);
@@ -5954,16 +5979,21 @@ static void print_vmt(struct parser *parser, struct class *class, struct vmt *vm
 			continue;
 
 		/* if from virtual base, then trampoline via root class, suffix set above */
+		implclass = member->implemented;
 		if (!vmt->from_virtual) {
 			/* choose to use the trampoline or not (see print trampolines) */
 			if (member->vmt_impl == vmt)
 				classsep = classsuffix = "";
-			else
-				classsep = "_", classsuffix = (vmt->parent ?: vmt)->class->name;
+			else {
+				classsep = "_";
+				classsuffix = (vmt->parent ?: vmt)->class->name;
+				/* point to trampoline where alternate vmt is implemented */
+				implclass = vmt->modified->class;
+			}
 		}
 
 		outprintf(parser, "\t%s%s%s_%s%s,\n",
-			member->implemented->name, classsep, classsuffix,
+			implclass->name, classsep, classsuffix,
 			member->implprefix, member->implname);
 	}
 	outprintf(parser, "};\n");

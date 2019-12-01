@@ -1,40 +1,104 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+/*
+     A
+    / \
+   B   D
+   |   |
+   C   |
+    \ /
+     E
+*/
+
 struct A {
 	virtual void vfunc_a(int arg) = 0;
 	virtual void vfunc_b(int arg) = 0;
 };
 
 struct B : A {
+	int b;
+	B(int val_b);
 	override vfunc_a;
 };
 
 struct C : B {
-	void C();
+	int c;
+	void C(int val_b, int val_c);
 	override vfunc_b;
+};
+
+struct D : A {
+	int d;
+	D(int val_d);
+	void funcD(int arg);
+};
+
+struct E : C, D {
+	int e;
+	E(int val_b, int val_c, int val_d, int val_e);
+	void funcE(int arg);
 };
 
 A::coo_class;
 
+void B::B(int val_b)
+{
+	b = val_b;
+}
+
 void B::vfunc_a(int arg)
 {
-	printf("B::vfunc_a(%d)\n", arg);
+	printf("B::vfunc_a(%d) b=%d\n", arg, b);
+}
+
+void C::C(int val_b, int val_c)
+{
+	B(val_b);
+	c = val_c;
 }
 
 void C::vfunc_b(int arg)
 {
-	printf("C::vfunc_b(%d)\n", arg);
+	printf("C::vfunc_b(%d) b=%d c=%d\n", arg, b, c);
 }
 
-void C::C(void)
+D::D(int val_d)
 {
+	d = val_d;
+}
+
+void D::funcD(int arg)
+{
+	printf("D::funcD(%d) d=%d\n", arg, d);
+}
+
+E::E(int val_b, int val_c, int val_d, int val_e)
+{
+	C(val_b, val_c);
+	D(val_d);
+	e = val_e;
+}
+
+void E::funcE(int arg)
+{
+	printf("E::funcE(%d) b=%d c=%d d=%d e=%d\n", arg, b, c, d, e);
 }
 
 int main(void)
 {
-	C *c = new C;
-	c->vfunc_a(3);
-	c->vfunc_b(4);
+	E *e = new E(1,2,3,4);
+	D *d = e;
+	C *c = e;
+	A *c_a = c, *d_a = d;
+	e->vfunc_a(10);
+	e->vfunc_b(11);
+	c_a->vfunc_a(20);
+	c_a->vfunc_b(21);
+	d_a->vfunc_a(30);
+	d_a->vfunc_a(31);
+	d->funcD(32);
+	e->funcE(40);
+	delete e;
 	return 0;
 }

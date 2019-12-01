@@ -2,11 +2,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+/*
+     A
+    / \
+   B   D
+   |   |
+   C   |
+    \ /
+     E
+*/
+
 struct A {
 	const struct coo_vmt *vmt;
 };
 
-#line 10 "good2.coo.c"
+#line 20 "good2.coo.c"
 #include <coortl.h>
 extern const struct A_vmt {
 	struct coo_vmt vmt_base;
@@ -16,12 +26,13 @@ extern const struct A_vmt {
 
 extern const struct A_coo_class A_coo_class;
 
-#line 9 "good2.coo"
+#line 19 "good2.coo"
 struct B {
 	struct A A;
+	int b;
 };
 
-#line 25 "good2.coo.c"
+#line 36 "good2.coo.c"
 extern const struct B_vmt {
 	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct B *this, int arg);
@@ -30,13 +41,16 @@ extern const struct B_vmt {
 
 extern const struct B_coo_class B_coo_class;
 
+void B_B_zi(struct B *this);
 void B_vfunc_a(struct B *this, int arg);
-#line 13 "good2.coo"
+struct B *B_B(struct B *this, int val_b);
+#line 25 "good2.coo"
 struct C {
 	struct B B;
+	int c;
 };
 
-#line 40 "good2.coo.c"
+#line 54 "good2.coo.c"
 extern const struct C_vmt {
 	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct B *this, int arg);
@@ -45,37 +59,119 @@ extern const struct C_vmt {
 
 extern const struct C_coo_class C_coo_class;
 
-struct C *new_C(void);
+struct C *new_C(int val_b, int val_c);
+void C_C_root_zi(struct C *this, int val_b, int val_c);
 void C_vfunc_b(struct C *this, int arg);
-struct C *C_C(struct C *this);
-struct C *C_C_root(struct C *this);
-#line 18 "good2.coo"
+struct C *C_C(struct C *this, int val_b, int val_c);
+struct C *C_C_root(struct C *this, int val_b, int val_c);
+#line 31 "good2.coo"
+struct D {
+	struct A A;
+	int d;
+};
+
+#line 74 "good2.coo.c"
+extern const struct D_coo_class D_coo_class;
+
+void D_D_zi(struct D *this);
+struct D *D_D(struct D *this, int val_d);
+void D_funcD(struct D *this, int arg);
+#line 37 "good2.coo"
+struct E {
+	struct C C;
+	struct D D;
+	int e;
+};
+
+#line 87 "good2.coo.c"
+extern const struct E_D_vmt {
+	struct coo_vmt vmt_base;
+	void (*vfunc_a)(struct A *this, int arg);
+	void (*vfunc_b)(struct A *this, int arg);
+} E_D_vmt;
+
+extern const struct E_coo_class E_coo_class;
+
+struct E *new_E(int val_b, int val_c, int val_d, int val_e);
+void E_E_root_zi(struct E *this, int val_b, int val_c, int val_d, int val_e);
+struct E *E_E(struct E *this, int val_b, int val_c, int val_d, int val_e);
+void E_funcE(struct E *this, int arg);
+struct E *E_E_root(struct E *this, int val_b, int val_c, int val_d, int val_e);
+#line 43 "good2.coo"
+struct B *B_B(struct B *this, int val_b)
+{
+	this->b = val_b;
+#line 107 "good2.coo.c"
+	return this;
+#line 48 "good2.coo"
+}
+
 void B_vfunc_a(struct B *this, int arg)
 {
-	printf("B::vfunc_a(%d)\n", arg);
+	printf("B::vfunc_a(%d) b=%d\n", arg, this->b);
+}
+
+struct C *C_C(struct C *this, int val_b, int val_c)
+{
+	B_B(&this->B, val_b);
+	this->c = val_c;
+#line 121 "good2.coo.c"
+	return this;
+#line 59 "good2.coo"
 }
 
 void C_vfunc_b(struct C *this, int arg)
 {
-	printf("C::vfunc_b(%d)\n", arg);
+	printf("C::vfunc_b(%d) b=%d c=%d\n", arg, this->B.b, this->c);
 }
 
-struct C *C_C(struct C *this)
+struct D *D_D(struct D *this, int val_d)
 {
-#line 68 "good2.coo.c"
+	this->d = val_d;
+#line 134 "good2.coo.c"
 	return this;
-#line 32 "good2.coo"
+#line 69 "good2.coo"
+}
+
+void D_funcD(struct D *this, int arg)
+{
+	printf("D::funcD(%d) d=%d\n", arg, this->d);
+}
+
+struct E *E_E(struct E *this, int val_b, int val_c, int val_d, int val_e)
+{
+	C_C(&this->C, val_b, val_c);
+	D_D(&this->D, val_d);
+	this->e = val_e;
+#line 149 "good2.coo.c"
+	return this;
+#line 81 "good2.coo"
+}
+
+void E_funcE(struct E *this, int arg)
+{
+	printf("E::funcE(%d) b=%d c=%d d=%d e=%d\n", arg, this->C.B.b, this->C.c, this->D.d, this->e);
 }
 
 int main(void)
 {
-	struct C *c = new_C();
-	((struct A_vmt*)c->B.A.vmt)->vfunc_a(&c->B.A, 3);
-	((struct A_vmt*)c->B.A.vmt)->vfunc_b(&c->B.A, 4);
+	struct E *e = new_E(1,2,3,4);
+	struct D *d = &e->D;
+	struct C *c = &e->C;
+	struct A *c_a = &c->B.A, *d_a = &d->A;
+	((struct A_vmt*)e->C.B.A.vmt)->vfunc_a(&e->C.B.A, 10);
+	((struct A_vmt*)e->C.B.A.vmt)->vfunc_b(&e->C.B.A, 11);
+	((struct A_vmt*)c_a->vmt)->vfunc_a(c_a, 20);
+	((struct A_vmt*)c_a->vmt)->vfunc_b(c_a, 21);
+	((struct A_vmt*)d_a->vmt)->vfunc_a(d_a, 30);
+	((struct A_vmt*)d_a->vmt)->vfunc_a(d_a, 31);
+	D_funcD(d, 32);
+	E_funcE(e, 40);
+	free(e);
 	return 0;
 }
 
-#line 81 "good2.coo.c"
+#line 177 "good2.coo.c"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -96,17 +192,23 @@ const struct C_vmt C_vmt = {
 	C_vfunc_b,
 };
 
-struct C *new_C(void)
+struct C *new_C(int val_b, int val_c)
 {
-	struct C *this = malloc(sizeof(*this));
+	struct C *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
-	return C_C_root(this);
+	return C_C_root(this, val_b, val_c);
 }
 
-struct C *C_C_root(struct C *this)
+void C_C_root_zi(struct C *this, int val_b, int val_c)
+{
+	memset(this, 0, sizeof(*this));
+	C_C_root(this, val_b, val_c);
+}
+
+struct C *C_C_root(struct C *this, int val_b, int val_c)
 {
 	this->B.A.vmt = &C_vmt.vmt_base;
-	return C_C(this);
+	return C_C(this, val_b, val_c);
 }
 
 const struct B_coo_class {
@@ -121,4 +223,60 @@ const struct A_coo_class {
 	uint32_t num_parents;
 } A_coo_class = {
 	0,
+};
+
+const struct E_coo_class {
+	uint32_t num_parents;
+	uint32_t offsets[1];
+	const void *parents[2];
+} E_coo_class = {
+	2,
+	{ offsetof(struct E, D) },
+	{ &C_coo_class,
+	  &D_coo_class }
+};
+
+static void E_D_vfunc_a(struct A *__this, int arg)
+{	struct E *this = container_of(__this, struct E, D.A);
+	B_vfunc_a(&this->C.B, arg);
+}
+
+static void E_D_vfunc_b(struct A *__this, int arg)
+{	struct E *this = container_of(__this, struct E, D.A);
+	C_vfunc_b(&this->C, arg);
+}
+
+const struct E_D_vmt E_D_vmt = {
+	{ offsetof(struct E, D.A.vmt),
+	  &E_coo_class },
+	E_D_vfunc_a,
+	E_D_vfunc_b,
+};
+
+struct E *new_E(int val_b, int val_c, int val_d, int val_e)
+{
+	struct E *this = calloc(1, sizeof(*this));
+	if (this == NULL) return NULL;
+	return E_E_root(this, val_b, val_c, val_d, val_e);
+}
+
+void E_E_root_zi(struct E *this, int val_b, int val_c, int val_d, int val_e)
+{
+	memset(this, 0, sizeof(*this));
+	E_E_root(this, val_b, val_c, val_d, val_e);
+}
+
+struct E *E_E_root(struct E *this, int val_b, int val_c, int val_d, int val_e)
+{
+	this->C.B.A.vmt = &C_vmt.vmt_base;
+	this->D.A.vmt = &E_D_vmt.vmt_base;
+	return E_E(this, val_b, val_c, val_d, val_e);
+}
+
+const struct D_coo_class {
+	uint32_t num_parents;
+	const void *parents[1];
+} D_coo_class = {
+	1,
+	{ &A_coo_class }
 };

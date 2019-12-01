@@ -549,6 +549,7 @@ the parser anyway.
 * optimize duplicated parentname strings == ancestor->path?
 * parse parameters, type without name skipped
 * remove get_vmt_name, replace with vmt->class->name or vmt->modified->class->name
+* vmt destructor X should call free_X? not X_d_X?
 
 ## License
 

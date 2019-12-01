@@ -2,11 +2,11 @@
 #include <stdlib.h>
 #include <foo.hoo>
 
-typedef struct A {
+struct A {
 	int a1;
 	virtual void vfunc_a(int a2);
 	void A();
-} A;
+};
 
 struct B : A {
 	override vfunc_a;

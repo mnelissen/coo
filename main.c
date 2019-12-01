@@ -35,7 +35,7 @@ typedef uint32_t pid_t;
 #define STDIN_BUFSIZE      (1024 * 1024)   /* size for inputbuffer when using stdin */
 #define MAX_PAREN_LEVELS   16
 #define MAX_USER_ERRORS    25
-#define PTRLVLMASK         7
+#define PTRLVLMASK         7               /* bits 2..0 pointer level */
 
 #ifdef __GNUC__
 #define attr_format(a,b) __attribute__((format(printf,a,b)))
@@ -118,10 +118,12 @@ const struct anytype {
 		struct templpar *tp;    /* template parameter type */
 	} u;
 	struct dynarr args;          /* struct anytype *, template arguments */
+	struct anytype *next;        /* points to variation (shared type) */
 	int pointerlevel:8;
 	enum anytyp type:8;          /* AT_xxxx */
 	enum fromtp from_tp:8;       /* type is mapped from a templpar */
-	unsigned implicit:8;         /* for AT_CLASS, still needs "struct " */
+	unsigned implicit:1;         /* for AT_CLASS, still needs "struct " */
+	unsigned sharedptr:1;        /* type is a [shared] type pointer */
 } unknown_type = { 0 };
 
 #define unknown_typeptr to_anyptr(&unknown_type, 0)
@@ -159,6 +161,7 @@ struct class {
 	char is_final;               /* final class, cannot be inherited from */
 	char no_dyncast;             /* user disabled dyncasting to this class */
 	char zeroinit;               /* automatically zero-init upon var decl/alloc */
+	char refcounted;             /* has automatic reference counting */
 	char is_implemented;         /* have seen class implementation */
 	char is_rootclass;           /* this class is a rootclass */
 	char has_duplicates;         /* multiple parents override same member */
@@ -207,11 +210,12 @@ struct vmt {
 	struct vmt *parent;        /* pointer to same origin vmt in parent */
 	struct vmt *child;         /* temp.during struct definition child */
 	struct vmt *next;          /* next vmt for owning class */
+	struct vmt *alternate;     /* is alternate for this same-origin-vmt */
+	struct member *destructor; /* class destructor in this vmt */
 	char *path;                /* path to reach this vmt (in ancestor) */
 	char *access;              /* path->vmt or path.vmt? */
 	char *sec_name;            /* name for use as secondary vmt */
 	unsigned char is_primary;  /* is this the primary vmt for this class? */
-	unsigned char is_diverged; /* path to origin != ancestor->path */
 	unsigned char is_parent_virtual;  /* how to access parent, if any */
 	unsigned char from_virtual;  /* vmt inherited from virtual origin */
 	char *name;                /* vmt struct type and variable name */
@@ -232,9 +236,13 @@ struct member {
 	char *rettypestr;          /* literal text of return type */
 	anyptr rettype;            /* return type of member */
 	struct class *origin;      /* origin class where member was defined */
-	struct class *definition;  /* closest class virtual member overridden */
+	struct class *definition;  /* closest class member body is */
+	struct class *implemented; /* closest class virtual member overridden */
+	  /* definition and implemented differs for destructors
+	     they are defined in origin, but implemented in descendant */
 	struct class *visi_define; /* closest class visibility was defined */
 	struct vmt *vmt;           /* vmt this member is defined in */
+	struct vmt *vmt_impl;      /* vmt this member is implemented in */
 	char *paramstext;          /* literal text of all params definition */
 	struct dynarr params;      /* struct anytype *, params' type */
 	char *parentname;   /* insert after function first argument expression */
@@ -384,6 +392,7 @@ struct parser {
 			unsigned typdef:1;      /* saw the typedef keyword */
 			unsigned nozeroinit:1;  /* saw the nozeroinit keyword */
 			unsigned zeroinit:1;    /* saw the zeroinit keyword */
+			unsigned refcount:1;    /* saw the refcount keyword */
 		} k;
 		unsigned all;
 	} saw;
@@ -1138,6 +1147,11 @@ static const struct anytype *typ(anyptr p)
 	return (const struct anytype*)((size_t)p & ~PTRLVLMASK);
 }
 
+static struct anytype *modtyp(anyptr p)
+{
+	return (struct anytype*)((size_t)p & ~PTRLVLMASK);
+}
+
 static unsigned raw_ptrlvl(anyptr p)
 {
 	return (size_t)p & PTRLVLMASK;
@@ -1462,14 +1476,23 @@ static char *parse_type(struct parser *parser, struct allocator *alloc,
 		struct class *ctxclass, char *pos, anyptr *rettype, new_insert_cb new_insert)
 {
 	struct classtype *classtype;
-	struct anytype *newtype;
+	struct anytype *sharedtype, *newtype = NULL;
 	struct methodptr *mp;
 	struct templpar *tp;
 	struct class *class;
 	char *name, *next;
 	anyptr newptr = unknown_typeptr;
+	int seen_shared = 0;
 
 	for (;; pos = skip_whitespace(parser, pos)) {
+		if (strprefixcmp("[shared]", pos) != NULL) {
+			next = skip_whitespace(parser, pos + 8);  /* [shared] */
+			if (new_insert)
+				new_insert(parser, pos, "", next);
+			pos = next;
+			seen_shared = 1;
+			continue;
+		}
 		if (strprefixcmp("const ", pos) != NULL) {
 			pos += 6;  /* const */
 			continue;
@@ -1499,6 +1522,8 @@ static char *parse_type(struct parser *parser, struct allocator *alloc,
 			if (*next == '<') {
 				/* alloc copy so we can fill in template arguments */
 				newtype = duptype(alloc, &classtype->t);
+				if (!newtype)
+					return NULL;
 				newtype->type = AT_TEMPLINST;
 				next = parse_templargs(parser, alloc, ctxclass,
 					newtype->u.class, next, &newtype->args);
@@ -1525,6 +1550,22 @@ static char *parse_type(struct parser *parser, struct allocator *alloc,
 
 	for (next = skip_whitespace(parser, next); *next == '*'; next++)
 		add_ptrlvl(&newptr, 1);
+	if (seen_shared) {
+		if (newtype) {
+			newtype->sharedptr = 1;
+		} else {
+			sharedtype = typ(newptr)->next;
+			if (!sharedtype || !sharedtype->sharedptr) {
+				sharedtype = duptype(alloc, typ(newptr));
+				if (!sharedtype)
+					return NULL;
+				sharedtype->sharedptr = 1;
+				/* (modify) connect to existing type */
+				modtyp(newptr)->next = sharedtype;
+			}
+			newptr = to_anyptr(sharedtype, 0);
+		}
+	}
 	*rettype = newptr;
 	return next;
 }
@@ -1741,6 +1782,7 @@ static struct member *addmember(struct parser *parser,
 	member->origin = class;
 	member->definition = class;
 	member->visi_define = class;
+	member->implemented = class;
 	member->props = props;
 	member->rettypestr = rettypestr;
 	if (props.is_abstract)
@@ -1761,7 +1803,7 @@ static struct member *addmember(struct parser *parser,
 				params, &member->paramstext, &member->params);
 	}
 	if (props.is_virtual) {
-		member->vmt = class->vmt;
+		member->vmt = member->vmt_impl = class->vmt;
 		class->vmt->modified = class->vmt;
 	}
 	end = strprefixcmp(class->name, membername);
@@ -1809,6 +1851,8 @@ static struct member *addmember(struct parser *parser,
 			class->has_destructor = 1;
 			class->destructor = member;
 			class->freer_class = class;
+			if (props.is_virtual)
+				class->vmt->destructor = member;
 		} else {
 			pr_err(membername, "invalid member name, "
 				"did you mean ~%s?", class->name);
@@ -2362,32 +2406,41 @@ static int is_virtual_base(struct class *origin, struct class *class)
 static void mergemember(struct parser *parser, struct class *class, struct member *parentmember)
 {
 	struct member *member;
+	struct vmt *vmt;
 	char *nameend;
 
-	/* if new parent did not override, there is no ambiguity anyway */
-	if (parentmember->definition == parentmember->origin)
+	/* regular non-virtual functions are always okay */
+	if (!parentmember->props.is_virtual)
 		return;
 
 	nameend = parentmember->name + strlen(parentmember->name);
 	member = find_member_e(class, parentmember->name, nameend);
 	if (member == NULL) {
-		fprintf(stderr, "internal error, cannot find member %s in"
-			"class %s for merging\n", parentmember->name, class->name);
+		fprintf(stderr, "(ierr) cannot find member %s in class %s "
+			"for merging\n", parentmember->name, class->name);
 		parser->num_errors++;
 		return;
 	}
 
-	/* if both parents override this member, mark member as to-be overridden */
-	if (member->definition != member->origin) {
-		class->has_duplicates = 1;
-		member->definition = NULL;
-	} else {
-		/* did not override yet, use new parent's definition */
+	/* both agree where they are defined, ok */
+	if (member->definition == parentmember->definition)
+		return;
+
+	if (member->definition == member->origin) {
+		/* existing member did not override yet, use new parent's definition */
 		member->definition = parentmember->definition;
 		if (member->props.is_abstract) {
 			member->props.is_abstract = 0;
 			class->num_abstract--;
 		}
+	} else if (parentmember->definition == parentmember->origin) {
+		/* new parent member did not override yet, update vmt for that class */
+		vmt = parentmember->vmt->child;
+		vmt->modified = vmt;
+	} else {
+		/* if both parents override this member, mark member as to-be overridden */
+		class->has_duplicates = 1;
+		member->definition = NULL;
 	}
 }
 
@@ -2517,11 +2570,12 @@ static char *get_vmt_name(struct parser *parser, struct vmt *vmt)
 	return vmt->name = alloc_vmt_name(parser, altvmt);
 }
 
-static int vmt_this_needs_offset(struct member *member)
+static int vmt_this_needs_offset(struct member *member, struct vmt *vmt)
 {
 	/* for non-primary, the class does not align to start, so have
 	   to use the original defining class and translate pointer in implementation */
-	return member->vmt && (!member->props.from_primary || member->props.from_virtual);
+	return member->vmt && (member->vmt != vmt ||
+		!member->props.from_primary || member->props.from_virtual);
 }
 
 static int impl_this_needs_offset(struct member *member)
@@ -2530,14 +2584,14 @@ static int impl_this_needs_offset(struct member *member)
 	return member->vmt && !member->props.from_primary && !member->props.from_virtual;
 }
 
-static struct class *get_vmt_this_class(struct member *member)
+static struct class *get_vmt_this_class(struct member *member, struct vmt *vmt)
 {
-	return vmt_this_needs_offset(member) ? member->origin : member->definition;
+	return vmt_this_needs_offset(member, vmt) ? member->origin : member->implemented;
 }
 
 static struct class *get_impl_this_class(struct member *member)
 {
-	return impl_this_needs_offset(member) ? member->origin : member->definition;
+	return impl_this_needs_offset(member) ? member->origin : member->implemented;
 }
 
 enum parent_virtual { LITERAL_PARENT, VIRTUAL_PARENT };  /* boolean compatible */
@@ -2554,6 +2608,7 @@ static struct vmt *addvmt(struct parser *parser, struct class *class, struct vmt
 	vmt->class = class;
 	vmt->origin = origin;
 	vmt->parent = parent_vmt;
+	/* vmt->destructor is initialized in import_parent when copying members */
 	/* do not reuse virtual base class' vmt, is inefficient */
 	vmt->is_primary = class->vmt == NULL;
 	vmt->is_parent_virtual = parent_virtual;
@@ -2590,8 +2645,7 @@ static void import_parent(struct parser *parser, char *parsepos,
 	struct member *parentmember, *member;
 	struct class *origin, *currorigin, *ignoreorigin, *intforigin, *mergeorigin;
 	struct class *vmtorigin, *parentclass = parent->class;
-	struct vmt *vmt, *parentvmt;
-	unsigned diverged;
+	struct vmt *vmt, *parentvmt, *alternate;
 	char *sec_name;
 	int ret;
 
@@ -2602,7 +2656,7 @@ static void import_parent(struct parser *parser, char *parsepos,
 	flist_foreach(parentvmt, &parentclass->vmts, next) {
 		vmtorigin = parentvmt->origin;
 		sec_name = vmtorigin->name;
-		diverged = 0;
+		alternate = NULL;
 		/* potential conflict with duplicate origin */
 		if (hasho_find(&class->ancestors, vmtorigin)) {
 			/* don't add virtual bases multiple times */
@@ -2623,32 +2677,16 @@ static void import_parent(struct parser *parser, char *parsepos,
 				vmt->from_virtual = 0;
 				continue;
 			}
-			if (hasho_find(&class->ancestors, parentvmt->modified)) {
-				/* parent class last modified vmt in common ancestor
-				   with earlier added same-origin vmt, no conflict */
-				goto connect_vmt;
-			}
-			if (hasho_find(&parentclass->ancestors, vmt->modified)
-					&& vmt->is_primary == parentvmt->is_primary
-					&& !parent->is_virtual) {
-				/* same-origin vmt was last modified in common ancestor
-				   of parent class, but parent class modified its vmt
-				   (previous check false), use that vmt */
-				vmt->parent = parentvmt;
-				vmt->modified = parentvmt->modified;
-				goto connect_vmt;
-			}
-			/* both inheriting vmts have been modified, they have diverged
-			   add a new vmt with same origin below */
-			diverged = 1;
+			/* duplicate vmt has (at least) different offset to class, but
+			   possibly also different/new members, add new vmt with same origin */
+			alternate = vmt;
 			/* use parent name instead of origin name, is clearer */
 			sec_name = parentclass->name;
 		}
 		vmt = addvmt(parser, class, parentvmt, parentvmt->origin, parent->is_virtual);
-	  connect_vmt:
-		parentvmt->child = vmt;
-		vmt->is_diverged = diverged;
+		vmt->alternate = alternate;
 		vmt->sec_name = sec_name;
+		parentvmt->child = vmt;
 	}
 
 	currorigin = ignoreorigin = intforigin = mergeorigin = NULL;
@@ -2702,14 +2740,25 @@ static void import_parent(struct parser *parser, char *parsepos,
 			class->constructor = member;
 			class->void_constructor = parentclass->void_constructor;
 			class->void_root_constructor = parentclass->void_root_constructor;
-		} else if (parentmember->is_destructor && !class->destructor)
+		} else if (parentmember->is_destructor) {
+			/* parse_struct detects changing destructors */
 			class->destructor = member;
+		}
 		/* point to a vmt for this class */
 		if (member->vmt) {
 			if (member->vmt->child == NULL)
 				pr_err(parsepos, "(ierr) parent's vmt does not point to ours?");
-			else
+			else {
+				if (parentmember == member->vmt->destructor) {
+					member->vmt->child->destructor = member;
+					/* merge destructor implementation, to
+					   trigger trampoline creation for alternates */
+					member->vmt_impl = class->vmt;
+				} else {
+					member->vmt_impl = member->vmt->child;
+				}
 				member->vmt = member->vmt->child;
+			}
 		}
 		/* write to output later, when opening brace '{' parsed */
 		continue;
@@ -2746,7 +2795,17 @@ static void import_parent(struct parser *parser, char *parsepos,
 	blist_add(&parentclass->descendants, parent, next_desc);
 }
 
-static struct member *implmember(struct parser *parser, char *parsepos,
+static void implmember(struct class *class, struct member *member)
+{
+	member->implemented = class;
+	member->vmt->modified = member->vmt;
+	if (member->props.is_abstract) {
+		member->props.is_abstract = 0;
+		class->num_abstract--;
+	}
+}
+
+static struct member *implmembername(struct parser *parser, char *parsepos,
 		struct class *class, char *membername, char *nameend, struct memberprops props)
 {
 	struct member *member;
@@ -2773,14 +2832,23 @@ static struct member *implmember(struct parser *parser, char *parsepos,
 		member->visi_define = class;
 	}
 
+	/* this class defines a new body for this function name
+	   note that destructors don't do this (their name is different) */
 	member->definition = class;
-	member->vmt->modified = member->vmt;
-	if (member->props.is_abstract) {
-		member->props.is_abstract = 0;
-		class->num_abstract--;
-	}
-
+	implmember(class, member);
 	return member;
+}
+
+static void impldestructor(struct class *class)
+{
+	struct vmt *vmt;
+
+	/* make sure to mark vmts that have destructor as modified to point to us */
+	flist_foreach(vmt, &class->vmts, next)
+		if (vmt->destructor) {
+			implmember(class, vmt->destructor);
+			vmt->destructor->implname = class->destructor->implname;
+		}
 }
 
 static void print_func_header(struct parser *parser,
@@ -2830,6 +2898,26 @@ static struct rootclass *addrootclass(struct parser *parser, struct class *paren
 	return init_class(parser, &class->class) ? class : NULL;
 }
 
+static struct class *open_root_class(struct parser *parser, struct class *class)
+{
+	char *name = class->name;
+	struct class *rootclass;
+
+	switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
+	outprintf(parser, "struct %s_root {\n\tstruct %s %s;\n", name, name, name);
+	/* 2 lines here, 1 for closing '}' */
+	parser->pf.lines_coo += 3;
+	class->rootclass = addrootclass(parser, class);
+	if (class->rootclass == NULL)
+		return NULL;
+
+	rootclass = &class->rootclass->class;
+	/* copy root constructor for initialization stack var */
+	rootclass->root_constructor = class->root_constructor;
+	rootclass->void_root_constructor = class->void_root_constructor;
+	return rootclass;
+}
+
 static void print_root_classes(struct parser *parser, struct class *class)
 {
 	struct hasho_entry *entry;
@@ -2842,24 +2930,15 @@ static void print_root_classes(struct parser *parser, struct class *class)
 		return;
 
 	rootclass = NULL;
+	if (class->refcounted)
+		rootclass = open_root_class(parser, class);
 	hasho_foreach(entry, &class->ancestors) {
 		ancestor = entry->value;
 		if (ancestor->parent->is_virtual) {
 			if (rootclass == NULL) {
-				name = class->name;
-				switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
-				outprintf(parser, "struct %s_root {\n"
-					"\tstruct %s %s;\n", name, name, name);
-				/* 2 lines here, 1 for closing '}' */
-				parser->pf.lines_coo += 3;
-				class->rootclass = addrootclass(parser, class);
-				if (class->rootclass == NULL)
-					break;
-
-				rootclass = &class->rootclass->class;
-				/* copy root constructor for initialization stack var */
-				rootclass->root_constructor = class->root_constructor;
-				rootclass->void_root_constructor = class->void_root_constructor;
+				rootclass = open_root_class(parser, class);
+				if (rootclass == NULL)
+					return;
 			}
 
 			parent = pgenzalloc(sizeof(*parent));
@@ -2884,6 +2963,10 @@ static void print_root_classes(struct parser *parser, struct class *class)
 	if (rootclass) {
 		/* import parent class last, so the literals get priority when resolving */
 		import_parent(parser, parser->pf.pos, rootclass, &class->rootclass->parent);
+		if (class->refcounted) {
+			outputs(parser, "\tcoo_atomic_t refcount;\n");
+			parser->pf.lines_coo++;
+		}
 		outputs(parser, "};\n");
 		/* newline for lines_coo counted above */
 	}
@@ -2900,12 +2983,28 @@ static void include_coortl(struct parser *parser)
 	parser->pf.lines_coo++;
 }
 
+static int is_vmt_member(struct member *member, struct vmt *vmt)
+{
+	if (member->vmt == NULL)
+		return 0;
+	if (member->vmt == vmt)
+		return 1;
+	/* members might also be pointing to our alternate vmt, if they
+	   are not, then they are definitely also not a member of this vmt */
+	if (member->vmt != vmt->alternate)
+		return 0;
+	/* ... however, the alternate vmt might have been expanded with more
+	   members than this vmt, so confirm this member is part of this
+	   specific vmt's inheritance (so via its parent) */
+	return hasho_find(&vmt->parent->class->ancestors, member->origin) != NULL;
+}
+
 /* also cleans up vmt child pointers, only accurate during class definition */
 static void print_vmt_type(struct parser *parser, struct class *class)
 {
-	struct class *thisclass, *prvmtclass;
+	struct class *thisclass;
 	struct member *member;
-	struct vmt *vmt, *prvmt;
+	struct vmt *vmt;
 
 	flist_foreach(vmt, &class->vmts, next) {
 		if (vmt->parent)
@@ -2919,16 +3018,11 @@ static void print_vmt_type(struct parser *parser, struct class *class)
 			"\tstruct coo_vmt vmt_base;\n", get_vmt_name(parser, vmt));
 		/* 2 lines here, 2 to close struct */
 		parser->pf.lines_coo += 4;
-		/* in case of diverging, the member->vmt might point to
-		   different vmt; have to print parent class' vmt */
-		for (prvmt = vmt; prvmt->is_diverged; prvmt = prvmt->parent)
-			;
-		prvmtclass = prvmt->class;
-		flist_foreach(member, &prvmtclass->members_list, next) {
-			if (member->vmt != prvmt)
+		flist_foreach(member, &class->members_list, next) {
+			if (!is_vmt_member(member, vmt))
 				continue;
 
-			thisclass = get_vmt_this_class(member);
+			thisclass = get_vmt_this_class(member, vmt);
 			outprintf(parser, "\t%s(*%s%s)(struct %s *this%s%s;\n",
 				member->rettypestr, member->implprefix, member->implname,
 				thisclass->name, member->paramstext[0] != ')' ? ", " : "",
@@ -2958,7 +3052,7 @@ static void get_vmt_path(struct parser *parser,
 	char *path;
 
 	if (!vmt->path) {
-		if (!vmt->is_diverged) {
+		if (!vmt->alternate) {
 			ancestor = hasho_find(&vmt->class->ancestors, vmt->origin);
 			if (ancestor) {
 				vmt->path = ancestor->path;
@@ -2967,7 +3061,7 @@ static void get_vmt_path(struct parser *parser,
 				vmt->path = vmt->access = "";
 			}
 		} else {
-			/* diverging only happens if there is a parent */
+			/* alternate only happens if there is a parent */
 			parent = vmt->parent;
 			get_vmt_path(parser, parent, &path, &vmt->access);
 			psaprintf(&vmt->path, "%s%s%s", parent->class->name,
@@ -3186,7 +3280,7 @@ static struct class *parse_struct(struct parser *parser, char *openbrace)
 	struct classtype *parentclasstype, *classtype, *defclasstype;
 	struct parent *parent, *firstparent;
 	const struct anytype *retbasetype;
-	struct member *member;
+	struct member *member, *prev_destructor;
 	char namebuf[128], *rettypestr, *last_linestart, *indent_start, *indent_end;
 	unsigned numexp, extra_pointerlevel;
 	new_insert_cb insert_handler;
@@ -3259,6 +3353,13 @@ static struct class *parse_struct(struct parser *parser, char *openbrace)
 			parent->child = class;
 			parent->is_primary = parent_primary;
 			parent->is_virtual = parent_virtual;
+			if (parentclass->refcounted) {
+				if (!parser->saw.k.refcount) {
+					pr_err(parentname, "class %s must be refcounted "
+						"because parent %s is refcounted",
+						class->name, parentclass->name);
+				}
+			}
 			if (parentclass->zeroinit) {
 				if (parser->saw.k.nozeroinit)
 					pr_err(parentname, "class %s must be zeroinit "
@@ -3308,7 +3409,11 @@ static struct class *parse_struct(struct parser *parser, char *openbrace)
 				firstparent = parent;
 			}
 
+			prev_destructor = class->destructor;
 			import_parent(parser, parentname, class, parent);
+			/* if there are multiple (unique) parent destructors,
+			   then this class needs its own destructor */
+			need_destructor |= prev_destructor && class->destructor != prev_destructor;
 			outprintf(parser, "\n\tstruct %s %s%s;", parent->class->name,
 				parent_virtual ? "*" : "", parent->class->name);
 			parser->pf.lines_coo++;
@@ -3503,7 +3608,8 @@ static struct class *parse_struct(struct parser *parser, char *openbrace)
 		next = declend;
 		if (memberprops.is_override) {
 			/* cannot add member, should have inherited already from parent */
-			implmember(parser, membername, class, membername, nameend, memberprops);
+			implmembername(parser, membername, class,
+				membername, nameend, memberprops);
 			if (declbegin != membername)
 				pr_err(membername, "membername must follow override");
 			if (params)
@@ -3579,6 +3685,7 @@ static struct class *parse_struct(struct parser *parser, char *openbrace)
 			class->void_root_constructor = class->void_constructor;
 	}
 	/* add root constructor if needed and user did not define one */
+	class->refcounted = parser->saw.k.refcount;
 	if (!class->num_abstract && class->need_root_constructor && !class->root_constructor) {
 		/* copy user's constructor signature if defined */
 		len = snprintf(namebuf, sizeof(namebuf), "%s_root", class->name);
@@ -3587,9 +3694,12 @@ static struct class *parse_struct(struct parser *parser, char *openbrace)
 	}
 	/* add destructor if there are literal class variables with destructor */
 	if (need_destructor && !class->has_destructor) {
+		prev_destructor = class->destructor;
 		class->gen_destructor = '~';  /* &name[-1] == &gen_destructor */
 		addgenmember(parser, class, NULL, &class->gen_destructor,
 			&class->name[classnameend-classname]);
+		if (prev_destructor)
+			impldestructor(class);
 		class->gen_destructor = 1;
 	}
 	if (class->need_root_destructor && !class->root_destructor) {
@@ -4502,8 +4612,8 @@ static void parse_function(struct parser *parser, char *next)
 	enum parse_state state, nextstate;
 	enum goto_return goto_ret;
 	int is_constructor, expr_is_oneword, blocklevel, parenlevel, seqparen, numwords;
-	int have_retvar, need_retvar, used_retvar, void_retvar;
-	int retblocknr, next_retblocknr, in_delete;
+	int have_retvar, need_retvar, used_retvar, eval_retvar;
+	int retblocknr, next_retblocknr, unused_retblocknr, in_delete;
 	unsigned num_constr_called, num_constr;
 
 	thisfuncret = parser->pf.pos;
@@ -4654,11 +4764,11 @@ static void parse_function(struct parser *parser, char *next)
 
 	seqparen = parenlevel = numwords = 0;
 	exprdecl[0] = targetdecl[0] = immdecl = unknown_typeptr;
-	have_retvar = need_retvar = used_retvar = void_retvar = 0;
+	have_retvar = need_retvar = used_retvar = eval_retvar = 0;
 	stmtstart = exprstart[0] = memberstart[0] = exprend = accinhcolons = NULL;
 	funcvarname = funcvarnameend = name = NULL;  /* make compiler happy */
 	accinhname = tmplpos = NULL;  /* make compiler happy */
-	retblocknr = next_retblocknr = in_delete = 0;
+	retblocknr = next_retblocknr = unused_retblocknr = in_delete = 0;
 	parser->initializers.num = 0;
 	targetparams[0].params = NULL;
 	memset(&dyncast, 0, sizeof(dyncast));
@@ -4804,6 +4914,11 @@ static void parse_function(struct parser *parser, char *next)
 					pr_err(name, "'new <type>' cannot be pointer type");
 					continue;
 				}
+				if (classtype->t.u.class->num_abstract) {
+					pr_err(name, "cannot instantiate abstract class %s",
+						classtype->t.u.class->name);
+					continue;
+				}
 
 				immdecl = to_anyptr(&classtype->t, 1);
 				if (classtype->t.u.class->constructor) {
@@ -4887,10 +5002,12 @@ static void parse_function(struct parser *parser, char *next)
 							"abstract class %s", decl->u.class->name);
 					} else if (decl->u.class->root_constructor) {
 						nextstate = CONSTRUCT;
-						if (!need_retvar && !void_retvar &&
-								decl->u.class->destructor) {
-							void_retvar = is_void_rettype(thisfuncret);
-							need_retvar = !void_retvar;
+						if (decl->u.class->destructor && !eval_retvar) {
+							/* need retvar also when this constructor
+							   is void, because a 'return X;' halfway
+							   needs a retvar to store X in */
+							need_retvar = !is_void_rettype(thisfuncret);
+							eval_retvar = 1;
 						}
 						initializer = addinitializer(parser,
 							decl->u.class, declvar->name, next);
@@ -5288,7 +5405,11 @@ static void parse_function(struct parser *parser, char *next)
 					outprintf(parser, " goto __coo_out%d;", retblocknr);
 					if (goto_ret == GOTO_RET_BLOCK)
 						outwrite(parser, " }", 2);
+					unused_retblocknr = next_retblocknr;
 					goto_ret = GOTO_RET_NONE;
+				} else {
+					/* prevent adding unused retblock label */
+					next_retblocknr = unused_retblocknr;
 				}
 				continue;
 			}
@@ -5538,6 +5659,9 @@ static void print_root_constructor(struct parser *parser, struct class *class)
 		outprintf(parser, "\tthis->%s%svmt = &%s.vmt_base;\n",
 			vmtpath, vmtaccess, get_vmt_name(parser, vmt));
 	}
+	/* init refcount */
+	if (class->refcounted && !class->zeroinit)
+		outputs(parser, "\tthis->refcount = 0;\n");
 	/* construct classes that are used as virtual bases only */
 	print_construct_parents(parser, class, rootprefix, rootsep, VIRTUAL_PARENT);
 	/* no root class if no non-resolved virtual bases */
@@ -5613,6 +5737,7 @@ static void print_root_destructor(struct parser *parser, struct class *class)
 	if (!class->gen_root_destructor)
 		return;
 
+	/* TODO: change this pointer to %s_root? */
 	outprintf(parser, "void %s_d_%s_root(struct %s *this)\n{\n",
 		class->name, class->name, class->name);
 	if (class->rootclass)
@@ -5678,64 +5803,56 @@ static void print_class_free(struct parser *parser, struct class *class)
 			path = ancestor->path;
 		}
 	}
-	outprintf(parser, "\nvoid free_%s(struct %s *this)\n{\n"
-			"\t%s_d_%s%s(%sthis%s%s);\n\tfree(this);\n}\n",
-			class->name, class->name, destrclass->name, destrclass->name,
+	outprintf(parser, "\nvoid free_%s(struct %s *this)\n{\n", class->name, class->name);
+	if (class->refcounted)
+		outputs(parser, "\tif (coo_atomic_fetch_dec(&root_this->refcount) != 0)\n"
+			"\treturn;\n");
+	outprintf(parser, "\t%s_d_%s%s(%sthis%s%s);\n\tfree(this);\n}\n",
+			destrclass->name, destrclass->name,
 			destrclass->rootclass ? "_root" : "", addr, arrow, path);
 }
 
 static void print_trampolines(struct parser *parser, struct class *class, struct vmt *vmt)
 {
 	struct member *member;
-	char *vmtpath, *vmtaccess, *funcmiddle, *structsuffix, *thisaccess, *thismember;
-	struct class *prclass, *implclass, *vmtclass;
-	struct vmt *prvmt;
+	char *vmtpath, *vmtaccess, *funcmiddle, *sep, *structsuffix, *thisaccess, *thismember;
+	struct class *implclass, *vmtclass;
 
 	get_vmt_path(parser, vmt, &vmtpath, &vmtaccess);
-	for (prvmt = vmt; prvmt->is_diverged; prvmt = prvmt->parent)
-		;
-	prclass = prvmt->class;
-	if (vmt->is_diverged) {
-		funcmiddle = prclass->name;
-		structsuffix = "";
-		thisaccess = "this";
-		thismember = "";
-	} else {
+	if (vmt->from_virtual) {
 		funcmiddle = "root";
 		structsuffix = "_root";
 		thisaccess = "&this->";
 		thismember = class->name;
+	} else {
+		funcmiddle = vmt->parent->class->name;
+		structsuffix = "";
+		thisaccess = "this";
+		thismember = "";
 	}
-	flist_foreach(member, &prclass->members_list, next) {
-		if (member->vmt != prvmt)
+	flist_foreach(member, &class->members_list, next) {
+		if (!is_vmt_member(member, vmt))
 			continue;
 
-		/* need to print our members, not parent's, find it */
-		vmtclass = get_vmt_this_class(member);
-		if (vmt->is_diverged) {
-			if ((member = find_eqv_member(parser, class, member)) == NULL)
-				continue;
-		}
-
-		implclass = get_impl_this_class(member);
-		if (implclass == member->origin) {
-			/* may happen in case this member is inherited from a
-			   diverged vmt, but is not ambiguous (not present in
-			   origin): then the implementation already performs
-			   the offset calculation and we don't need a trampoline */
+		/* need trampoline for calls from virtual base
+		   and for alternate vmts */
+		if (member->vmt_impl == vmt && !member->props.from_virtual)
 			continue;
-		}
-		outprintf(parser, "\nstatic %s%s_%s_%s%s(struct %s *__this, %s\n"
+
+		implclass = member->implemented;
+		vmtclass = get_vmt_this_class(member, vmt);
+		sep = member->paramstext[0] == ')' ? "" : ", ";
+		outprintf(parser, "\nstatic %s%s_%s_%s%s(struct %s *__this%s%s\n"
 			"{\tstruct %s%s *this = container_of("
 				"__this, struct %s%s, %s);\n"
 			"\t%s%s_%s%s(%s%s",
 			member->rettypestr, class->name, funcmiddle,
 			  member->implprefix, member->implname,
-			  vmtclass->name, member->paramstext,
+			  vmtclass->name, sep, member->paramstext,
 			implclass->name, structsuffix, implclass->name,
 			  structsuffix, vmtpath,
 			is_void_rettype(member->rettypestr) ? "" : "return ",
-			  member->definition->name, member->implprefix,
+			  member->implemented->name, member->implprefix,
 			  member->implname, thisaccess, thismember);
 		print_param_names(parser, member->paramstext);
 		outprintf(parser, ");\n}\n");
@@ -5803,12 +5920,11 @@ static void print_coo_class(struct parser *parser, struct class *class)
 
 static void print_vmt(struct parser *parser, struct class *class, struct vmt *vmt)
 {
-	struct member *member, *prmember;
+	struct member *member;
 	const char *vmt_name;
 	char *classsep, *classsuffix, *vmtpre, *vmtpreacc, *vmtaccess, *vmtpath;
 	struct ancestor *ancestor;
-	struct class *rootclass, *prclass;
-	struct vmt *prvmt;
+	struct class *rootclass;
 
 	rootclass = class->rootclass ? &class->rootclass->class : class;
 	vmt_name = get_vmt_name(parser, vmt);
@@ -5833,27 +5949,21 @@ static void print_vmt(struct parser *parser, struct class *class, struct vmt *vm
 		"\t{ offsetof(struct %s, %s%s%s%svmt),\n"
 		"\t  &%s_coo_class },\n", vmt_name, vmt_name,
 		rootclass->name, vmtpre, vmtpreacc, vmtpath, vmtaccess, class->name);
-	/* in case of diverging, the member->vmt might point to
-	   different vmt; have to print parent class' vmt */
-	for (prvmt = vmt; prvmt->is_diverged; prvmt = prvmt->parent)
-		;
-	prclass = prvmt->class;
-	flist_foreach(prmember, &prclass->members_list, next) {
-		if (prmember->vmt != prvmt)
+	flist_foreach(member, &class->members_list, next) {
+		if (!is_vmt_member(member, vmt))
 			continue;
-		/* need to print our members, not parent's, find it */
-		member = prmember;
-		if (vmt->is_diverged) {
-			if ((member = find_eqv_member(parser, class, prmember)) == NULL)
-				continue;
-			if (get_impl_this_class(member) == member->origin)
+
+		/* if from virtual base, then trampoline via root class, suffix set above */
+		if (!vmt->from_virtual) {
+			/* choose to use the trampoline or not (see print trampolines) */
+			if (member->vmt_impl == vmt)
 				classsep = classsuffix = "";
 			else
-				classsep = "_", classsuffix = prclass->name;
+				classsep = "_", classsuffix = (vmt->parent ?: vmt)->class->name;
 		}
 
 		outprintf(parser, "\t%s%s%s_%s%s,\n",
-			member->definition->name, classsep, classsuffix,
+			member->implemented->name, classsep, classsuffix,
 			member->implprefix, member->implname);
 	}
 	outprintf(parser, "};\n");
@@ -5893,7 +6003,7 @@ static void print_class_impl(struct parser *parser)
 			   cannot see literal base therefore cannot translate 'this' */
 			/* note that this implies a root class for this class: if the
 			   base is present as a literal base, no need for root class */
-			if (vmt->from_virtual || vmt->is_diverged)
+			if (vmt->from_virtual || vmt != class->vmt)
 				print_trampolines(parser, class, vmt);
 
 			/* print vmt itself */
@@ -6177,6 +6287,9 @@ static void parse(struct parser *parser)
 			} else if (strprefixcmp("zeroinit ", curr)) {
 				curr += 9;  /* "zeroinit " */
 				parser->saw.k.zeroinit = 1;
+			} else if (strprefixcmp("refcount ", curr)) {
+				curr += 9;  /* "refcount " */
+				parser->saw.k.refcount = 1;
 			} else
 				break;
 		}

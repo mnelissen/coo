@@ -7,7 +7,7 @@ SUFFIXES:=
 %: RCS/%,v
 %: SCCS/s.%
 COO=../coo_opt
-CFLAGS=-Iinc -I.. -Wall -Wextra -Wno-unused-parameter -g
+CFLAGS=-Iinc -I.. -Wall -Wextra -Wno-unused-parameter -Werror -g
 CC=gcc
 TESTS:=$(patsubst %.coo,%_run,$(wildcard fail*.coo))
 TESTS:=$(TESTS) $(patsubst %.coo,%_exe,$(wildcard good*.coo))

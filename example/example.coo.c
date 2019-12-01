@@ -3,10 +3,10 @@
 #include <stdlib.h>
 #include <foo.coo.h>
 
-typedef struct A {
+struct A {
 	int a1;
 	const struct coo_vmt *vmt;
-} A;
+};
 
 #line 12 "example.coo.c"
 #include <coortl.h>

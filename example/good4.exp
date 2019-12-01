@@ -65,15 +65,16 @@ struct S_both {
 #line 66 "good4.coo.c"
 struct S_both *new_S_both(void);
 void S_both_S_both_zi(struct S_both *this);
-#define free_S_both(this) free_S_base(&(this)->S_base)
+void free_S_both(struct S_both *this);
 void S_both_func_both(struct S_both *this);
 struct S_both *S_both_S_both(struct S_both *this);
+void S_both_d_S_both(struct S_both *this);
 #line 40 "good4.coo"
 struct S_base *S_base_S_base(struct S_base *this)
 {
 	this->c = 10;
 	this->d = 11;
-#line 77 "good4.coo.c"
+#line 78 "good4.coo.c"
 	return this;
 #line 44 "good4.coo"
 }
@@ -97,7 +98,7 @@ struct S_alt_base *S_alt_base_S_alt_base(struct S_alt_base *this)
 {
 	this->a = 20;
 	this->b = 21;
-#line 101 "good4.coo.c"
+#line 102 "good4.coo.c"
 	return this;
 #line 65 "good4.coo"
 }
@@ -128,7 +129,7 @@ int main(void)
 }
 
 
-#line 132 "good4.coo.c"
+#line 133 "good4.coo.c"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -183,6 +184,18 @@ struct S_both *S_both_S_both(struct S_both *this)
 	S_base_S_base(&this->S_base);
 	S_alt_base_S_alt_base(&this->S_alt_base);
 	return this;
+}
+
+void free_S_both(struct S_both *this)
+{
+	S_both_d_S_both(this);
+	free(this);
+}
+
+void S_both_d_S_both(struct S_both *this)
+{
+	S_alt_base_d_S_alt_base(&this->S_alt_base);
+	S_base_d_S_base(&this->S_base);
 }
 
 const struct S_inherit_sec_coo_class {

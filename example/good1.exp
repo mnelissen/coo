@@ -87,7 +87,7 @@ extern const struct D_vmt {
 
 extern const struct D_C_vmt {
 	struct coo_vmt vmt_base;
-	void (*vfunc_a)(struct C *this, int arg);
+	void (*vfunc_a)(struct A *this, int arg);
 	void (*handle_pass_C)(struct C *this, int arg, struct C *C);
 } D_C_vmt;
 
@@ -339,7 +339,7 @@ const struct D_vmt D_vmt = {
 	B_vfunc_b,
 };
 
-static void D_C_vfunc_a(struct C *__this, int arg)
+static void D_C_vfunc_a(struct A *__this, int arg)
 {	struct D *this = container_of(__this, struct D, C.A);
 	D_vfunc_a(this, arg);
 }

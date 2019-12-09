@@ -1,0 +1,80 @@
+#include <stdio.h>     /* multiple inherit destructor test */
+
+struct A {
+	int *a;
+	A(int *init_a);
+	virtual ~A();
+};
+
+struct B {
+	char *b;
+	B(char *init_b);
+	virtual ~B();
+};
+
+struct Z {
+	int *z;
+	Z(int *init_z);
+	~Z();
+};
+
+struct C : A, B {
+	Z z;
+	C(int *init_a, char *init_b, int *init_z);
+};
+
+A::A(int *init_a)
+{
+	a = init_a;
+	*a = 10;
+}
+
+A::~A()
+{
+	*a = 11;
+}
+
+B::B(char *init_b)
+{
+	b = init_b;
+	*b = 20;
+}
+
+B::~B()
+{
+	*b = 21;
+}
+
+Z::Z(int *init_z)
+{
+	z = init_z;
+	*z = 30;
+}
+
+Z::~Z()
+{
+	*z = 31;
+}
+
+C::C(int *init_a, char *init_b, int *init_z)
+{
+	A(init_a);
+	B(init_b);
+	z.Z(init_z);
+}
+
+int func(int *a, char *b, int *z)
+{
+	C c(a, b, z);
+	printf("%d %d %d\n", *c.a, *c.b, *c.z.z);
+	return 0;
+}
+
+int main(void)
+{
+	int a, z;
+	char b;
+
+	func(&a, &b, &z);
+	printf("%d %d %d\n", a, b, z);
+}

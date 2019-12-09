@@ -5805,8 +5805,8 @@ static void print_class_free(struct parser *parser, struct class *class)
 	}
 	outprintf(parser, "\nvoid free_%s(struct %s *this)\n{\n", class->name, class->name);
 	if (class->refcounted)
-		outputs(parser, "\tif (coo_atomic_fetch_dec(&root_this->refcount) != 0)\n"
-			"\treturn;\n");
+		outputs(parser, "\tif (coo_atomic_fetch_dec(&this->refcount) != 0)\n"
+			"\t\treturn;\n");
 	outprintf(parser, "\t%s_d_%s%s(%sthis%s%s);\n\tfree(this);\n}\n",
 			destrclass->name, destrclass->name,
 			destrclass->rootclass ? "_root" : "", addr, arrow, path);
@@ -5815,7 +5815,8 @@ static void print_class_free(struct parser *parser, struct class *class)
 static void print_trampolines(struct parser *parser, struct class *class, struct vmt *vmt)
 {
 	struct member *member;
-	char *vmtpath, *vmtaccess, *funcmiddle, *sep, *structsuffix, *thisaccess, *thismember;
+	char *vmtpath, *vmtaccess, *funcmiddle, *sep, *structsuffix;
+	char *funcprefix, *implprefix, *implname, *thisaccess, *thismember;
 	struct class *implclass, *previmplclass, *vmtclass;
 	struct ancestor *ancestor;
 
@@ -5867,18 +5868,24 @@ static void print_trampolines(struct parser *parser, struct class *class, struct
 		}
 		vmtclass = get_vmt_this_class(member, vmt);
 		sep = member->paramstext[0] == ')' ? "" : ", ";
-		outprintf(parser, "\nstatic %s%s_%s_%s%s(struct %s *__this%s%s\n"
+		if (!member->is_destructor) {
+			funcprefix = class->name;
+			implprefix = member->implemented->name;
+			implname = member->name;
+		} else {
+			funcprefix = implprefix = "free";
+			implname = member->vmt->destructor->implemented->name;
+		}
+		outprintf(parser, "\nstatic %s%s_%s_%s(struct %s *__this%s%s\n"
 			"{\tstruct %s%s *this = container_of("
 				"__this, struct %s%s, %s);\n"
-			"\t%s%s_%s%s(%s%s",
-			member->rettypestr, class->name, funcmiddle,
-			  member->implprefix, member->implname,
-			  vmtclass->name, sep, member->paramstext,
+			"\t%s%s_%s(%s%s",
+			member->rettypestr, funcprefix, funcmiddle,
+			  member->implname, vmtclass->name, sep, member->paramstext,
 			class->name, structsuffix, class->name,
 			  structsuffix, vmtpath,
 			is_void_rettype(member->rettypestr) ? "" : "return ",
-			  member->implemented->name, member->implprefix,
-			  member->implname, thisaccess, thismember);
+			  implprefix, implname, thisaccess, thismember);
 		print_param_names(parser, member->paramstext);
 		outprintf(parser, ");\n}\n");
 		/* no need to count lines_coo here, end of input */
@@ -5947,7 +5954,7 @@ static void print_vmt(struct parser *parser, struct class *class, struct vmt *vm
 {
 	struct member *member;
 	const char *vmt_name;
-	char *classsep, *classsuffix, *vmtpre, *vmtpreacc, *vmtaccess, *vmtpath;
+	char *classsep, *classsuffix, *implprefix, *vmtpre, *vmtpreacc, *vmtaccess, *vmtpath;
 	struct ancestor *ancestor;
 	struct class *rootclass, *implclass;
 
@@ -5991,10 +5998,9 @@ static void print_vmt(struct parser *parser, struct class *class, struct vmt *vm
 				implclass = vmt->modified->class;
 			}
 		}
-
-		outprintf(parser, "\t%s%s%s_%s%s,\n",
-			implclass->name, classsep, classsuffix,
-			member->implprefix, member->implname);
+		implprefix = !member->is_destructor ? implclass->name : "free";
+		outprintf(parser, "\t%s%s%s_%s,\n",
+			implprefix, classsep, classsuffix, member->implname);
 	}
 	outprintf(parser, "};\n");
 	/* no need to count lines_coo here, end of input */

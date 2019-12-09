@@ -355,6 +355,14 @@ When using goto, do not jump over declaring new variables. This will also
 skip their constructor calls. But at exit of function, the destructor
 will be called anyway likely leading to wrong behavior.
 
+#### Virtual destructors
+
+Virtual destructors allow `delete p;` statements to work correctly, when
+`p` is a pointer to a parent class of an object. In COO, the vmt entry
+for a destructor points to the free_X function to destruct + free memory
+of a class X. This differs slightly from C++ where calling the destructor
+directly does not free memory. This saves one entry in the vmt in COO.
+
 ### Call inherited functions
 
 In general, member names and therefore function calls are unique. But when
@@ -549,7 +557,6 @@ the parser anyway.
 * optimize duplicated parentname strings == ancestor->path?
 * parse parameters, type without name skipped
 * remove get_vmt_name, replace with vmt->class->name or vmt->modified->class->name
-* vmt destructor X should call free_X? not X_d_X?
 
 ## License
 

@@ -33,7 +33,6 @@ typedef uint32_t pid_t;
 #define NEWFN_MAX          8192            /* (stack)size for included dirs+filenames */
 #define OUTPR_MAX          256             /* maximum outprintf size we do */
 #define STDIN_BUFSIZE      (1024 * 1024)   /* size for inputbuffer when using stdin */
-#define MAX_PAREN_LEVELS   16
 #define MAX_USER_ERRORS    25
 #define PTRLVLMASK         7               /* bits 2..0 pointer level */
 
@@ -524,6 +523,7 @@ static void afree(struct allocator *alloc, void *mem, size_t oldsize)
 #define agenalloc(s) aalloc(alloc,PTRLVLMASK,s)
 #define pgenalloc(s) aalloc(&parser->global_mem,PTRLVLMASK,s)
 #define agenzalloc(s) azalloc(alloc,PTRLVLMASK,s)
+#define fgenzalloc(s) azalloc(&parser->func_mem,PTRLVLMASK,s)
 #define pgenzalloc(s) azalloc(&parser->global_mem,PTRLVLMASK,s)
 
 static void parser_nextline(struct parser *parser, char *pos)
@@ -4586,13 +4586,23 @@ static int is_dyncast_expr_sep(char *curr)
 	return 1;
 }
 
+struct parenlvl_info {
+	struct parenlvl_info *prev, *next;     /* to upper/deeper parenthesis levels */
+	anyptr exprdecl;                       /* expression type at current level */
+	anyptr targetdecl;                     /* context type (assign to or parameter) */
+	char *exprstart;                       /* where expression started */
+	char *memberstart;                     /* where last word/identifier started */
+	struct paramstate targetparams;        /* iterating through parameter types */
+	enum dyncast_state dyncast:8;          /* dynamic casting at this level */
+	unsigned target_isparam:8;             /* targetdecl is a parameter */
+};
+
 static void parse_function(struct parser *parser, char *next)
 {
-	anyptr exprdecl[MAX_PAREN_LEVELS], targetdecl[MAX_PAREN_LEVELS];
 	anyptr immdecl, expr, *p_expr, target, rettype, thisptr;
+	struct parenlvl_info *pareninfo, *parenprev, *parencast, *parenlvl0;
 	const struct anytype *decl;
 	struct anytype *newtype;
-	struct paramstate targetparams[MAX_PAREN_LEVELS];
 	struct dynarr **tgtparams;
 	struct templpar *tptype;
 	struct classtype *classtype;
@@ -4603,15 +4613,14 @@ static void parse_function(struct parser *parser, char *next)
 	struct methodptr *mptype, *mp;
 	struct insert *insert_before;
 	char *curr, *funcname, *nameend, *classname, *name, *str1, *str2, *tmplpos;
-	char *exprstart[MAX_PAREN_LEVELS], *exprend, *params, *param0, *paramend;
-	char *memberstart[MAX_PAREN_LEVELS], *funcvarname, *funcvarnameend, *stmtstart;
+	char *exprend, *params, *param0, *paramend;
+	char *funcvarname, *funcvarnameend, *stmtstart;
 	char *thispath, *thisprefix, *thisclassname, *thisfuncret, *thisfuncretend;
 	char *argsep, *dblcolonsep, *accinhname, *accinhcolons, *rettypestr;
-	enum dyncast_state dyncast[MAX_PAREN_LEVELS];
 	enum parse_funcvar_state funcvarstate;
 	enum parse_state state, nextstate;
 	enum goto_return goto_ret;
-	int is_constructor, expr_is_oneword, blocklevel, parenlevel, seqparen, numwords;
+	int is_constructor, expr_is_oneword, blocklevel, seqparen, numwords;
 	int have_retvar, need_retvar, used_retvar, eval_retvar;
 	int retblocknr, next_retblocknr, unused_retblocknr, in_delete;
 	unsigned num_constr_called, num_constr;
@@ -4762,16 +4771,21 @@ static void parse_function(struct parser *parser, char *next)
 			classname, classname, thispath);
 	}
 
-	seqparen = parenlevel = numwords = 0;
-	exprdecl[0] = targetdecl[0] = immdecl = unknown_typeptr;
+	/* alloc for 2 parentheses levels, always have a next level to store target type */
+	parenlvl0 = pareninfo = fgenzalloc(2*sizeof(*pareninfo));
+	if (pareninfo == NULL)
+		return;
+
+	seqparen = numwords = 0;
+	parencast = parenprev = NULL;
+	pareninfo->next = &pareninfo[1], pareninfo[1].prev = pareninfo;
+	pareninfo->exprdecl = pareninfo->targetdecl = immdecl = unknown_typeptr;
 	have_retvar = need_retvar = used_retvar = eval_retvar = 0;
-	stmtstart = exprstart[0] = memberstart[0] = exprend = accinhcolons = NULL;
+	stmtstart = exprend = accinhcolons = NULL;
 	funcvarname = funcvarnameend = name = NULL;  /* make compiler happy */
 	accinhname = tmplpos = NULL;  /* make compiler happy */
 	retblocknr = next_retblocknr = unused_retblocknr = in_delete = 0;
 	parser->initializers.num = 0;
-	targetparams[0].params = NULL;
-	memset(&dyncast, 0, sizeof(dyncast));
 	funcvarstate = FV_NONE;
 	goto_ret = GOTO_RET_NONE;
 	decl = &unknown_type;
@@ -4786,9 +4800,9 @@ static void parse_function(struct parser *parser, char *next)
 		if (curr[0] == 0)
 			return;
 		/* pending initializers and this looks like statement, then print */
-		if (parser->initializers.num && parenlevel == 0 &&
+		if (parser->initializers.num && pareninfo->prev == NULL &&
 				(*curr == '=' || *curr == '(' || *curr == '{') && numwords < 2) {
-			print_initializers(parser, memberstart[0], blocklevel, next_retblocknr,
+			print_initializers(parser, pareninfo->memberstart, blocklevel, next_retblocknr,
 				need_retvar && !have_retvar ? thisfuncret : NULL, thisfuncretend);
 			have_retvar = need_retvar;
 			retblocknr = next_retblocknr;
@@ -4810,15 +4824,15 @@ static void parse_function(struct parser *parser, char *next)
 		}
 		if (!stmtstart)
 			stmtstart = curr;
-		if (!exprstart[parenlevel]) {
-			exprstart[parenlevel] = curr;
+		if (!pareninfo->exprstart) {
+			pareninfo->exprstart = curr;
 			expr_is_oneword = 1;
 		}
 		if (isdigit(*curr))
 			curr = skip_word(curr);
 		else if (iswordstart(*curr)) {
-			if (!memberstart[parenlevel])
-				memberstart[parenlevel] = curr;
+			if (!pareninfo->memberstart)
+				pareninfo->memberstart = curr;
 			if (strprefixcmp("static ", curr)) {
 				next = curr + 7;  /* "static " */
 				continue;   /* stay in e.g. statement-start state */
@@ -4851,7 +4865,7 @@ static void parse_function(struct parser *parser, char *next)
 					goto dyncast;
 				} else if (curr[3] == ':') {
 					next = curr + 4;
-					rettype = targetdecl[parenlevel];
+					rettype = pareninfo->targetdecl;
 				   dyncast:
 					if (typ(rettype)->type != AT_CLASS) {
 						pr_err(curr, "unknown class to cast to");
@@ -4875,13 +4889,13 @@ static void parse_function(struct parser *parser, char *next)
 					addinsert(parser, insert_before, next,
 						"_coo_class, &", next, CONTINUE_AFTER);
 					if (*next == '(') {
-						targetdecl[parenlevel+1] = rettype;
-						dyncast[parenlevel+1] = DYNCAST_PAREN;
+						pareninfo->next->targetdecl = rettype;
+						pareninfo->next->dyncast = DYNCAST_PAREN;
 					} else {
-						dyncast[parenlevel] = DYNCAST_EXPR;
+						pareninfo->dyncast = DYNCAST_EXPR;
 					}
-					if (typ(exprdecl[parenlevel])->type == AT_UNKNOWN)
-						exprdecl[parenlevel] = rettype;
+					if (typ(pareninfo->exprdecl)->type == AT_UNKNOWN)
+						pareninfo->exprdecl = rettype;
 					continue;
 				}
 			} else if (strprefixcmp("return", curr) && !isalnum(curr[6])) {
@@ -4963,15 +4977,15 @@ static void parse_function(struct parser *parser, char *next)
 				continue;
 			}
 
-			if (state == DECLVAR && to_class(decl) && parenlevel == 0) {
+			if (state == DECLVAR && to_class(decl) && pareninfo->prev == NULL) {
 				/* for 2nd variable decl.class is the rootclass */
 				if (declvar && decl->u.class->is_rootclass
 						&& (ptrlvl(declvar->decl)
-							|| ptrlvl(exprdecl[0]))) {
+							|| ptrlvl(pareninfo->exprdecl))) {
 					pr_err(curr, "cannot combine pointer and non-pointer "
 						"declarations of root-requiring classes");
 				} else if (!declvar && decl->u.class->rootclass
-						&& ptrlvl(exprdecl[0]) == 0) {
+						&& ptrlvl(pareninfo->exprdecl) == 0) {
 					/* declaring stack variable with root class, add _root */
 					flush_until(parser, next);
 					outwrite(parser, "_root", 5);
@@ -4994,8 +5008,8 @@ static void parse_function(struct parser *parser, char *next)
 			case DECLVAR:
 				immdecl = to_anyptr(decl, 0);
 				declvar = addclsvariable(parser, blocklevel, immdecl,
-						ptrlvl(exprdecl[0]), name, next);
-				if (ptrlvl(exprdecl[0]) == 0 && decl->pointerlevel == 0
+						ptrlvl(pareninfo->exprdecl), name, next);
+				if (ptrlvl(pareninfo->exprdecl) == 0 && decl->pointerlevel == 0
 						&& to_class(decl)) {
 					if (decl->u.class->num_abstract) {
 						pr_err(name, "cannot instantiate "
@@ -5016,18 +5030,18 @@ static void parse_function(struct parser *parser, char *next)
 				break;
 			case DECLMETHODVAR:
 				addmpvariable(parser, blocklevel, to_anyptr(decl, 0),
-					ptrlvl(exprdecl[0]), name, next);
+					ptrlvl(pareninfo->exprdecl), name, next);
 				break;
 			case ACCESSMEMBER:  /* parsing expr.member or expr->member */
 				/* immdecl is used for same parenthesis level,
 				   exprdecl in case of cast (nested in parentheses) */
-				p_expr = to_class(typ(immdecl)) ? &immdecl : &exprdecl[parenlevel];
+				p_expr = to_class(typ(immdecl)) ? &immdecl : &pareninfo->exprdecl;
 				if (ptrlvl(*p_expr) <= 1) {
 					submember = parse_member(parser, stmtstart,
-						to_mp(typ(targetdecl[parenlevel])), expr_is_oneword,
-						memberstart[parenlevel], exprend, *p_expr,
+						to_mp(typ(pareninfo->targetdecl)), expr_is_oneword,
+						pareninfo->memberstart, exprend, *p_expr,
 						name, next, p_expr,
-						&targetparams[parenlevel].params);
+						&pareninfo->targetparams.params);
 					if (submember == NULL)
 						break;
 					/* to check all literal class variables initialized */
@@ -5037,30 +5051,30 @@ static void parse_function(struct parser *parser, char *next)
 							num_constr_called++;
 							member->constructor_called = 1;
 						} else {
-							pr_err(memberstart[parenlevel],
+							pr_err(pareninfo->memberstart,
 								"duplicate call to member %s "
 								"root constructor", member->name);
 						}
 					}
 					check_visibility(parser, thisclass, submember,
-						memberstart[parenlevel]);
+						pareninfo->memberstart);
 				}
 				break;
 			case ACCESSINHERITED:  /* parsing class::member */
 				next = access_inherited(parser, stmtstart,
-					to_mp(typ(targetdecl[parenlevel])), thisclass,
+					to_mp(typ(pareninfo->targetdecl)), thisclass,
 					to_class(typ(immdecl)), accinhname, accinhcolons,
-					name, next, &targetparams[parenlevel].params);
+					name, next, &pareninfo->targetparams.params);
 				break;
 			default:
 				/* maybe it's a local (stack) variable? */
-				tgtparams = &targetparams[parenlevel].params;
+				tgtparams = &pareninfo->targetparams.params;
 				if (find_local_e_class(parser, name, next,
 						&immdecl, tgtparams) >= 0)
 					break;
 				/* maybe it's a member field? "this" has pointerlevel 1 */
 				member = parse_member(parser, stmtstart,
-					to_mp(typ(targetdecl[parenlevel])), 0, NULL, NULL,
+					to_mp(typ(pareninfo->targetdecl)), 0, NULL, NULL,
 					thisptr, name, next, &immdecl, tgtparams);
 				if (member != NULL) {
 					if (is_constructor && member->parent_constructor) {
@@ -5118,12 +5132,12 @@ static void parse_function(struct parser *parser, char *next)
 					}
 					if (state == STMTSTART) {
 						nextstate = DECLVAR;
-					} else if (seqparen >= 2 && exprdecl[parenlevel-2]) {
+					} else if (seqparen >= 2 && parencast->exprdecl) {
 						/* this is a cast, like ((class_t*)x)->..
 						   remember first detected class */
 						/* combine possible pointer dereference */
-						exprdecl[parenlevel-2] = to_anyptr(decl,
-							ptrlvl(exprdecl[parenlevel-2]));
+						parencast->exprdecl = to_anyptr(decl,
+							ptrlvl(parencast->exprdecl));
 						decl = &unknown_type;
 						nextstate = CASTVAR;
 					} else if (*next != ':' || next[1] != ':') {
@@ -5137,9 +5151,9 @@ static void parse_function(struct parser *parser, char *next)
 					if (state == STMTSTART) {
 						decl = &mptype->t;
 						nextstate = DECLMETHODVAR;
-					} else if (seqparen >= 2 && !exprdecl[parenlevel-2]) {
+					} else if (seqparen >= 2 && !parencast->exprdecl) {
 						/* cast to methodptr */
-						exprdecl[parenlevel-2] = to_anyptr(&mptype->t, 0);
+						parencast->exprdecl = to_anyptr(&mptype->t, 0);
 						nextstate = CASTVAR;
 					}
 					break;
@@ -5152,18 +5166,20 @@ static void parse_function(struct parser *parser, char *next)
 						decl = &tptype->t;
 						nextstate = DECLVAR;
 					} else if (seqparen >= 2
-							&& !typ(exprdecl[parenlevel-2])) {
+							&& !typ(parencast->exprdecl)) {
 						/* cast to template parameter type
 						   in expression, not safe to replace here */
 						addinsert_templpar(parser,
 								tptype, name, next);
-						exprdecl[parenlevel-2] = to_anyptr(&tptype->t,
-							raw_ptrlvl(exprdecl[parenlevel-2]));
+						parencast->exprdecl = to_anyptr(&tptype->t,
+							raw_ptrlvl(parencast->exprdecl));
 						nextstate = CASTVAR;
 					}
 					break;
 				}
-				if (parenlevel == 1 && ptrlvl(exprdecl[1]) == PTRLVLMASK) {
+				/* are we at parenthesis level 1? */
+				if (pareninfo->prev == parenlvl0
+						&& ptrlvl(pareninfo->exprdecl) == PTRLVLMASK) {
 					/* perhaps this is a function pointer variable decl? */
 					funcvarname = name;
 					funcvarnameend = next;
@@ -5186,7 +5202,7 @@ static void parse_function(struct parser *parser, char *next)
 					break;
 				if (*next == ')') {
 					addvariable(parser, NULL, blocklevel, to_anyptr(decl, 0),
-						ptrlvl(exprdecl[0]), funcvarname,
+						ptrlvl(pareninfo->exprdecl), funcvarname,
 						funcvarnameend, curr+1);
 				}
 			}
@@ -5207,8 +5223,8 @@ static void parse_function(struct parser *parser, char *next)
 						/* skip parenthesis, need to add "this" parameter */
 						initializer->params = curr + 1;
 					}
-					exprdecl[parenlevel] = expr;
-					targetparams[parenlevel].params = &constr->params;
+					pareninfo->exprdecl = expr;
+					pareninfo->targetparams.params = &constr->params;
 				} else if (constr->paramstext[0] != ')') {
 					pr_err(curr, "missing call to constructor");
 					parser->initializers.num -= initializer != NULL;
@@ -5223,35 +5239,35 @@ static void parse_function(struct parser *parser, char *next)
 			}
 			state = FINDVAR;
 		} else if (*curr == '(') {
-			mp = to_mp(typ(immdecl)) ?: to_mp(typ(exprdecl[parenlevel]));
-			if (mp && ptrlvl(exprdecl[parenlevel]) < 2) {
+			mp = to_mp(typ(immdecl)) ?: to_mp(typ(pareninfo->exprdecl));
+			if (mp && ptrlvl(pareninfo->exprdecl) < 2) {
 				next = insertmpcall(parser, expr_is_oneword, stmtstart,
-					exprstart[parenlevel], exprend, mp,
-					curr, ptrlvl(exprdecl[parenlevel]));
+					pareninfo->exprstart, exprend, mp,
+					curr, ptrlvl(pareninfo->exprdecl));
 			}
 		}
 
 		if (*curr != '.' && (*curr != '-' || curr[1] != '>'))
-			memberstart[parenlevel] = NULL;
-		if (parser->initializers.num && parenlevel == 0 && *curr == '=') {
+			pareninfo->memberstart = NULL;
+		if (parser->initializers.num && pareninfo->prev == NULL && *curr == '=') {
 			/* when added one initializer, then copy them all,
 			   to keep order the order the same */
 			initializer = addinitializer(parser, NULL, name, next);
-		} else if (!dyncast[parenlevel] && (*curr == ')' || *curr == ','
+		} else if (!pareninfo->dyncast && (*curr == ')' || *curr == ','
 						|| *curr == '=' || *curr == ';')) {
 			/* parsing membername in context (function argument, assignment)
 			   where pointer to a membername's ancestor class is expected
 			   determine target and source classes to access ancestor of */
-			add_ptrlvl(&immdecl, ptrlvl(exprdecl[parenlevel]));
-			expr = sel_class(exprdecl[parenlevel]) ?: sel_class(immdecl);
-			target = sel_class(targetdecl[parenlevel]);
+			add_ptrlvl(&immdecl, ptrlvl(pareninfo->exprdecl));
+			expr = sel_class(pareninfo->exprdecl) ?: sel_class(immdecl);
+			target = sel_class(pareninfo->targetdecl);
 			if (target && expr && ptrlvl(target) <= 1)
-				insertancestor(parser, exprstart[parenlevel],
+				insertancestor(parser, pareninfo->exprstart,
 						name, curr, typ(target), expr);
 		}
 		if (*curr == ')' || *curr == ',' || *curr == '=' || *curr == ';')
-			exprstart[parenlevel] = NULL;
-		if (initializer && parenlevel == 0 && (*curr == ',' || *curr == ';')) {
+			pareninfo->exprstart = NULL;
+		if (initializer && pareninfo->prev == NULL && (*curr == ',' || *curr == ';')) {
 			if (initializer->start != curr) {
 				flush_until(parser, initializer->start);
 				parser->pf.writepos = curr;
@@ -5260,80 +5276,88 @@ static void parse_function(struct parser *parser, char *next)
 			parser->inserts = &parser->inserts_list;
 			initializer = NULL;
 		}
-		if (dyncast[parenlevel] == DYNCAST_EXPR && is_dyncast_expr_sep(curr)) {
+		if (pareninfo->dyncast == DYNCAST_EXPR && is_dyncast_expr_sep(curr)) {
 			/* close coo_dyn_cast call */
 			addinsert(parser, NULL, curr, "->vmt)", curr, CONTINUE_AFTER);
-			dyncast[parenlevel] = DYNCAST_NONE;
+			pareninfo->dyncast = DYNCAST_NONE;
 		}
 		if (*curr == '(')
 			seqparen++;
 		else {
 			seqparen = 0;
-			targetparams[parenlevel].params = NULL;
+			pareninfo->targetparams.params = NULL;
 		}
 		if (*curr == '(') {
-			memberstart[parenlevel] = curr;
+			pareninfo->memberstart = curr;
 			if (typ(immdecl)->type != AT_UNKNOWN) {
-				exprdecl[parenlevel] = immdecl;
+				pareninfo->exprdecl = immdecl;
 				immdecl = unknown_typeptr;
 			}
-			if (parenlevel < MAX_PAREN_LEVELS) {
-				parenlevel++;
-				memberstart[parenlevel] = NULL;  /* reset, assigned later */
-				exprstart[parenlevel] = NULL;
-				exprdecl[parenlevel] = unknown_typeptr;
-				targetparams[parenlevel].params = NULL;
-				targetparams[parenlevel-1].index = -1;
-				select_next_param(parser, curr, exprdecl[parenlevel-1],
-					&targetparams[parenlevel-1], &targetdecl[parenlevel]);
-			} else
-				pr_err(curr, "maximum parenthesis nesting level reached");
+			parencast = pareninfo->prev;
+			parenprev = pareninfo;
+			pareninfo = pareninfo->next;
+			/* always have a next parenthesis level ready for parameter target */
+			if (!pareninfo->next) {
+				pareninfo->next = fgenzalloc(sizeof(*pareninfo->next));
+				if (!pareninfo->next)
+					return;
+				pareninfo->next->prev = pareninfo;
+			}
+			pareninfo->memberstart = NULL;  /* reset, assigned later */
+			pareninfo->exprstart = NULL;
+			pareninfo->exprdecl = unknown_typeptr;
+			pareninfo->targetparams.params = NULL;
+			parenprev->targetparams.index = -1;
+			select_next_param(parser, curr, parenprev->exprdecl,
+				&parenprev->targetparams, &pareninfo->targetdecl);
 			state = EXPRUNARY;
 		} else if (*curr == ')') {
-			if (parenlevel > 0) {
-				if (dyncast[parenlevel]) {
+			if (pareninfo->prev) {
+				if (pareninfo->dyncast) {
 					addinsert(parser, NULL,
 						curr, ")->vmt", curr, CONTINUE_AFTER);
-					dyncast[parenlevel] = DYNCAST_NONE;
+					pareninfo->dyncast = DYNCAST_NONE;
 				}
-				parenlevel--;
-				if (targetparams[parenlevel].params) {
+				if (parenprev->targetparams.params) {
 					/* reset paraminfo if was parsing function arguments
 					   for functions, don't copy the last type upwards */
-					targetparams[parenlevel].params = NULL;
-				} else if (typ(exprdecl[parenlevel])->type == AT_UNKNOWN) {
-					if (typ(exprdecl[parenlevel+1])->type != AT_UNKNOWN)
-						exprdecl[parenlevel] = exprdecl[parenlevel+1];
+					parenprev->targetparams.params = NULL;
+				} else if (typ(parenprev->exprdecl)->type == AT_UNKNOWN) {
+					if (typ(pareninfo->exprdecl)->type != AT_UNKNOWN)
+						parenprev->exprdecl = pareninfo->exprdecl;
 					else
-						exprdecl[parenlevel] = immdecl;
+						parenprev->exprdecl = immdecl;
 				}
+				pareninfo = parenprev;
+				parenprev = parencast;
+				parencast = parencast ? parencast->prev : NULL;
 				immdecl = unknown_typeptr;
 			}
 			state = FINDVAR;
 		} else if (*curr == '*') {
 			switch (state) {
-			case DECLVAR:
-			case CASTVAR: add_ptrlvl(&exprdecl[0], 1); break;
+			case DECLVAR: add_ptrlvl(&pareninfo->exprdecl, 1); break;
+			case CASTVAR: add_ptrlvl(&parencast->exprdecl, 1); break;
 			case STMTSTART:
 			case ACCESSMEMBER:
-			case EXPRUNARY: sub_ptrlvl(&exprdecl[parenlevel], 1); break;
+			case EXPRUNARY: sub_ptrlvl(&pareninfo->exprdecl, 1); break;
 			default: break;
 			}
 		} else if (*curr == ',') {
-			if (to_class(decl) && parenlevel == 0)
+			if (to_class(decl) && !pareninfo->prev)
 				state = DECLVAR;
-			else if (to_mp(decl) && parenlevel == 0)
+			else if (to_mp(decl) && !pareninfo->prev)
 				state = DECLMETHODVAR;
 			else
 				state = EXPRUNARY;
-			if (parenlevel) {
-				select_next_param(parser, curr, exprdecl[parenlevel-1],
-					&targetparams[parenlevel-1], &targetdecl[parenlevel]);
+			if (pareninfo->prev) {
+				select_next_param(parser, curr, parenprev->exprdecl,
+					&parenprev->targetparams, &pareninfo->targetdecl);
 			}
-			clear_ptrlvl(&exprdecl[parenlevel]);
+			clear_ptrlvl(&pareninfo->exprdecl);
 		} else if (*curr == '=') {
-			targetdecl[parenlevel] = immdecl;
-			clear_ptrlvl(&exprdecl[parenlevel]);
+			pareninfo->targetdecl = immdecl;
+			clear_ptrlvl(&pareninfo->exprdecl);
 			immdecl = unknown_typeptr;
 			state = EXPRUNARY;
 		} else if (*curr == '.') {
@@ -5366,7 +5390,7 @@ static void parse_function(struct parser *parser, char *next)
 			}
 		} else if (*curr == ';') {
 			if (in_delete) {
-				expr = to_class(typ(immdecl)) ? immdecl : exprdecl[0];
+				expr = to_class(typ(immdecl)) ? immdecl : parenlvl0->exprdecl;
 				if (to_class(typ(expr))) {
 					if (typ(expr)->u.class->destructor) {
 						outprintf(parser, "free_%s(",
@@ -5386,14 +5410,14 @@ static void parse_function(struct parser *parser, char *next)
 				in_delete = 0;
 			}
 			close_tempscope(parser, curr + 1);
-			targetdecl[0] = exprdecl[0] = immdecl = unknown_typeptr;
 			decl = &unknown_type;
 			stmtstart = NULL;
 			declvar = NULL;
 			member = NULL;
 			numwords = 0;
 			seqparen = 0;
-			parenlevel = 0;
+			pareninfo = parenlvl0;
+			pareninfo->targetdecl = pareninfo->exprdecl = immdecl = unknown_typeptr;
 			state = STMTSTART;
 			if (goto_ret) {
 				/* look ahead to see if function ends here */
@@ -5417,11 +5441,11 @@ static void parse_function(struct parser *parser, char *next)
 			|| *curr == '&' || *curr == '|' || *curr == '^' || *curr == '!'
 			|| *curr == '?' || *curr == ':') {
 			if (*curr == '&' && state == EXPRUNARY) {
-				add_ptrlvl(&exprdecl[parenlevel], 1);
+				add_ptrlvl(&pareninfo->exprdecl, 1);
 			} else {
 				state = EXPRUNARY;
 				if (immdecl) {
-					exprdecl[parenlevel] = immdecl;
+					pareninfo->exprdecl = immdecl;
 					immdecl = unknown_typeptr;
 				}
 			}

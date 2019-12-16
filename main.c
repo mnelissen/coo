@@ -304,6 +304,7 @@ struct insert {   /* an insert, to insert some text in the output */
 typedef dlist(struct insert) insert_dlist_t;
 
 struct initializer {
+	struct initializer *next;  /* next initializer in parser->initializers */
 	struct class *varclass; /* class (root) constructor to call, if any */
 	char *params;           /* ... first parameter, to separate from "this" */
 	insert_dlist_t inserts; /* inserts for initialization expression */
@@ -314,6 +315,7 @@ struct initializer {
 };
 
 struct disposer {
+	struct disposer *prev;  /* prev disposer in parser->disposers */
 	struct class *class;    /* class to call destructor of */
 	char *name;		/* name of variable */
 	unsigned blocklevel;    /* { } nesting level to destuct at */
@@ -344,6 +346,11 @@ struct parse_file {
 	char defined_tp_impl;     /* defined template parameter impl type */
 };
 
+struct parse_file_item {
+	struct parse_file_item *prev;  /* previous in parser->file_stack/avail */
+	struct parse_file pf;     /* parse file state */
+};
+
 struct allocator {
 	void *memory;             /* first memory block for allocation */
 	void *memblock;           /* current memory block for allocation */
@@ -362,10 +369,11 @@ struct parser {
 	struct hash globals;          /* struct variable pointers */
 	struct hash locals;           /* struct variable pointers */
 	struct hash methodptrtypes;   /* struct methodptr pointers */
-	struct dynarr initializers;   /* struct initializer pointers */
-	struct dynarr disposers;      /* struct disposer pointers */
+	flist(struct initializer) initializers;    /* initializers to be printed */
+	blist(struct disposer) disposers;          /* disposers to be printed */
+	blist(struct parse_file_item) file_stack;  /* files' state being parsed */
+	blist(struct parse_file_item) file_avail;  /* memory available for reuse */
 	struct dynarr includepaths;   /* char pointers */
-	struct dynarr file_stack;     /* struct parse_file pointers */
 	struct dynarr *param_types;   /* struct anytype *, collect params of funcs */
 	struct dynarr type_inserts;   /* 3x char *, replace from/text/to */
 	insert_dlist_t inserts_list;  /* struct insert pointers (outer layer) */
@@ -521,6 +529,7 @@ static void afree(struct allocator *alloc, void *mem, size_t oldsize)
 #define astralloc(s) aalloc(alloc,0,s)
 #define pstralloc(s) aalloc(&parser->global_mem,0,s)
 #define agenalloc(s) aalloc(alloc,PTRLVLMASK,s)
+#define fgenalloc(s) aalloc(&parser->func_mem,PTRLVLMASK,s)
 #define pgenalloc(s) aalloc(&parser->global_mem,PTRLVLMASK,s)
 #define agenzalloc(s) azalloc(alloc,PTRLVLMASK,s)
 #define fgenzalloc(s) azalloc(&parser->func_mem,PTRLVLMASK,s)
@@ -961,29 +970,6 @@ static int grow_dynarr(struct allocator *alloc, struct dynarr *dynarr)
 }
 
 #define pgrow_dynarr(dynarr) grow_dynarr(&parser->global_mem, dynarr)
-
-void *allocdynitem_size(struct allocator *alloc, struct dynarr *dynarr, size_t itemsize)
-{
-	void *item;
-
-	if (grow_dynarr(alloc, dynarr) < 0)
-		return NULL;
-
-	item = dynarr->mem[dynarr->num];
-	if (item == NULL) {
-		item = agenzalloc(itemsize);
-		if (item == NULL)
-			return NULL;
-
-		dynarr->mem[dynarr->num] = item;
-	}
-
-	dynarr->num++;
-	return item;
-}
-
-#define allocdynitem(alloc, arr, pp_item) \
-	(*(pp_item) = allocdynitem_size(alloc, arr, sizeof(**(pp_item))))
 
 /*** print helpers ***/
 
@@ -2079,13 +2065,15 @@ static struct initializer *addinitializer(struct parser *parser,
 {
 	struct initializer *initializer;
 
-	if (!allocdynitem(&parser->global_mem, &parser->initializers, &initializer))
+	initializer = fgenzalloc(sizeof *initializer);
+	if (initializer == NULL)
 		return NULL;
 
 	initializer->lineno = parser->pf.lineno;
 	initializer->varclass = varclass;
 	initializer->name = name;
 	initializer->start = start;
+	flist_add(&parser->initializers, initializer, next);
 	dlist_init(&initializer->inserts, item);
 	parser->inserts = &initializer->inserts;
 	return initializer;
@@ -2098,13 +2086,15 @@ static struct disposer *adddisposer(struct parser *parser,
 
 	if (!class->destructor)
 		return NULL;
-	if (!allocdynitem(&parser->global_mem, &parser->disposers, &disposer))
+	disposer = fgenalloc(sizeof *disposer);
+	if (disposer == NULL)
 		return NULL;
 
 	disposer->class = class;
 	disposer->name = name;
 	disposer->blocklevel = blocklevel;
 	disposer->retblocknr = retblocknr;
+	blist_add(&parser->disposers, disposer, prev);
 	return disposer;
 }
 
@@ -2118,10 +2108,20 @@ static int addincludepath(struct parser *parser, char *path)
 	return 0;
 }
 
-static struct parse_file *addfilestack(struct parser *parser)
+static struct parse_file_item *addfilestack(struct parser *parser)
 {
-	return allocdynitem_size(&parser->global_mem,
-			&parser->file_stack, sizeof(struct parse_file));
+	struct parse_file_item *newfile;
+
+	if (blist_pop_last(&parser->file_avail, &newfile, prev))
+		goto out;
+
+	newfile = pgenzalloc(sizeof *newfile);
+	if (newfile == NULL)
+		return NULL;
+
+out:
+	blist_add(&parser->file_stack, newfile, prev);
+	return newfile;
 }
 
 static void remove_locals(struct parser *parser, unsigned blocklevel)
@@ -4338,10 +4338,9 @@ static void print_initializers(struct parser *parser, char *position, unsigned b
 	struct class *class;
 	struct member *member;
 	char *ancpath, *ancpath_sep;
-	unsigned i;
 	int lineno;
 
-	if (parser->initializers.num == 0)
+	if (flist_empty(&parser->initializers))
 		return;
 
 	/* copy the indentation to our added lines, note parser linestart has
@@ -4356,8 +4355,7 @@ static void print_initializers(struct parser *parser, char *position, unsigned b
 		parser->pf.lines_coo++;
 	}
 	lineno = 0;
-	for (i = 0; i < parser->initializers.num; i++) {
-		initializer = parser->initializers.mem[i];
+	flist_foreach(initializer, &parser->initializers, next) {
 		if (initializer->lineno != lineno) {
 			/* if moved to next line, only print line ending */
 			if (initializer->lineno != lineno + 1)
@@ -4403,7 +4401,7 @@ static void print_initializers(struct parser *parser, char *position, unsigned b
 		flush_until(parser, initializer->end);
 		outwrite(parser, ";\n", 2);
 	}
-	parser->initializers.num = 0;
+	flist_clear(&parser->initializers);
 	parser->pf.writepos = linestart;
 	/* resync lineno in case there is an empty line between initialization section
 	   and statements; linestart is before line ending, so compare with lineno + 1 */
@@ -4416,16 +4414,16 @@ static void print_disposers(struct parser *parser, char *position,
 	struct disposer *disposer;
 	struct member *member;
 	char *linestart;
-	unsigned i, retblocknr;
+	unsigned retblocknr;
 
-	if ((i = parser->disposers.num) == 0) {
+	if (blist_empty(&parser->disposers)) {
 		/* only return if also no label to print */
 		if (next_retblocknr == 0)
 			return;
 		retblocknr = 0;
-		disposer = NULL;  /* make compiler happy */
+		disposer = NULL;
 	} else {
-		disposer = parser->disposers.mem[i-1];
+		disposer = parser->disposers.rlast;
 		if (disposer->blocklevel < blocklevel)
 			return;
 		retblocknr = disposer->retblocknr;
@@ -4442,7 +4440,7 @@ static void print_disposers(struct parser *parser, char *position,
 			parser->pf.lines_coo++;
 			next_retblocknr = retblocknr;
 			/* in case no disposers, just to print label */
-			if (i == 0)
+			if (disposer == NULL)
 				break;
 		}
 		outwrite(parser, linestart, position - linestart);
@@ -4450,9 +4448,9 @@ static void print_disposers(struct parser *parser, char *position,
 		outprintf(parser, "\t%s_%s%s(&%s);\n", member->origin->name,
 			member->implprefix, member->implname, disposer->name);
 		parser->pf.lines_coo++;
-		if (--i == 0)
+		disposer = disposer->prev;
+		if (disposer == NULL)
 			break;
-		disposer = parser->disposers.mem[i - 1];
 		if (disposer->blocklevel < blocklevel)
 			break;
 		retblocknr = disposer->retblocknr;
@@ -4463,7 +4461,7 @@ static void print_disposers(struct parser *parser, char *position,
 		outprintf(parser, "\treturn __coo_ret;\n");
 		parser->pf.lines_coo++;
 	}
-	parser->disposers.num = i;
+	parser->disposers.rlast = disposer;
 	parser->pf.writepos = linestart;
 	switch_line_pragma(parser, LINE_PRAGMA_INPUT);
 }
@@ -4785,7 +4783,7 @@ static void parse_function(struct parser *parser, char *next)
 	funcvarname = funcvarnameend = name = NULL;  /* make compiler happy */
 	accinhname = tmplpos = NULL;  /* make compiler happy */
 	retblocknr = next_retblocknr = unused_retblocknr = in_delete = 0;
-	parser->initializers.num = 0;
+	flist_clear(&parser->initializers);
 	funcvarstate = FV_NONE;
 	goto_ret = GOTO_RET_NONE;
 	decl = &unknown_type;
@@ -4800,7 +4798,7 @@ static void parse_function(struct parser *parser, char *next)
 		if (curr[0] == 0)
 			return;
 		/* pending initializers and this looks like statement, then print */
-		if (parser->initializers.num && pareninfo->prev == NULL &&
+		if (!flist_empty(&parser->initializers) && pareninfo->prev == NULL &&
 				(*curr == '=' || *curr == '(' || *curr == '{') && numwords < 2) {
 			print_initializers(parser, pareninfo->memberstart, blocklevel, next_retblocknr,
 				need_retvar && !have_retvar ? thisfuncret : NULL, thisfuncretend);
@@ -4908,10 +4906,8 @@ static void parse_function(struct parser *parser, char *next)
 					next_retblocknr = retblocknr + 1;
 					goto_ret = state != STMTSTART ? GOTO_RET_BLOCK : GOTO_RET;
 				}
-				if (parser->disposers.num) {
-					struct disposer *disposer =
-						parser->disposers.mem[parser->disposers.num-1];
-					if (disposer->blocklevel > 1) {
+				if (parser->disposers.rlast) {
+					if (parser->disposers.rlast->blocklevel > 1) {
 						pr_err(curr, "cannot return from nested "
 							"block with stack variables");
 					}
@@ -5023,8 +5019,6 @@ static void parse_function(struct parser *parser, char *next)
 							need_retvar = !is_void_rettype(thisfuncret);
 							eval_retvar = 1;
 						}
-						initializer = addinitializer(parser,
-							decl->u.class, declvar->name, next);
 					}
 				}
 				break;
@@ -5218,17 +5212,23 @@ static void parse_function(struct parser *parser, char *next)
 			}
 			constr = typ(expr)->u.class->root_constructor;
 			if (constr) {
-				if (*curr == '(') {
-					if (initializer) {
-						/* skip parenthesis, need to add "this" parameter */
-						initializer->params = curr + 1;
-					}
-					pareninfo->exprdecl = expr;
-					pareninfo->targetparams.params = &constr->params;
-				} else if (constr->paramstext[0] != ')') {
+				if (*curr != '(' && constr->paramstext[0] != ')') {
 					pr_err(curr, "missing call to constructor");
-					parser->initializers.num -= initializer != NULL;
-					initializer = NULL;
+				} else {
+					/* no pointer means stack-based constructor */
+					if (ptrlvl(expr) == 0) {
+						initializer = addinitializer(parser,
+							decl->u.class, declvar->name, next);
+						if (*curr == '(') {
+							/* skip parenthesis,
+							   need to add "this" parameter */
+							initializer->params = curr + 1;
+						}
+					}
+					if (*curr == '(') {
+						pareninfo->exprdecl = expr;
+						pareninfo->targetparams.params = &constr->params;
+					}
 				}
 				if (!ptrlvl(expr) && !typ(expr)->u.class->void_root_constructor)
 					pr_warn(curr, "non-void root constructor may fail");
@@ -5249,7 +5249,7 @@ static void parse_function(struct parser *parser, char *next)
 
 		if (*curr != '.' && (*curr != '-' || curr[1] != '>'))
 			pareninfo->memberstart = NULL;
-		if (parser->initializers.num && pareninfo->prev == NULL && *curr == '=') {
+		if (!flist_empty(&parser->initializers) && parenprev == NULL && *curr == '=') {
 			/* when added one initializer, then copy them all,
 			   to keep order the order the same */
 			initializer = addinitializer(parser, NULL, name, next);
@@ -5267,7 +5267,7 @@ static void parse_function(struct parser *parser, char *next)
 		}
 		if (*curr == ')' || *curr == ',' || *curr == '=' || *curr == ';')
 			pareninfo->exprstart = NULL;
-		if (initializer && pareninfo->prev == NULL && (*curr == ',' || *curr == ';')) {
+		if (initializer && parenprev == NULL && (*curr == ',' || *curr == ';')) {
 			if (initializer->start != curr) {
 				flush_until(parser, initializer->start);
 				parser->pf.writepos = curr;
@@ -6132,6 +6132,7 @@ static int try_include_file(struct parser *parser, char *dir, char *nameend)
 	FILE *fp_inc;
 	char *buffer, *bufend, *outbuffer, *fullname, *filename, *outfilename;
 	char *p, *new_newfilename_file;
+	struct parse_file_item *parse_file_item;
 	struct parse_file *parse_file;
 	int parse_ret;
 
@@ -6145,11 +6146,12 @@ static int try_include_file(struct parser *parser, char *dir, char *nameend)
 		return -1;
 
 	/* allocate temporary to store current state */
-	parse_file = addfilestack(parser);
-	if (parse_file == NULL)
+	parse_file_item = addfilestack(parser);
+	if (parse_file_item == NULL)
 		goto err_add;
 
 	/* make copy before overwriting parse_file, newfilename is reused later */
+	parse_file = &parse_file_item->pf;
 	filename = strdupto(parse_file->filename, fullname);
 	/* reuse old buffers, if any */
 	buffer = parse_file->buffer;
@@ -6186,7 +6188,8 @@ static int try_include_file(struct parser *parser, char *dir, char *nameend)
 	parse_file->filename = filename;
 	parse_file->outbuffer = outbuffer;
 	parse_file->outfilename = outfilename;
-	parser->file_stack.num--;
+	blist_remove_last(&parser->file_stack, prev);
+	blist_add(&parser->file_avail, parse_file_item, prev);
 	if (parse_ret == OUTPUT_FILE_WRITTEN) {
 		/* write new output filename, filename generated by
 		 * parse_source_size in newfilename_path for rename() target
@@ -6444,7 +6447,7 @@ static int parse_source_size(struct parser *parser, char *filename,
 	/* if no syntax added by coo parser, then can keep original filename in #include */
 	if (parser->pf.writepos == buffer) {
 		/* if parsing included file, and nothing changed, do not write any output */
-		if (parser->file_stack.num) {
+		if (!blist_empty(&parser->file_stack)) {
 			/* probably written first #line pragma already, remove file */
 			if (parser->pf.out) {
 				fclose(parser->pf.out);
@@ -6566,6 +6569,7 @@ static int initparser(struct parser *parser)
 	parser->inserts = &parser->inserts_list;
 	init_allocator(&parser->global_mem, &parser->memerror);
 	init_allocator(&parser->func_mem, &parser->memerror);
+	flist_init(&parser->initializers);
 	dlist_init(&parser->inserts_list, item);
 	return strhash_init(&parser->classes, 64, class) < 0 ||
 		strhash_init(&parser->classtypes, 64, classtype) < 0 ||
@@ -6576,10 +6580,18 @@ static int initparser(struct parser *parser)
 			64, offsetof(struct file_id, node), 0) < 0;
 }
 
+static void free_file(struct parse_file *pf)
+{
+	free(pf->buffer);
+	free(pf->filename);
+	free(pf->outbuffer);
+	free(pf->outfilename);
+}
+
 static void deinit_parser(struct parser *parser)
 {
+	struct parse_file_item *pfitem;
 	void *item;
-	unsigned i;
 
 	hash_foreach(item, &parser->classes)
 		deinit_class(item);
@@ -6589,15 +6601,10 @@ static void deinit_parser(struct parser *parser)
 	hash_deinit(&parser->locals);
 	hash_deinit(&parser->methodptrtypes);
 	hash_deinit(&parser->files_seen);
-	for (i = 0; i < parser->file_stack.max; i++) {
-		struct parse_file *pf = parser->file_stack.mem[i];
-		if (pf == NULL)
-			break;
-		free(pf->buffer);
-		free(pf->filename);
-		free(pf->outbuffer);
-		free(pf->outfilename);
-	}
+	blist_foreach_rev(pfitem, &parser->file_avail, prev)
+		free_file(&pfitem->pf);
+	blist_foreach_rev(pfitem, &parser->file_stack, prev)
+		free_file(&pfitem->pf);
 	free(parser->pf.buffer);
 	free(parser->pf.outfilename);
 	free(parser->pf.outbuffer);

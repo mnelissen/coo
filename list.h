@@ -3,6 +3,7 @@
 
 /* forward list, declare a 'next' variable yourself in the item type */
 #define flist(type)          struct { type *first, **last; }
+#define flist_clear(flist)   (flist)->first = NULL, flist_init(flist)
 #define flist_init(flist)    (flist)->last = &(flist)->first
 #define flist_empty(flist)   !(flist)->first
 #define flist_first(flist)   (flist)->first

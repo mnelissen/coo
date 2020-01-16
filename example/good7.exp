@@ -75,9 +75,9 @@ extern const struct C_coo_class C_coo_class;
 struct C *new_C(int *init_a, char *init_b, int *init_z);
 void C_C_root_zi(struct C *this, int *init_a, char *init_b, int *init_z);
 void free_C(struct C *this);
+void C_d_C(struct C *this);
 struct C *C_C(struct C *this, int *init_a, char *init_b, int *init_z);
 struct C *C_C_root(struct C *this, int *init_a, char *init_b, int *init_z);
-void C_d_C(struct C *this);
 #line 26 "good7.coo"
 struct A *A_A(struct A *this, int *init_a)
 {

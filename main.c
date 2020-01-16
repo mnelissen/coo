@@ -1754,6 +1754,13 @@ static struct member *addmember(struct parser *parser,
 	struct member *member, *dupmember;
 	char *end, *parsepos = rettypestr, void_ret;
 
+	/* special check for destructors because their names vary (== ~classname) */
+	if (membername[0] == '~' && class->vmt && class->vmt->destructor) {
+		pr_err(membername, "destructor must override %s",
+			class->vmt->destructor->name);
+		return NULL;
+	}
+
 	member = allocmember_e(parser, class, membername, nameend, &dupmember);
 	if (member == NULL) {
 		*nameend = 0;
@@ -2805,28 +2812,55 @@ static void implmember(struct class *class, struct member *member)
 	}
 }
 
-static struct member *implmembername(struct parser *parser, char *parsepos,
+static void impldestructor(struct class *class)
+{
+	struct vmt *vmt;
+
+	/* make sure to mark vmts that have destructor as modified to point to us */
+	class->freer_class = class;
+	flist_foreach(vmt, &class->vmts, next) {
+		if (vmt->destructor) {
+			if (vmt == class->vmt) {
+				vmt->destructor->definition = class;
+				class->destructor = vmt->destructor;
+			}
+			implmember(class, vmt->destructor);
+			vmt->destructor->implname = class->name;
+		}
+	}
+}
+
+static void implmembername(struct parser *parser, char *parsepos,
 		struct class *class, char *membername, char *nameend, struct memberprops props)
 {
 	struct member *member;
 
+	/* special case for destructor because name varies (== ~classname) */
+	if (membername[0] == '~') {
+		if (strcmp(membername+1, class->name) != 0) {
+			pr_err(membername, "destructor must be named ~%s", class->name);
+			return;
+		}
+		return impldestructor(class);
+	}
+
 	member = find_member_e(class, membername, nameend);
 	if (member == NULL) {
 		pr_err(parsepos, "cannot find member to override");
-		return NULL;
+		return;
 	}
 
 	if (!member->props.is_virtual) {
 		pr_err(parsepos, "inherited member %s::%s is not virtual",
 			member->origin->name, member->name);
-		return NULL;
+		return;
 	}
 
 	if (props.visibility != member->props.visibility) {
 		if (props.visibility > member->props.visibility) {
 			pr_err(parsepos, "cannot decrease visibility of inherited "
 				"member %s::%s", member->visi_define->name, member->name);
-			return NULL;
+			return;
 		}
 		member->props.visibility = props.visibility;
 		member->visi_define = class;
@@ -2836,19 +2870,6 @@ static struct member *implmembername(struct parser *parser, char *parsepos,
 	   note that destructors don't do this (their name is different) */
 	member->definition = class;
 	implmember(class, member);
-	return member;
-}
-
-static void impldestructor(struct class *class)
-{
-	struct vmt *vmt;
-
-	/* make sure to mark vmts that have destructor as modified to point to us */
-	flist_foreach(vmt, &class->vmts, next)
-		if (vmt->destructor) {
-			implmember(class, vmt->destructor);
-			vmt->destructor->implname = class->destructor->implname;
-		}
 }
 
 static void print_func_header(struct parser *parser,
@@ -3561,7 +3582,7 @@ static struct class *parse_struct(struct parser *parser, char *openbrace)
 		is_coo_class |= memberprops.is_static
 			| memberprops.is_virtual | memberprops.is_function;
 		if (memberprops.is_virtual && !memberprops.is_function) {
-			pr_err(membername, "Member variable cannot be virtual");
+			pr_err(membername, "member variable cannot be virtual");
 			continue;
 		}
 
@@ -3694,12 +3715,13 @@ static struct class *parse_struct(struct parser *parser, char *openbrace)
 	}
 	/* add destructor if there are literal class variables with destructor */
 	if (need_destructor && !class->has_destructor) {
-		prev_destructor = class->destructor;
-		class->gen_destructor = '~';  /* &name[-1] == &gen_destructor */
-		addgenmember(parser, class, NULL, &class->gen_destructor,
-			&class->name[classnameend-classname]);
-		if (prev_destructor)
+		if (class->vmt && class->destructor) {
 			impldestructor(class);
+		} else {
+			class->gen_destructor = '~';  /* &name[-1] == &gen_destructor */
+			addgenmember(parser, class, NULL, &class->gen_destructor,
+				&class->name[classnameend-classname]);
+		}
 		class->gen_destructor = 1;
 	}
 	if (class->need_root_destructor && !class->root_destructor) {
@@ -4445,7 +4467,7 @@ static void print_disposers(struct parser *parser, char *position,
 		}
 		outwrite(parser, linestart, position - linestart);
 		member = disposer->class->destructor;
-		outprintf(parser, "\t%s_%s%s(&%s);\n", member->origin->name,
+		outprintf(parser, "\t%s_%s%s(&%s);\n", member->definition->name,
 			member->implprefix, member->implname, disposer->name);
 		parser->pf.lines_coo++;
 		disposer = disposer->prev;
@@ -5818,7 +5840,7 @@ static void print_class_free(struct parser *parser, struct class *class)
 		return;
 
 	addr = arrow = path = "";
-	destrclass = class->destructor ? class->destructor->origin : class;
+	destrclass = class->destructor ? class->destructor->definition : class;
 	if (destrclass != class) {
 		ancestor = hasho_find(&class->ancestors, destrclass);
 		if (ancestor) {

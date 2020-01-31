@@ -74,7 +74,7 @@ extern const struct C_coo_class C_coo_class;
 
 struct C *new_C(int *init_a, char *init_b, int *init_z);
 void C_C_root_zi(struct C *this, int *init_a, char *init_b, int *init_z);
-void free_C(struct C *this);
+#define free_C(this) free_A(&(this)->A)
 void C_d_C(struct C *this);
 struct C *C_C(struct C *this, int *init_a, char *init_b, int *init_z);
 struct C *C_C_root(struct C *this, int *init_a, char *init_b, int *init_z);
@@ -161,139 +161,22 @@ int main(void)
 #include <stdlib.h>
 #include <string.h>
 #pragma pack(8)
-const struct Z_coo_class {
-	uint32_t num_parents;
-} Z_coo_class = {
-	0,
-};
-
-struct Z *new_Z(int *init_z)
-{
-	struct Z *this = calloc(1, sizeof(*this));
-	if (this == NULL) return NULL;
-	return Z_Z(this, init_z);
-}
-
-void Z_Z_zi(struct Z *this, int *init_z)
-{
-	memset(this, 0, sizeof(*this));
-	Z_Z(this, init_z);
-}
-
-void free_Z(struct Z *this)
-{
-	Z_d_Z(this);
-	free(this);
-}
-
-const struct C_coo_class {
-	uint32_t num_parents;
-	uint32_t offsets[1];
-	const void *parents[2];
-} C_coo_class = {
-	2,
-	{ offsetof(struct C, B) },
-	{ &A_coo_class,
-	  &B_coo_class }
-};
-
-const struct C_vmt C_vmt = {
-	{ offsetof(struct C, A.vmt),
-	  &C_coo_class },
-	free_C,
-};
-
-static void free_B_C(struct B *__this)
-{	struct C *this = container_of(__this, struct C, B);
-	free_C(this);
-}
-
-const struct C_B_vmt C_B_vmt = {
-	{ offsetof(struct C, B.vmt),
-	  &C_coo_class },
-	free_B_C,
-};
-
-struct C *new_C(int *init_a, char *init_b, int *init_z)
-{
-	struct C *this = calloc(1, sizeof(*this));
-	if (this == NULL) return NULL;
-	return C_C_root(this, init_a, init_b, init_z);
-}
-
-void C_C_root_zi(struct C *this, int *init_a, char *init_b, int *init_z)
-{
-	memset(this, 0, sizeof(*this));
-	C_C_root(this, init_a, init_b, init_z);
-}
-
-struct C *C_C_root(struct C *this, int *init_a, char *init_b, int *init_z)
-{
-	this->A.vmt = &C_vmt.vmt_base;
-	this->B.vmt = &C_B_vmt.vmt_base;
-	return C_C(this, init_a, init_b, init_z);
-}
-
-void free_C(struct C *this)
-{
-	C_d_C(this);
-	free(this);
-}
-
-void C_d_C(struct C *this)
-{
-	Z_d_Z(&this->z);
-	B_d_B(&this->B);
-	A_d_A(&this->A);
-}
-
-const struct B_coo_class {
-	uint32_t num_parents;
-} B_coo_class = {
-	0,
-};
-
-const struct B_vmt B_vmt = {
-	{ offsetof(struct B, vmt),
-	  &B_coo_class },
-	free_B,
-};
-
-struct B *new_B(char *init_b)
-{
-	struct B *this = calloc(1, sizeof(*this));
-	if (this == NULL) return NULL;
-	return B_B_root(this, init_b);
-}
-
-void B_B_root_zi(struct B *this, char *init_b)
-{
-	memset(this, 0, sizeof(*this));
-	B_B_root(this, init_b);
-}
-
-struct B *B_B_root(struct B *this, char *init_b)
-{
-	this->vmt = &B_vmt.vmt_base;
-	return B_B(this, init_b);
-}
-
-void free_B(struct B *this)
-{
-	B_d_B(this);
-	free(this);
-}
-
 const struct A_coo_class {
 	uint32_t num_parents;
 } A_coo_class = {
 	0,
 };
 
+static void destroy_A(struct A *this)
+{
+	A_d_A(this);
+	free(this);
+}
+
 const struct A_vmt A_vmt = {
 	{ offsetof(struct A, vmt),
 	  &A_coo_class },
-	free_A,
+	destroy_A,
 };
 
 struct A *new_A(int *init_a)
@@ -317,6 +200,139 @@ struct A *A_A_root(struct A *this, int *init_a)
 
 void free_A(struct A *this)
 {
-	A_d_A(this);
+	if (this == NULL)
+		return;
+	((struct A_vmt*)this->vmt)->d_A(this);
+}
+
+const struct B_coo_class {
+	uint32_t num_parents;
+} B_coo_class = {
+	0,
+};
+
+static void destroy_B(struct B *this)
+{
+	B_d_B(this);
 	free(this);
+}
+
+const struct B_vmt B_vmt = {
+	{ offsetof(struct B, vmt),
+	  &B_coo_class },
+	destroy_B,
+};
+
+struct B *new_B(char *init_b)
+{
+	struct B *this = calloc(1, sizeof(*this));
+	if (this == NULL) return NULL;
+	return B_B_root(this, init_b);
+}
+
+void B_B_root_zi(struct B *this, char *init_b)
+{
+	memset(this, 0, sizeof(*this));
+	B_B_root(this, init_b);
+}
+
+struct B *B_B_root(struct B *this, char *init_b)
+{
+	this->vmt = &B_vmt.vmt_base;
+	return B_B(this, init_b);
+}
+
+void free_B(struct B *this)
+{
+	if (this == NULL)
+		return;
+	((struct B_vmt*)this->vmt)->d_B(this);
+}
+
+const struct Z_coo_class {
+	uint32_t num_parents;
+} Z_coo_class = {
+	0,
+};
+
+struct Z *new_Z(int *init_z)
+{
+	struct Z *this = calloc(1, sizeof(*this));
+	if (this == NULL) return NULL;
+	return Z_Z(this, init_z);
+}
+
+void Z_Z_zi(struct Z *this, int *init_z)
+{
+	memset(this, 0, sizeof(*this));
+	Z_Z(this, init_z);
+}
+
+void free_Z(struct Z *this)
+{
+	if (this == NULL)
+		return;
+	Z_d_Z(this);
+	free(this);
+}
+
+const struct C_coo_class {
+	uint32_t num_parents;
+	uint32_t offsets[1];
+	const void *parents[2];
+} C_coo_class = {
+	2,
+	{ offsetof(struct C, B) },
+	{ &A_coo_class,
+	  &B_coo_class }
+};
+
+static void destroy_C(struct C *this)
+{
+	C_d_C(this);
+	free(this);
+}
+
+const struct C_vmt C_vmt = {
+	{ offsetof(struct C, A.vmt),
+	  &C_coo_class },
+	destroy_C,
+};
+
+static void destroy_C_B(struct B *__this)
+{	struct C *this = container_of(__this, struct C, B);
+	destroy_C(this);
+}
+
+const struct C_B_vmt C_B_vmt = {
+	{ offsetof(struct C, B.vmt),
+	  &C_coo_class },
+	destroy_C_B,
+};
+
+struct C *new_C(int *init_a, char *init_b, int *init_z)
+{
+	struct C *this = calloc(1, sizeof(*this));
+	if (this == NULL) return NULL;
+	return C_C_root(this, init_a, init_b, init_z);
+}
+
+void C_C_root_zi(struct C *this, int *init_a, char *init_b, int *init_z)
+{
+	memset(this, 0, sizeof(*this));
+	C_C_root(this, init_a, init_b, init_z);
+}
+
+struct C *C_C_root(struct C *this, int *init_a, char *init_b, int *init_z)
+{
+	this->A.vmt = &C_vmt.vmt_base;
+	this->B.vmt = &C_B_vmt.vmt_base;
+	return C_C(this, init_a, init_b, init_z);
+}
+
+void C_d_C(struct C *this)
+{
+	Z_d_Z(&this->z);
+	B_d_B(&this->B);
+	A_d_A(&this->A);
 }

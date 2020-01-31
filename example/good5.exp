@@ -6,6 +6,9 @@ struct A {
 	int a;
 };
 
+#line 10 "good5.coo.c"
+void free_A(struct A *this);
+#line 8 "good5.coo"
 struct B {
 	struct A A;
 	void *b1;
@@ -13,7 +16,8 @@ struct B {
 };
 
 void B_B_zi(struct B *this);
-#line 17 "good5.coo.c"
+#line 20 "good5.coo.c"
+void free_B(struct B *this);
 void *B_set_b2(struct B *this, void *arg);
 #line 14 "good5.coo"
 struct C {
@@ -22,7 +26,8 @@ struct C {
 };
 
 void C_C_zi(struct C *this);
-#line 26 "good5.coo.c"
+#line 30 "good5.coo.c"
+void free_C(struct C *this);
 void C_set_b1_c1(struct C *this, void *arg);
 #line 19 "good5.coo"
 struct D {
@@ -31,34 +36,50 @@ struct D {
 };
 
 void D_D_zi(struct D *this);
+#line 40 "good5.coo.c"
+void free_D(struct D *this);
+#line 23 "good5.coo"
 struct L {
 	int l;
 };
 
+#line 47 "good5.coo.c"
+void free_L(struct L *this);
+#line 27 "good5.coo"
 struct M {
 	int m;
 };
 
+#line 54 "good5.coo.c"
+void free_M(struct M *this);
+#line 31 "good5.coo"
 struct N {
 	struct M M;
 	int n;
 };
 
+#line 62 "good5.coo.c"
+void free_N(struct N *this);
+#line 35 "good5.coo"
 struct O {
 	struct N N;
 	int o;
 };
 
+#line 70 "good5.coo.c"
+void free_O(struct O *this);
+#line 39 "good5.coo"
 struct E {
 	struct C C;
 	struct M *e1, *e2;
 	struct M *e3, *e4;
 };
 
-#line 59 "good5.coo.c"
+#line 79 "good5.coo.c"
 #include <coortl.h>
 struct E *new_E(struct M *n_e1, struct M *n_e2);
 void E_E_zi(struct E *this, struct M *n_e1, struct M *n_e2);
+void free_E(struct E *this);
 struct E *E_E(struct E *this, struct M *n_e1, struct M *n_e2);
 #line 45 "good5.coo"
 struct F {
@@ -66,9 +87,10 @@ struct F {
 	int f;
 };
 
-#line 70 "good5.coo.c"
+#line 91 "good5.coo.c"
 struct F *new_F(struct M *n_e1, struct M *n_e2);
 void F_E_zi(struct F *this, struct M *n_e1, struct M *n_e2);
+void free_F(struct F *this);
 #line 49 "good5.coo"
 void *B_set_b2(struct B *this, void *arg)
 {
@@ -86,7 +108,7 @@ struct E *E_E(struct E *this, struct M *n_e1, struct M *n_e2)
 {
 	this->e1 = n_e1;
 	this->e2 = n_e2;
-#line 90 "good5.coo.c"
+#line 112 "good5.coo.c"
 	return this;
 #line 65 "good5.coo"
 }
@@ -113,8 +135,8 @@ int main(void)
 {
 	struct A a1, a2;
 	struct B *b_a;
-	struct C *c = (struct C*)malloc(sizeof(struct C));
-	struct D *d = (struct D*)malloc(sizeof(struct D));
+	struct C *c = (struct C*)calloc(1, sizeof(struct C));
+	struct D *d = (struct D*)calloc(1, sizeof(struct D));
 	struct O o1, o2;
 	struct N *p_n1;
 	struct F f;
@@ -140,12 +162,23 @@ int main(void)
 	return 0;
 }
 
-#line 144 "good5.coo.c"
+#line 166 "good5.coo.c"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #pragma pack(8)
+const struct B_coo_class {
+	uint32_t num_parents;
+} B_coo_class = {
+	0,
+};
+
+void B_B_zi(struct B *this)
+{
+	memset(this, 0, sizeof(*this));
+}
+
 const struct C_coo_class {
 	uint32_t num_parents;
 } C_coo_class = {
@@ -157,15 +190,23 @@ void C_C_zi(struct C *this)
 	memset(this, 0, sizeof(*this));
 }
 
-const struct B_coo_class {
+const struct E_coo_class {
 	uint32_t num_parents;
-} B_coo_class = {
+} E_coo_class = {
 	0,
 };
 
-void B_B_zi(struct B *this)
+struct E *new_E(struct M *n_e1, struct M *n_e2)
+{
+	struct E *this = calloc(1, sizeof(*this));
+	if (this == NULL) return NULL;
+	return E_E(this, n_e1, n_e2);
+}
+
+void E_E_zi(struct E *this, struct M *n_e1, struct M *n_e2)
 {
 	memset(this, 0, sizeof(*this));
+	E_E(this, n_e1, n_e2);
 }
 
 const struct F_coo_class {
@@ -186,23 +227,4 @@ void F_E_zi(struct F *this, struct M *n_e1, struct M *n_e2)
 {
 	memset(this, 0, sizeof(*this));
 	E_E(&this->E, n_e1, n_e2);
-}
-
-const struct E_coo_class {
-	uint32_t num_parents;
-} E_coo_class = {
-	0,
-};
-
-struct E *new_E(struct M *n_e1, struct M *n_e2)
-{
-	struct E *this = calloc(1, sizeof(*this));
-	if (this == NULL) return NULL;
-	return E_E(this, n_e1, n_e2);
-}
-
-void E_E_zi(struct E *this, struct M *n_e1, struct M *n_e2)
-{
-	memset(this, 0, sizeof(*this));
-	E_E(this, n_e1, n_e2);
 }

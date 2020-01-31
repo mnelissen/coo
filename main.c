@@ -144,6 +144,7 @@ struct class {
 	struct member *root_constructor;  /* root constructor defined for this class */
 	struct member *destructor;   /* (parent) destructor defined for this class */
 	struct member *root_destructor;  /* root destructor defined for this class */
+	struct class *next;          /* next class in parser->classes_list */
 	struct class *missing_root;  /* missing root constructor because of non-void ... */
 	struct class *prim_parent;   /* primary parent to mimic constructor of */
 	struct class *freer_class;   /* usable class (this or parent) to free() 'this' */
@@ -369,6 +370,7 @@ struct parser {
 	struct hash globals;          /* struct variable pointers */
 	struct hash locals;           /* struct variable pointers */
 	struct hash methodptrtypes;   /* struct methodptr pointers */
+	flist(struct class) classes_list;          /* for in-order printing impl */
 	flist(struct initializer) initializers;    /* initializers to be printed */
 	blist(struct disposer) disposers;          /* disposers to be printed */
 	blist(struct parse_file_item) file_stack;  /* files' state being parsed */
@@ -728,6 +730,7 @@ static char *scan_token(struct parser *parser, char *pos, char *set)
 	}
 }
 
+/* checks whether s1 is a prefix of s2, returns remainder pointer in s2 */
 char *strprefixcmp(const char *s1, const char *s2)
 {
 	for (;; s1++, s2++) {
@@ -1275,6 +1278,7 @@ static struct class *addclass(struct parser *parser, char *classname, char *name
 	if (class == NULL)
 		return NULL;
 
+	flist_add(&parser->classes_list, class, next);
 	return init_class(parser, class);
 }
 
@@ -6057,7 +6061,7 @@ static void print_class_impl(struct parser *parser)
 	struct class *class;
 	struct vmt *vmt;
 
-	hash_foreach(class, &parser->classes) {
+	flist_foreach(class, &parser->classes_list, next) {
 		if (!class->is_implemented)
 			continue;
 
@@ -6591,6 +6595,7 @@ static int initparser(struct parser *parser)
 	parser->inserts = &parser->inserts_list;
 	init_allocator(&parser->global_mem, &parser->memerror);
 	init_allocator(&parser->func_mem, &parser->memerror);
+	flist_init(&parser->classes_list);
 	flist_init(&parser->initializers);
 	dlist_init(&parser->inserts_list, item);
 	return strhash_init(&parser->classes, 64, class) < 0 ||

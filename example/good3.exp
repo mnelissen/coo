@@ -8,6 +8,7 @@ struct H {
 
 #line 10 "good3.coo.c"
 struct H *new_H(void);
+void free_H(struct H *this);
 struct H *H_H(struct H *this);
 #line 9 "good3.coo"
 struct A {
@@ -15,8 +16,9 @@ struct A {
 	struct H h;
 };
 
-#line 19 "good3.coo.c"
+#line 20 "good3.coo.c"
 struct A *new_A(void);
+void free_A(struct A *this);
 struct A *A_A(struct A *this);
 #line 14 "good3.coo"
 struct B {
@@ -24,13 +26,14 @@ struct B {
 	int g;
 };
 
-#line 28 "good3.coo.c"
+#line 30 "good3.coo.c"
 struct B *new_B(void);
+void free_B(struct B *this);
 #line 18 "good3.coo"
 struct H *H_H(struct H *this)
 {
 	this->xh = 1;
-#line 34 "good3.coo.c"
+#line 37 "good3.coo.c"
 	return this;
 #line 21 "good3.coo"
 }
@@ -39,7 +42,7 @@ struct A *A_A(struct A *this)
 {
 	H_H(&this->h);
 	this->xa = 2;
-#line 43 "good3.coo.c"
+#line 46 "good3.coo.c"
 	return this;
 #line 27 "good3.coo"
 }
@@ -55,7 +58,7 @@ int main(void)
 }
 
 
-#line 59 "good3.coo.c"
+#line 62 "good3.coo.c"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>

@@ -26,13 +26,14 @@ extern const struct A_vmt {
 
 extern const struct A_coo_class A_coo_class;
 
+void free_A(struct A *this);
 #line 19 "good2.coo"
 struct B {
 	struct A A;
 	int b;
 };
 
-#line 36 "good2.coo.c"
+#line 37 "good2.coo.c"
 extern const struct B_vmt {
 	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct B *this, int arg);
@@ -42,6 +43,7 @@ extern const struct B_vmt {
 extern const struct B_coo_class B_coo_class;
 
 void B_B_zi(struct B *this);
+void free_B(struct B *this);
 void B_vfunc_a(struct B *this, int arg);
 struct B *B_B(struct B *this, int val_b);
 #line 25 "good2.coo"
@@ -50,7 +52,7 @@ struct C {
 	int c;
 };
 
-#line 54 "good2.coo.c"
+#line 56 "good2.coo.c"
 extern const struct C_vmt {
 	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct B *this, int arg);
@@ -61,6 +63,7 @@ extern const struct C_coo_class C_coo_class;
 
 struct C *new_C(int val_b, int val_c);
 void C_C_root_zi(struct C *this, int val_b, int val_c);
+void free_C(struct C *this);
 void C_vfunc_b(struct C *this, int arg);
 struct C *C_C(struct C *this, int val_b, int val_c);
 struct C *C_C_root(struct C *this, int val_b, int val_c);
@@ -70,10 +73,11 @@ struct D {
 	int d;
 };
 
-#line 74 "good2.coo.c"
+#line 77 "good2.coo.c"
 extern const struct D_coo_class D_coo_class;
 
 void D_D_zi(struct D *this);
+void free_D(struct D *this);
 struct D *D_D(struct D *this, int val_d);
 void D_funcD(struct D *this, int arg);
 #line 37 "good2.coo"
@@ -83,7 +87,7 @@ struct E {
 	int e;
 };
 
-#line 87 "good2.coo.c"
+#line 91 "good2.coo.c"
 extern const struct E_D_vmt {
 	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct A *this, int arg);
@@ -94,6 +98,7 @@ extern const struct E_coo_class E_coo_class;
 
 struct E *new_E(int val_b, int val_c, int val_d, int val_e);
 void E_E_root_zi(struct E *this, int val_b, int val_c, int val_d, int val_e);
+void free_E(struct E *this);
 struct E *E_E(struct E *this, int val_b, int val_c, int val_d, int val_e);
 void E_funcE(struct E *this, int arg);
 struct E *E_E_root(struct E *this, int val_b, int val_c, int val_d, int val_e);
@@ -101,7 +106,7 @@ struct E *E_E_root(struct E *this, int val_b, int val_c, int val_d, int val_e);
 struct B *B_B(struct B *this, int val_b)
 {
 	this->b = val_b;
-#line 107 "good2.coo.c"
+#line 110 "good2.coo.c"
 	return this;
 #line 48 "good2.coo"
 }
@@ -115,7 +120,7 @@ struct C *C_C(struct C *this, int val_b, int val_c)
 {
 	B_B(&this->B, val_b);
 	this->c = val_c;
-#line 121 "good2.coo.c"
+#line 124 "good2.coo.c"
 	return this;
 #line 59 "good2.coo"
 }
@@ -128,7 +133,7 @@ void C_vfunc_b(struct C *this, int arg)
 struct D *D_D(struct D *this, int val_d)
 {
 	this->d = val_d;
-#line 134 "good2.coo.c"
+#line 137 "good2.coo.c"
 	return this;
 #line 69 "good2.coo"
 }
@@ -143,7 +148,7 @@ struct E *E_E(struct E *this, int val_b, int val_c, int val_d, int val_e)
 	C_C(&this->C, val_b, val_c);
 	D_D(&this->D, val_d);
 	this->e = val_e;
-#line 149 "good2.coo.c"
+#line 152 "good2.coo.c"
 	return this;
 #line 81 "good2.coo"
 }
@@ -171,12 +176,26 @@ int main(void)
 	return 0;
 }
 
-#line 177 "good2.coo.c"
+#line 180 "good2.coo.c"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #pragma pack(8)
+const struct A_coo_class {
+	uint32_t num_parents;
+} A_coo_class = {
+	0,
+};
+
+const struct B_coo_class {
+	uint32_t num_parents;
+	const void *parents[1];
+} B_coo_class = {
+	1,
+	{ &A_coo_class }
+};
+
 const struct C_coo_class {
 	uint32_t num_parents;
 	const void *parents[1];
@@ -211,18 +230,12 @@ struct C *C_C_root(struct C *this, int val_b, int val_c)
 	return C_C(this, val_b, val_c);
 }
 
-const struct B_coo_class {
+const struct D_coo_class {
 	uint32_t num_parents;
 	const void *parents[1];
-} B_coo_class = {
+} D_coo_class = {
 	1,
 	{ &A_coo_class }
-};
-
-const struct A_coo_class {
-	uint32_t num_parents;
-} A_coo_class = {
-	0,
 };
 
 const struct E_coo_class {
@@ -272,11 +285,3 @@ struct E *E_E_root(struct E *this, int val_b, int val_c, int val_d, int val_e)
 	this->D.A.vmt = &E_D_vmt.vmt_base;
 	return E_E(this, val_b, val_c, val_d, val_e);
 }
-
-const struct D_coo_class {
-	uint32_t num_parents;
-	const void *parents[1];
-} D_coo_class = {
-	1,
-	{ &A_coo_class }
-};

@@ -17,6 +17,7 @@
 
 /* backward list (stack), declare a 'prev' variable yourself in the item type */
 #define blist(type)          struct { type *rlast; }
+#define blist_clear(blist)   (blist)->rlast = NULL
 #define blist_empty(blist)   !(blist)->rlast
 #define blist_add_section(blist, first, last, fieldname_prev) \
         (last)->fieldname_prev = (blist)->rlast, (blist)->rlast = first
@@ -56,6 +57,9 @@
 #define dlist_foreach(item, dlist, iname) \
         for (item = (dlist)->dnext; \
                 &(item)->iname.inext != &(dlist)->dnext; \
+                item = (item)->iname.inext)
+#define dlist_foreach_continue(item, dlist, iname) \
+        for (; &(item)->iname.inext != &(dlist)->dnext; \
                 item = (item)->iname.inext)
 #define dlist_foreach_rev(item, dlist, iname) \
         for (item = (dlist)->dprev; \

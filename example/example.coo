@@ -6,6 +6,7 @@ struct A {
 	int a1;
 	virtual void vfunc_a(int a2);
 	void A();
+	virtual ~A();
 };
 
 struct B : A {
@@ -37,7 +38,7 @@ final struct E : D {
 	override vfunc_b;
 	override vfunc_d;
 	void E(void);
-	~E();
+	override ~E;
 };
 
 void C::test_c(void)
@@ -90,6 +91,11 @@ void foo::vfunc(int arg1, float *arg2)
 void A::A(void)
 {
 	a1 = -1;
+}
+
+void A::~A(void)
+{
+	printf("A::-A() a1=%d\n", a1);
 }
 
 void A::vfunc_a(int arg)

@@ -1,0 +1,378 @@
+#line 1 "good8.coo"
+#include <stdio.h>    /* shared pointer test */
+#include <stdlib.h>
+
+struct A {
+	int a;
+	const struct coo_vmt *vmt;
+};
+
+#line 11 "good8.coo.c"
+#include <coortl.h>
+struct A_root {
+	struct A A;
+	coo_atomic_t refcount;
+};
+extern const struct A_vmt {
+	struct coo_vmt vmt_base;
+	struct A *(*coo_addref)(struct A *this);
+	void (*d_A)(struct A *this);
+} A_vmt;
+
+extern const struct A_coo_class A_coo_class;
+
+struct A *new_A(void);
+void A_A_root_zi(struct A_root *this);
+void free_A(struct A *this);
+void A_d_A(struct A *this);
+struct A *A_A_root(struct A_root *this);
+#line 9 "good8.coo"
+struct B {
+	int b;
+	const struct coo_vmt *vmt;
+};
+
+#line 36 "good8.coo.c"
+struct B_root {
+	struct B B;
+	coo_atomic_t refcount;
+};
+extern const struct B_vmt {
+	struct coo_vmt vmt_base;
+	struct B *(*coo_addref)(struct B *this);
+	void (*d_B)(struct B *this);
+} B_vmt;
+
+extern const struct B_coo_class B_coo_class;
+
+struct B *new_B(void);
+void B_B_root_zi(struct B_root *this);
+void free_B(struct B *this);
+void B_d_B(struct B *this);
+struct B *B_B_root(struct B_root *this);
+#line 14 "good8.coo"
+struct C {
+	struct A A;
+	struct B B;
+	int c;
+};
+
+#line 61 "good8.coo.c"
+struct C_root {
+	struct C C;
+	coo_atomic_t refcount;
+};
+extern const struct C_vmt {
+	struct coo_vmt vmt_base;
+	struct C *(*coo_addref)(struct C *this);
+	void (*d_C)(struct C *this);
+} C_vmt;
+
+extern const struct C_B_vmt {
+	struct coo_vmt vmt_base;
+	struct B *(*coo_addref)(struct B *this);
+	void (*d_C)(struct B *this);
+} C_B_vmt;
+
+extern const struct C_coo_class C_coo_class;
+
+struct C *new_C(void);
+void C_C_root_zi(struct C_root *this);
+#define free_C(this) free_A(&(this)->A)
+void C_d_C(struct C *this);
+struct C *C_C_root(struct C_root *this);
+#line 18 "good8.coo"
+struct D {
+	struct A *a;
+};
+
+#line 90 "good8.coo.c"
+struct D *new_D(void);
+void free_D(struct D *this);
+struct D *D_D(struct D *this);
+void D_d_D(struct D *this);
+#line 22 "good8.coo"
+void A_d_A(struct A *this)
+{
+	this->a = -1;
+}
+
+void B_d_B(struct B *this)
+{
+	this->b = -2;
+}
+
+static void D_assign_a(struct D *this, struct A *new_a)
+{
+	{ free_A(this->a); this->a = ((struct A_vmt*)new_a->vmt)->coo_addref(new_a); }
+}
+
+struct E {
+	int e;
+	coo_atomic_t refcount;
+};
+
+struct A *func1(struct A *a)
+{
+	return a;
+}
+
+int main(void)
+{
+	struct A *a1 = NULL, *a2 = NULL;
+	struct B *b1 = NULL, *b2 = NULL;
+	struct D d;
+	struct E *e;
+	int __coo_ret;
+#line 52
+	D_D(&d);
+	e = (struct E*)malloc(sizeof(struct E));
+#line 54
+	{ free_A(a1); a1 = new_A(); }
+	{ free_B(b1); b1 = new_B(); }
+	{ free_A(a2); a2 = &(new_C())->A; }
+	{ free_B(b2); b2 = &(new_C())->B; }
+	D_assign_a(&d, a1);
+	D_assign_a(&d, a2);
+	func1(a1);
+	((struct A_vmt*)a1->vmt)->d_A(a1);
+	((struct A_vmt*)a2->vmt)->d_A(a2);
+	((struct B_vmt*)b1->vmt)->d_B(b1);
+	((struct B_vmt*)b2->vmt)->d_B(b2);
+	free(e);
+	__coo_ret = 0;
+#line 145 "good8.coo.c"
+	D_d_D(&d);
+	return __coo_ret;
+#line 67 "good8.coo"
+}
+
+#line 151 "good8.coo.c"
+#include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#pragma pack(8)
+const struct A_coo_class {
+	uint32_t num_parents;
+} A_coo_class = {
+	0,
+};
+
+static void destroy_A(struct A *__this)
+{
+	struct A_root *this = container_of(__this, struct A_root, A);
+	if (coo_atomic_fetch_dec(&this->refcount) != 0)
+		return;
+	A_d_A(&this->A);
+	free(this);
+}
+
+static struct A *addref_A(struct A *__this)
+{
+	struct A_root *this = container_of(__this, struct A_root, A);
+	coo_atomic_inc_fetch(&this->refcount);
+	return __this;
+}
+
+const struct A_vmt A_vmt = {
+	{ offsetof(struct A_root, A.vmt),
+	  &A_coo_class },
+	addref_A,
+	destroy_A,
+};
+
+struct A *new_A(void)
+{
+	struct A_root *this = calloc(1, sizeof(*this));
+	if (this == NULL) return NULL;
+	A_A_root(this);
+	return &this->A;
+}
+
+void A_A_root_zi(struct A_root *this)
+{
+	memset(this, 0, sizeof(*this));
+	A_A_root(this);
+}
+
+struct A *A_A_root(struct A_root *this)
+{
+	this->A.vmt = &A_vmt.vmt_base;
+	return &this->A;
+}
+
+void free_A(struct A *this)
+{
+	if (this == NULL)
+		return;
+	((struct A_vmt*)this->vmt)->d_A(this);
+}
+
+const struct B_coo_class {
+	uint32_t num_parents;
+} B_coo_class = {
+	0,
+};
+
+static void destroy_B(struct B *__this)
+{
+	struct B_root *this = container_of(__this, struct B_root, B);
+	if (coo_atomic_fetch_dec(&this->refcount) != 0)
+		return;
+	B_d_B(&this->B);
+	free(this);
+}
+
+static struct B *addref_B(struct B *__this)
+{
+	struct B_root *this = container_of(__this, struct B_root, B);
+	coo_atomic_inc_fetch(&this->refcount);
+	return __this;
+}
+
+const struct B_vmt B_vmt = {
+	{ offsetof(struct B_root, B.vmt),
+	  &B_coo_class },
+	addref_B,
+	destroy_B,
+};
+
+struct B *new_B(void)
+{
+	struct B_root *this = calloc(1, sizeof(*this));
+	if (this == NULL) return NULL;
+	B_B_root(this);
+	return &this->B;
+}
+
+void B_B_root_zi(struct B_root *this)
+{
+	memset(this, 0, sizeof(*this));
+	B_B_root(this);
+}
+
+struct B *B_B_root(struct B_root *this)
+{
+	this->B.vmt = &B_vmt.vmt_base;
+	return &this->B;
+}
+
+void free_B(struct B *this)
+{
+	if (this == NULL)
+		return;
+	((struct B_vmt*)this->vmt)->d_B(this);
+}
+
+const struct C_coo_class {
+	uint32_t num_parents;
+	uint32_t offsets[1];
+	const void *parents[2];
+} C_coo_class = {
+	2,
+	{ offsetof(struct C_root, C.B) },
+	{ &A_coo_class,
+	  &B_coo_class }
+};
+
+static void destroy_C(struct C *__this)
+{
+	struct C_root *this = container_of(__this, struct C_root, C);
+	if (coo_atomic_fetch_dec(&this->refcount) != 0)
+		return;
+	B_d_B(&this->C.B);
+	free(this);
+}
+
+static struct C *addref_C(struct C *__this)
+{
+	struct C_root *this = container_of(__this, struct C_root, C);
+	coo_atomic_inc_fetch(&this->refcount);
+	return __this;
+}
+
+const struct C_vmt C_vmt = {
+	{ offsetof(struct C_root, C.A.vmt),
+	  &C_coo_class },
+	addref_C,
+	destroy_C,
+};
+
+static struct B *addref_C_B(struct B *__this)
+{
+	struct C_root *this = container_of(__this, struct C_root, C.B);
+	coo_atomic_inc_fetch(&this->refcount);
+	return __this;
+}
+
+static void destroy_C_B(struct B *__this)
+{	struct C *this = container_of(__this, struct C, B);
+	destroy_C(this);
+}
+
+const struct C_B_vmt C_B_vmt = {
+	{ offsetof(struct C_root, C.B.vmt),
+	  &C_coo_class },
+	addref_C_B,
+	destroy_C_B,
+};
+
+struct C *new_C(void)
+{
+	struct C_root *this = calloc(1, sizeof(*this));
+	if (this == NULL) return NULL;
+	C_C_root(this);
+	return &this->C;
+}
+
+void C_C_root_zi(struct C_root *this)
+{
+	memset(this, 0, sizeof(*this));
+	C_C_root(this);
+}
+
+struct C *C_C_root(struct C_root *this)
+{
+	this->C.A.vmt = &C_vmt.vmt_base;
+	this->C.B.vmt = &C_B_vmt.vmt_base;
+	return &this->C;
+}
+
+void C_d_C(struct C *this)
+{
+	B_d_B(&this->B);
+	A_d_A(&this->A);
+}
+
+const struct D_coo_class {
+	uint32_t num_parents;
+} D_coo_class = {
+	0,
+};
+
+struct D *new_D(void)
+{
+	struct D *this = malloc(sizeof(*this));
+	if (this == NULL) return NULL;
+	return D_D(this);
+}
+
+struct D *D_D(struct D *this)
+{
+	this->a = NULL;
+	return this;
+}
+
+void free_D(struct D *this)
+{
+	if (this == NULL)
+		return;
+	D_d_D(this);
+	free(this);
+}
+
+void D_d_D(struct D *this)
+{
+	free_A(this->a);
+}

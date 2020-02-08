@@ -1,0 +1,67 @@
+#include <stdio.h>    /* shared pointer test */
+#include <stdlib.h>
+
+refcount struct A {
+	int a;
+	virtual ~A();
+};
+
+refcount struct B {
+	int b;
+	virtual ~B();
+};
+
+refcount struct C : A, B {
+	int c;
+};
+
+struct D {
+	[shared] A *a;
+};
+
+A::~A(void)
+{
+	a = -1;
+}
+
+B::~B(void)
+{
+	b = -2;
+}
+
+C::coo_class;
+
+void D::assign_a([shared] A *new_a)
+{
+	a = new_a;
+}
+
+final refcount struct E {
+	int e;
+};
+
+[shared] A *func1(A *a)
+{
+	return a;
+}
+
+int main(void)
+{
+	[shared] A *a1, *a2;
+	[shared] B *b1, *b2;
+	D d;
+	E *e = new E;
+	a1 = new A;
+	b1 = new B;
+	a2 = new C;
+	b2 = new C;
+	d.assign_a(a1);
+	d.assign_a(a2);
+	func1(a1);
+	delete a1;
+	delete a2;
+	delete b1;
+	delete b2;
+	delete e;
+	return 0;
+}

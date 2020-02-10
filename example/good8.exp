@@ -134,7 +134,7 @@ int main(void)
 	{ free_B(b2); b2 = &(new_C())->B; }
 	D_assign_a(&d, a1);
 	D_assign_a(&d, a2);
-	func1(a1);
+	free_A(func1(a1));
 	((struct A_vmt*)a1->vmt)->d_A(a1);
 	((struct A_vmt*)a2->vmt)->d_A(a2);
 	((struct B_vmt*)b1->vmt)->d_B(b1);

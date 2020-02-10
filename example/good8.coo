@@ -40,7 +40,7 @@ final refcount struct E {
 	int e;
 };
 
-[shared] A *func1(A *a)
+[shared] A *func1([shared] A *a)
 {
 	return a;
 }

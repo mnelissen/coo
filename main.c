@@ -516,11 +516,14 @@ static void *arealloc(struct allocator *alloc, void *mem, size_t oldsize, size_t
 	if (size <= oldsize)
 		return mem;
 
-	deltasize = size - oldsize;
-	if ((size_t)mem + oldsize == alloc->memptr && deltasize <= alloc->memavail) {
-		alloc->memptr += deltasize;
-		alloc->memavail -= deltasize;
-		return mem;
+	/* prevent case where mem == oldsize == alloc->memptr == 0 */
+	if (mem) {
+		deltasize = size - oldsize;
+		if ((size_t)mem + oldsize == alloc->memptr && deltasize <= alloc->memavail) {
+			alloc->memptr += deltasize;
+			alloc->memavail -= deltasize;
+			return mem;
+		}
 	}
 
 	newmem = aalloc(alloc, sizeof(void*)-1, size);
@@ -700,9 +703,15 @@ static char *strskip_whitespace(char *p)
 	return p;
 }
 
+/* valid identifier (function name, variable name, etc.) character */
+static int isidchar(char ch)
+{
+	return isalnum(ch) || ch == '_';
+}
+
 static char *skip_word(char *p)
 {
-	while (isalnum(*p) || *p == '_')
+	while (isidchar(*p))
 		p++;
 	return p;
 }
@@ -4937,16 +4946,27 @@ static void parse_function(struct parser *parser, char *next)
 	int have_retvar, need_retvar, used_retvar, eval_retvar, have_return;
 	int retblocknr, next_retblocknr, unused_retblocknr, in_delete, possible_type;
 	unsigned num_constr_called, num_constr;
+	struct allocator *allocator;
+	new_param_cb new_param;
 
 	thisfuncret = parser->pf.pos;
-	funcname = NULL, classname = next;
-	for (; classname > thisfuncret && !isspace(*(classname-1)); classname--) {
-		if (classname[0] == ':' && classname[1] == ':') {
-			dblcolonsep = classname;
-			classname[0] = 0;
-			/* main loop already parsed beyond to parenthesis */
-			funcname = strskip_whitespace(classname+2);
-		}
+	dblcolonsep = funcname = NULL, classname = next;
+	for (; classname > thisfuncret; classname--) {
+		if (isidchar(classname[-1]))
+			continue;
+		/* check for "::" or "::~" */
+		if (classname > thisfuncret + 1 && classname[-2] == ':' && classname[-1] == ':')
+			classname -= 2;
+		else if (classname > thisfuncret + 2 && classname[-3] == ':' &&
+				classname[-2] == ':' && classname[-1] == '~')
+			classname -= 3;
+		else
+			break;
+
+		dblcolonsep = classname;
+		classname[0] = 0;
+		/* main loop already parsed beyond to parenthesis */
+		funcname = classname + 2;
 	}
 
 	thisfuncretend = classname;
@@ -4961,7 +4981,9 @@ static void parse_function(struct parser *parser, char *next)
 	thisclass = NULL;
 	globalfunc = NULL;
 	thisptr = unknown_typeptr;
-	if (funcname) {   /* funcname assigned means there is a classname::funcname */
+	new_param = param_to_variable;
+	allocator = &parser->func_mem;
+	if (dblcolonsep) {
 		if ((thisclass = find_class(parser, classname)) != NULL) {
 			flush(parser);
 			thisptr = to_anyptr(&thisclass->t, 1);
@@ -5068,8 +5090,11 @@ static void parse_function(struct parser *parser, char *next)
 		/* remember global function */
 		globalfunc = add_global(parser, classname, funcnameend, rettype);
 		/* store parameter types */
-		if (globalfunc)
+		if (globalfunc) {
 			parser->param_types = &globalfunc->params;
+			new_param = param_to_variable_and_type;
+			allocator = &parser->global_mem;
+		}
 	}
 
 	parser->class = thisclass;
@@ -5096,11 +5121,12 @@ static void parse_function(struct parser *parser, char *next)
 	next++;
 
 	/* store parameters as variables */
-	if (parse_parameters(parser, &parser->func_mem, thisclass, params, print_type_insert,
-			globalfunc ? param_to_variable_and_type : param_to_variable,
-			check_conflict_param_member) == NULL)
+	if (parse_parameters(parser, allocator, thisclass, params, print_type_insert,
+			new_param, check_conflict_param_member) == NULL)
 		return;
 
+	/* prevent accidental corruption of param_types (of global function parameters) */
+	parser->param_types = NULL;
 	if (thispath) {
 		parser->pf.pos = next;
 		flush(parser);
@@ -5596,7 +5622,7 @@ static void parse_function(struct parser *parser, char *next)
 				} else if (pareninfo->target_ctx != TARGET_NONE &&
 						(!target || !typ(target)->sharedptr)) {
 					pr_err(name, "cannot assign shared pointer "
-						"to non-shared (pointer)");
+						"to non-shared pointer");
 				}
 			}
 			if (target && expr && ptrlvl(target) <= 1)

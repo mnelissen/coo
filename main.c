@@ -438,6 +438,8 @@ static void init_allocator(struct allocator *alloc, int *memerror)
 	   this will trigger block allocation upon first use/alloc
 	   and then initialize alloc->memory to point to first block */
 	alloc->memblock = &alloc->memory;
+	/* assign memptr to prevent realloc mem == oldsize == memptr == 0 */
+	alloc->memptr = (size_t)alloc->memblock;
 	alloc->memerror = memerror;
 }
 
@@ -516,14 +518,11 @@ static void *arealloc(struct allocator *alloc, void *mem, size_t oldsize, size_t
 	if (size <= oldsize)
 		return mem;
 
-	/* prevent case where mem == oldsize == alloc->memptr == 0 */
-	if (mem) {
-		deltasize = size - oldsize;
-		if ((size_t)mem + oldsize == alloc->memptr && deltasize <= alloc->memavail) {
-			alloc->memptr += deltasize;
-			alloc->memavail -= deltasize;
-			return mem;
-		}
+	deltasize = size - oldsize;
+	if ((size_t)mem + oldsize == alloc->memptr && deltasize <= alloc->memavail) {
+		alloc->memptr += deltasize;
+		alloc->memavail -= deltasize;
+		return mem;
 	}
 
 	newmem = aalloc(alloc, sizeof(void*)-1, size);

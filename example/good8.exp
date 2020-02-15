@@ -114,7 +114,7 @@ struct E {
 
 struct A *func1(struct A *a)
 {
-	return a;
+	return ((struct A_vmt*)a->vmt)->coo_addref(a);
 }
 
 int main(void)
@@ -135,19 +135,23 @@ int main(void)
 	D_assign_a(&d, a1);
 	D_assign_a(&d, a2);
 	free_A(func1(a1));
-	((struct A_vmt*)a1->vmt)->d_A(a1);
-	((struct A_vmt*)a2->vmt)->d_A(a2);
-	((struct B_vmt*)b1->vmt)->d_B(b1);
-	((struct B_vmt*)b2->vmt)->d_B(b2);
-	free(e);
+	((struct A_vmt*)a1->vmt)->d_A(a1), a1 = NULL;
+	((struct A_vmt*)a2->vmt)->d_A(a2), a2 = NULL;
+	((struct B_vmt*)b1->vmt)->d_B(b1), b1 = NULL;
+	((struct B_vmt*)b2->vmt)->d_B(b2), b2 = NULL;
+	free(e), e = NULL;
 	__coo_ret = 0;
 #line 145 "good8.coo.c"
+	free_B(b2);
+	free_B(b1);
+	free_A(a2);
+	free_A(a1);
 	D_d_D(&d);
 	return __coo_ret;
 #line 67 "good8.coo"
 }
 
-#line 151 "good8.coo.c"
+#line 155 "good8.coo.c"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>

@@ -26,10 +26,15 @@
 #define blist_pop_last(blist, pitem, fieldname_prev) \
         (*(pitem) = (blist)->rlast, \
          *(pitem) ? (blist)->rlast = (*(pitem))->fieldname_prev, *(pitem) : NULL)
+#define blist_remove_next(pitem, fieldname_prev) \
+        *(pitem) = (*(pitem))->fieldname_prev
 #define blist_remove_last(blist, fieldname_prev) \
         (blist)->rlast = (blist)->rlast->fieldname_prev
+#define blist_remove_until(blist, item) (blist)->rlast = (item)
 #define blist_foreach_rev(item, blist, ...) \
-        for (item = (blist)->rlast; item; item = (item)->__VA_ARGS__)
+        for (item = (blist)->rlast; item; item = item->__VA_ARGS__)
+#define blist_foreach_rev_p(pprev, item, blist, ...) \
+        for (pprev = &(blist)->rlast; (item = *pprev); pprev = &item->__VA_ARGS__)
 
 /* double linked list, iname is variable name for list item prev/next pointers */
 #define dlist(type)                struct { type *dprev, *dnext; }

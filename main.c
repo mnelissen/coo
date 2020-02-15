@@ -35,6 +35,7 @@ typedef uint32_t pid_t;
 #define STDIN_BUFSIZE      (1024 * 1024)   /* size for inputbuffer when using stdin */
 #define MAX_USER_ERRORS    25
 #define PTRLVLMASK         7               /* bits 2..0 pointer level */
+#define TEMPSCOPE_BLOCKLEVEL ((unsigned)-1)
 
 #ifdef __GNUC__
 #define attr_format(a,b) __attribute__((format(printf,a,b)))
@@ -333,6 +334,7 @@ struct deleter {
 	struct deleter *prev;   /* prev deleter in parser->deleters */
 	struct class *class;    /* class to call destructor of */
 	char *name;		/* name of variable */
+	unsigned blocklevel;    /* { } nesting level to delete at */
 };
 
 enum line_pragma_mode { LINE_PRAGMA_INPUT, LINE_PRAGMA_OUTPUT, LINE_PRAGMA_INVALID };
@@ -1870,7 +1872,7 @@ static struct member *addgenmember(struct parser *parser, struct class *class,
 }
 
 static struct variable *addvariable_common(struct parser *parser, unsigned blocklevel,
-		anyptr decl, int extraptr, char *membername, char *nameend)
+		anyptr decl, char *membername, char *nameend)
 {
 	struct variable *variable;
 
@@ -1888,18 +1890,16 @@ static struct variable *addvariable_common(struct parser *parser, unsigned block
 	}
 
 	variable->decl = decl;
-	add_ptrlvl(&variable->decl, extraptr);  /* typedef type + extra pointers */
 	variable->blocklevel = blocklevel;
 	return variable;
 }
 
 static struct variable *addvariable(struct parser *parser, struct class *class,
-		unsigned blocklevel, anyptr decl, int extraptr,
-		char *membername, char *nameend, char *params)
+		unsigned blocklevel, anyptr decl, char *membername, char *nameend, char *params)
 {
 	struct variable *variable;
 
-	variable = addvariable_common(parser, blocklevel, decl, extraptr, membername, nameend);
+	variable = addvariable_common(parser, blocklevel, decl, membername, nameend);
 	if (variable == NULL)
 		return NULL;
 	if (params)
@@ -1909,19 +1909,17 @@ static struct variable *addvariable(struct parser *parser, struct class *class,
 }
 
 static struct variable *addclsvariable(struct parser *parser,
-		unsigned blocklevel, anyptr decl,
-		int extraptr, char *membername, char *nameend)
+		unsigned blocklevel, anyptr decl, char *membername, char *nameend)
 {
-	return addvariable_common(parser, blocklevel, decl, extraptr, membername, nameend);
+	return addvariable_common(parser, blocklevel, decl, membername, nameend);
 }
 
 static struct variable *addmpvariable(struct parser *parser, unsigned blocklevel,
-		anyptr mpdecl, int extraptr, char *membername, char *nameend)
+		anyptr mpdecl, char *membername, char *nameend)
 {
 	struct variable *variable;
 
-	variable = addvariable_common(parser, blocklevel,
-		mpdecl, extraptr, membername, nameend);
+	variable = addvariable_common(parser, blocklevel, mpdecl, membername, nameend);
 	if (variable == NULL)
 		return NULL;
 
@@ -2136,7 +2134,8 @@ static struct disposer *adddisposer(struct parser *parser,
 	return disposer;
 }
 
-static struct deleter *adddeleter(struct parser *parser, struct class *class, char *name)
+static struct deleter *adddeleter(struct parser *parser,
+		struct class *class, char *name, unsigned blocklevel)
 {
 	struct deleter *deleter;
 
@@ -2148,6 +2147,7 @@ static struct deleter *adddeleter(struct parser *parser, struct class *class, ch
 
 	deleter->class = class;
 	deleter->name = name;
+	deleter->blocklevel = blocklevel;
 	blist_add(&parser->deleters, deleter, prev);
 	return deleter;
 }
@@ -2189,12 +2189,28 @@ static void remove_locals(struct parser *parser, unsigned blocklevel)
 	}
 }
 
-static void print_deleters(struct parser *parser)
+static void print_deleters(struct parser *parser, unsigned blocklevel)
 {
 	struct deleter *deleter;
+	char *prefix, *suffix;
+	int inc_coo_lines;
 
-	blist_foreach_rev(deleter, &parser->deleters, prev)
-		outprintf(parser, " free_%s(%s);", deleter->class->name, deleter->name);
+	if (blist_empty(&parser->deleters))
+		return;
+	if (!parser->tempscope_varnr) {
+		prefix = "\t", suffix = "\n", inc_coo_lines = 1;
+		switch_line_pragma(parser, LINE_PRAGMA_OUTPUT);
+	} else
+		prefix = " ", suffix = "", inc_coo_lines = 0;
+	blist_foreach_rev(deleter, &parser->deleters, prev) {
+		if (deleter->blocklevel < blocklevel) {
+			blist_remove_until(&parser->deleters, deleter);
+			return;
+		}
+		outprintf(parser, "%sfree_%s(%s);%s", prefix,
+			deleter->class->name, deleter->name, suffix);
+		parser->pf.lines_coo += inc_coo_lines;
+	}
 	blist_clear(&parser->deleters);
 }
 
@@ -2212,7 +2228,7 @@ static void close_tempscope(struct parser *parser, char *pos)
 		return;
 	parser->pf.pos = pos;
 	flush(parser);
-	print_deleters(parser);
+	print_deleters(parser, TEMPSCOPE_BLOCKLEVEL);
 	outwrite(parser, " }", 2);
 	parser->tempscope_varnr = 0;
 }
@@ -4657,30 +4673,49 @@ static void print_free_class_expr(struct parser *parser, struct class *class,
 		char *exprstart, char *exprend, int expr_is_oneword)
 {
 	struct member *destr = class->destructor;
-	char *newscope, *vmtpath, *vmtaccess, tempvarname[16];
-	int scope_varnr;
+	char *newscope, *close_str, *vmtpath, *vmtaccess, tempvarname[16];
+	int scope_varnr, print_inserts = 1;
 
-	if (!destr)
-		return outputs(parser, "free(");
-	if (!destr->props.is_virtual)
-		return outprintf(parser, "free_%s(", class->name);
+	if (!destr) {
+		outputs(parser, "free(");
+	} else if (!destr->props.is_virtual) {
+		outprintf(parser, "free_%s(", class->name);
+	} else {
+		if (!expr_is_oneword) {
+			newscope = open_tempscope(parser, &scope_varnr);
+			outprintf(parser, "%sstruct %s *coo_obj%d = ",
+				newscope, class->name, scope_varnr);
+			print_inserts_fromto(parser, exprstart, exprend, REMOVE_PRINTED_INSERTS);
+			sprintf(tempvarname, "coo_obj%d", scope_varnr);
+			print_inserts = 0;
+		} else
+			tempvarname[0] = 0;
 
-	if (!expr_is_oneword) {
-		newscope = open_tempscope(parser, &scope_varnr);
-		outprintf(parser, "%sstruct %s *coo_obj%d = ",
-			newscope, class->name, scope_varnr);
-		print_inserts_fromto(parser, exprstart, exprend, REMOVE_PRINTED_INSERTS);
-		sprintf(tempvarname, "coo_obj%d", scope_varnr);
-	} else
-		tempvarname[0] = 0;
+		outprintf(parser, "((struct %s_vmt*)%s",
+			destr->origin->name, tempvarname);
+		if (expr_is_oneword)
+			print_inserts_fromto(parser, exprstart, exprend, KEEP_PRINTED_INSERTS);
+		get_vmt_path(parser, destr->vmt, &vmtpath, &vmtaccess);
+		outprintf(parser, "->%s%svmt)->d_%s(%s", vmtpath, vmtaccess,
+			destr->implname, tempvarname);
+	}
 
-	outprintf(parser, "((struct %s_vmt*)%s",
-		destr->origin->name, tempvarname);
-	if (expr_is_oneword)
-		print_inserts_fromto(parser, exprstart, exprend, KEEP_PRINTED_INSERTS);
-	get_vmt_path(parser, destr->vmt, &vmtpath, &vmtaccess);
-	outprintf(parser, "->%s%svmt)->d_%s(%s", vmtpath, vmtaccess,
-		destr->implname, tempvarname);
+	close_str = ")";
+	if (print_inserts)
+		print_inserts_fromto(parser, exprstart, exprend,
+			class->refcounted ? KEEP_PRINTED_INSERTS : REMOVE_PRINTED_INSERTS);
+	if (class->refcounted) {
+		if (expr_is_oneword) {
+			outwrite(parser, "), ", 3);
+			print_inserts_fromto(parser, exprstart, exprend, REMOVE_PRINTED_INSERTS);
+			close_str = " = NULL";
+		} else {
+			pr_err(exprstart, "cannot delete refcounted class in complex expression");
+		}
+	}
+	/* prevent double printing of input text after using print_inserts_fromto */
+	parser->pf.writepos = exprend;
+	outputs(parser, close_str);
 }
 
 static void addinsert_free_class_expr(struct parser *parser, struct class *class,
@@ -4729,7 +4764,7 @@ static void addinsert_free_class_funcres(struct parser *parser, struct class *cl
 			newscope, class->name, tvarname);
 		addinsert_format(parser, NULL, exprstart, exprstart,
 			CONTINUE_AFTER, "coo_fres%u = ", scope_varnr);
-		adddeleter(parser, class, tvarname);
+		adddeleter(parser, class, tvarname, TEMPSCOPE_BLOCKLEVEL);
 	}
 }
 
@@ -4767,13 +4802,13 @@ static void addinsert_addref(struct parser *parser, struct class *exprclass,
 static void param_to_variable(struct parser *parser, struct allocator *alloc, int position,
 		struct class *class, anyptr decl, char *name, char *next)
 {	(void)position; (void)alloc;
-	addvariable(parser, class, 0, decl, 0, name, next, NULL);
+	addvariable(parser, class, 0, decl, name, next, NULL);
 }
 
 static void param_to_variable_and_type(struct parser *parser, struct allocator *alloc,
 		int position, struct class *class, anyptr decl, char *name, char *next)
 {
-	addvariable(parser, class, 0, decl, 0, name, next, NULL);
+	addvariable(parser, class, 0, decl, name, next, NULL);
 	save_param_type(parser, alloc, position, class, decl, name, next);
 }
 
@@ -4927,7 +4962,7 @@ static void parse_function(struct parser *parser, char *next)
 	struct anytype *newtype;
 	struct dynarr **tgtparams;
 	struct classtype *classtype;
-	struct class *thisclass, *exprclass, *targetclass;
+	struct class *thisclass, *declclass, *exprclass, *targetclass;
 	struct member *member, *submember, *constr;
 	struct variable *declvar, *globalfunc;
 	struct initializer *initializer;
@@ -4942,7 +4977,7 @@ static void parse_function(struct parser *parser, char *next)
 	enum parse_state state, nextstate;
 	enum goto_return goto_ret;
 	int is_constructor, expr_is_oneword, blocklevel, seqparen, numwords;
-	int have_retvar, need_retvar, used_retvar, eval_retvar, have_return;
+	int have_retvar, need_retvar, used_retvar, eval_retvar, have_return, in_return;
 	int retblocknr, next_retblocknr, unused_retblocknr, in_delete, possible_type;
 	unsigned num_constr_called, num_constr;
 	struct allocator *allocator;
@@ -5074,7 +5109,7 @@ static void parse_function(struct parser *parser, char *next)
 			/* add this as a variable */
 			name = "this";
 			nameend = name + 4;  /* "this" */
-			addvariable(parser, thisclass, 0, thisptr, 0, name, nameend, NULL);
+			addvariable(parser, thisclass, 0, thisptr, name, nameend, NULL);
 			/* no parents means all are initialized */
 			is_constructor = member->is_constructor;
 			num_constr = is_constructor
@@ -5146,7 +5181,8 @@ static void parse_function(struct parser *parser, char *next)
 	stmtstart = exprend = accinhcolons = NULL;
 	funcvarname = funcvarnameend = name = NULL;  /* make compiler happy */
 	accinhname = tmplpos = NULL;  /* make compiler happy */
-	retblocknr = next_retblocknr = unused_retblocknr = have_return = in_delete = 0;
+	retblocknr = next_retblocknr = unused_retblocknr = 0;
+	have_return = in_delete = in_return = 0;
 	flist_clear(&parser->initializers);
 	funcvarstate = FV_NONE;
 	goto_ret = GOTO_RET_NONE;
@@ -5178,6 +5214,9 @@ static void parse_function(struct parser *parser, char *next)
 			continue;
 		}
 		if (*curr == '}') {
+			parser->pf.pos = curr;
+			flush(parser);
+			print_deleters(parser, blocklevel);
 			print_disposers(parser, curr, blocklevel, next_retblocknr, need_retvar);
 			remove_locals(parser, blocklevel);
 			next = curr + 1;
@@ -5207,7 +5246,7 @@ static void parse_function(struct parser *parser, char *next)
 			if (typ(immdecl)->type != AT_UNKNOWN) {
 				if (state == STMTSTART) {
 					/* if immediately a parenthesis open follows,
-					then probably calling parent constructor instead */
+					   then probably calling parent constructor instead */
 					if (*next != '(' && *next != '.' && *next != '-') {
 						/* split type in declaration and pointerlevel */
 						decl = typ(immdecl);
@@ -5275,7 +5314,7 @@ static void parse_function(struct parser *parser, char *next)
 						pr_err(curr, "unknown class to cast to");
 						continue;
 					}
-					if (ptrlvl(rettype) + typ(rettype)->pointerlevel != 1) {
+					if (ptrlvl(rettype) != 1) {
 						pr_err(curr, "dynamic cast must be "
 							"to single pointer");
 						continue;
@@ -5306,6 +5345,7 @@ static void parse_function(struct parser *parser, char *next)
 			} else if (strprefixcmp("return", curr) && !isalnum(curr[6])) {
 				next = curr + 7;  /* "return" */
 				if (need_retvar) {
+					/* != STMTSTART: if (expr) return X; */
 					insert_text(parser, NULL, curr,
 						state == STMTSTART ? "__coo_ret = "
 							: "{ __coo_ret = ",
@@ -5320,7 +5360,9 @@ static void parse_function(struct parser *parser, char *next)
 					}
 				}
 				state = FINDVAR;
-				have_return = 1;
+				have_return = in_return = 1;
+				/* reset, to capture return expression */
+				pareninfo->exprstart = NULL;
 				continue;
 			} else if (is_expr(state) && strprefixcmp("new ", curr)) {
 				name = skip_whitespace(parser, curr + 4);  /* "new " */
@@ -5421,17 +5463,17 @@ static void parse_function(struct parser *parser, char *next)
 			nextstate = FINDVAR;
 			switch (state) {
 			case DECLVAR:
-				immdecl = to_anyptr(decl, 0);
-				declvar = addclsvariable(parser, blocklevel, immdecl,
-						ptrlvl(pareninfo->exprdecl), name, next);
-				if (ptrlvl(pareninfo->exprdecl) == 0 && decl->pointerlevel == 0
-						&& to_class(decl)) {
-					if (decl->u.class->num_abstract) {
+				immdecl = to_anyptr(decl, raw_ptrlvl(pareninfo->exprdecl));
+				clear_ptrlvl(&pareninfo->exprdecl);
+				declvar = addclsvariable(parser, blocklevel, immdecl, name, next);
+				declclass = to_class(decl);
+				if (ptrlvl(immdecl) == 0 && declclass) {
+					if (declclass->num_abstract) {
 						pr_err(name, "cannot instantiate "
-							"abstract class %s", decl->u.class->name);
-					} else if (decl->u.class->root_constructor) {
+							"abstract class %s", declclass->name);
+					} else if (declclass->root_constructor) {
 						nextstate = CONSTRUCT;
-						if (decl->u.class->destructor && !eval_retvar) {
+						if (declclass->destructor && !eval_retvar) {
 							/* need retvar also when this constructor
 							   is void, because a 'return X;' halfway
 							   needs a retvar to store X in */
@@ -5440,10 +5482,13 @@ static void parse_function(struct parser *parser, char *next)
 						}
 					}
 				}
+				if (declclass && declclass->refcounted)
+					adddeleter(parser, declclass, declvar->name, blocklevel);
 				break;
 			case DECLMETHODVAR:
-				addmpvariable(parser, blocklevel, to_anyptr(decl, 0),
-					ptrlvl(pareninfo->exprdecl), name, next);
+				immdecl = to_anyptr(decl, raw_ptrlvl(pareninfo->exprdecl));
+				clear_ptrlvl(&pareninfo->exprdecl);
+				addmpvariable(parser, blocklevel, immdecl, name, next);
 				break;
 			case ACCESSMEMBER:  /* parsing expr.member or expr->member */
 				/* immdecl is used for same parenthesis level,
@@ -5531,9 +5576,9 @@ static void parse_function(struct parser *parser, char *next)
 				if (next == NULL)
 					break;
 				if (*next == ')') {
-					addvariable(parser, NULL, blocklevel, to_anyptr(decl, 0),
-						ptrlvl(pareninfo->exprdecl), funcvarname,
-						funcvarnameend, curr+1);
+					addvariable(parser, NULL, blocklevel,
+						to_anyptr(decl, raw_ptrlvl(pareninfo->exprdecl)),
+						funcvarname, funcvarnameend, curr+1);
 				}
 			}
 		}
@@ -5768,6 +5813,7 @@ static void parse_function(struct parser *parser, char *next)
 			}
 		} else if (*curr == ';') {
 			if (in_delete) {
+				in_delete = 0;
 				expr = to_class(typ(immdecl)) ? immdecl : parenlvl0->exprdecl;
 				exprclass = to_class(typ(expr));
 				if (exprclass) {
@@ -5775,16 +5821,17 @@ static void parse_function(struct parser *parser, char *next)
 						pareninfo->exprstart, curr, expr_is_oneword);
 				} else {
 					pr_err(curr, "unknown variable to delete");
-					in_delete = 0;
 				}
 			}
-			print_inserts(parser, parser->inserts);
-			if (in_delete) {
-				parser->pf.pos = curr;
-				flush(parser);
-				outwrite(parser, ")", 1);
-				in_delete = 0;
+			if (in_return) {
+				expr = to_class(typ(immdecl)) ? immdecl : parenlvl0->exprdecl;
+				exprclass = to_class(typ(expr));
+				if (exprclass && exprclass->refcounted)
+					addinsert_addref(parser, exprclass, stmtstart,
+						pareninfo->exprstart, curr,
+						pareninfo->expr_complex);
 			}
+			print_inserts(parser, parser->inserts);
 			close_tempscope(parser, curr + 1);
 			decl = &unknown_type;
 			stmtstart = NULL;

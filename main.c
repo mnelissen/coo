@@ -118,12 +118,10 @@ const struct anytype {
 		struct templpar *tp;    /* template parameter type */
 	} u;
 	struct dynarr args;          /* struct anytype *, template arguments */
-	struct anytype *next;        /* points to variation (shared type) */
 	int pointerlevel:8;
 	enum anytyp type:8;          /* AT_xxxx */
 	enum fromtp from_tp:8;       /* type is mapped from a templpar */
 	unsigned implicit:1;         /* for AT_CLASS, still needs "struct " */
-	unsigned sharedptr:1;        /* type is a [shared] type pointer */
 } unknown_type = { 0 };
 
 #define unknown_typeptr to_anyptr(&unknown_type, 0)
@@ -159,7 +157,7 @@ struct class {
 	unsigned num_init_vars;      /* number of members needing root construction call */
 	unsigned num_destr_vars;     /* number of members needing destructor call */
 	unsigned num_abstract;       /* number of abstract virtual methods */
-	unsigned num_shptr_vars;     /* number of shared pointer variables */
+	unsigned num_refcnt_vars;    /* number of refcounted pointer variables */
 	char need_dync_p0_dummy;     /* first dync.parent is not at offset 0 */
 	char declare_complete;       /* inside or after struct declaration? */
 	char is_final;               /* final class, cannot be inherited from */
@@ -387,7 +385,7 @@ struct parser {
 	flist(struct class) classes_list;          /* for in-order printing impl */
 	flist(struct initializer) initializers;    /* initializers to be printed */
 	blist(struct disposer) disposers;          /* class variables on stack */
-	blist(struct deleter) deleters;            /* temporary shared pointers */
+	blist(struct deleter) deleters;            /* temporary refcnt pointers */
 	blist(struct parse_file_item) file_stack;  /* files' state being parsed */
 	blist(struct parse_file_item) file_avail;  /* memory available for reuse */
 	struct dynarr includepaths;   /* char pointers */
@@ -1133,11 +1131,6 @@ static const struct anytype *typ(anyptr p)
 	return (const struct anytype*)((size_t)p & ~PTRLVLMASK);
 }
 
-static struct anytype *modtyp(anyptr p)
-{
-	return (struct anytype*)((size_t)p & ~PTRLVLMASK);
-}
-
 static unsigned raw_ptrlvl(anyptr p)
 {
 	return (size_t)p & PTRLVLMASK;
@@ -1446,23 +1439,14 @@ static char *parse_type(struct parser *parser, struct allocator *alloc,
 		struct class *ctxclass, char *pos, anyptr *rettype, new_insert_cb new_insert)
 {
 	struct classtype *classtype;
-	struct anytype *sharedtype, *newtype = NULL;
+	struct anytype *newtype = NULL;
 	struct methodptr *mp;
 	struct templpar *tp;
 	struct class *class;
 	char *name, *next, *tmplpos;
 	anyptr anyptr = unknown_typeptr;
-	int seen_shared = 0;
 
 	for (;; pos = skip_whitespace(parser, pos)) {
-		if (strprefixcmp("[shared]", pos) != NULL) {
-			next = skip_whitespace(parser, pos + 8);  /* [shared] */
-			if (new_insert)
-				new_insert(parser, pos, "", next);
-			pos = next;
-			seen_shared = 1;
-			continue;
-		}
 		if (strprefixcmp("const ", pos) != NULL) {
 			pos += 6;  /* const */
 			continue;
@@ -1530,26 +1514,6 @@ static char *parse_type(struct parser *parser, struct allocator *alloc,
 
 	for (next = skip_whitespace(parser, next); *next == '*'; next++)
 		add_ptrlvl(&anyptr, 1);
-	if (seen_shared) {
-		if ((class = to_class(typ(anyptr))) == NULL) {
-			pr_err(pos, "[shared] type must be class type");
-		} else if (!class->refcounted) {
-			pr_err(pos, "[shared] class type must be refcounted");
-		} else if (newtype) {
-			newtype->sharedptr = 1;
-		} else {
-			sharedtype = typ(anyptr)->next;
-			if (!sharedtype || !sharedtype->sharedptr) {
-				sharedtype = duptype(alloc, typ(anyptr));
-				if (!sharedtype)
-					return NULL;
-				sharedtype->sharedptr = 1;
-				/* (modify) connect to existing type */
-				modtyp(anyptr)->next = sharedtype;
-			}
-			anyptr = to_anyptr(sharedtype, raw_ptrlvl(anyptr));
-		}
-	}
 	*rettype = anyptr;
 	return next;
 }
@@ -1990,6 +1954,26 @@ static struct methodptr *dupmethodptrtype(struct parser *parser,
 	return mptype;
 }
 
+static struct insert *findinsert(struct parser *parser, char *flush_until)
+{
+	struct insert *insert, *insert_before;
+
+	/* check flush ordering to be incremental */
+	insert_before = dlist_head(parser->inserts, item);
+	dlist_foreach_rev(insert, parser->inserts, item) {
+		/* if the next insert (the one before insert_before)
+		   is before where to insert, then found insert_before */
+		if (insert->continue_at < flush_until)
+			break;
+		if (insert->continue_at == flush_until
+				&& insert->continue_after)
+			break;
+		insert_before = insert;
+	}
+
+	return insert_before;
+}
+
 static struct insert *newinsert(struct parser *parser, struct insert *insert_before,
 	char *flush_until, char *insert_text, char *continue_at,
 	enum insert_continue insert_continue)
@@ -2012,23 +1996,8 @@ static struct insert *addinsert(struct parser *parser, struct insert *insert_bef
 		char *flush_until, char *insert_text, char *continue_at,
 		enum insert_continue insert_continue)
 {
-	struct insert *insert;
-
-	if (!insert_before) {
-		/* check flush ordering to be incremental */
-		insert_before = dlist_head(parser->inserts, item);
-		dlist_foreach_rev(insert, parser->inserts, item) {
-			/* if the next insert (the one before insert_before)
-			   is before where to insert, then found insert_before */
-			if (insert->continue_at < flush_until)
-				break;
-			if (insert->continue_at == flush_until
-					&& insert->continue_after)
-				break;
-			insert_before = insert;
-		}
-	}
-
+	if (!insert_before)
+		insert_before = findinsert(parser, flush_until);
 	return newinsert(parser, insert_before,
 		flush_until, insert_text, continue_at, insert_continue);
 }
@@ -2214,11 +2183,15 @@ static void print_deleters(struct parser *parser, unsigned blocklevel)
 	blist_clear(&parser->deleters);
 }
 
-static char *open_tempscope(struct parser *parser, int *varnr)
+static char *open_tempscope(struct parser *parser, char *stmtstart, int *varnr)
 {
 	/* varnr > 0 <=> scope open */
 	if ((*varnr = parser->tempscope_varnr++) > 0)
 		return "";
+
+	/* prepare for printing temp.var. declaration(s) */
+	parser->pf.pos = stmtstart;
+	flush(parser);
 	return "{ ";
 }
 
@@ -2985,9 +2958,14 @@ static int is_member_lit_var(struct class *class, struct member *member)
 		&& ptrlvl(member->rettype) == 0 && member->origin == class;
 }
 
-static int is_member_shptr_var(struct member *member)
+static int is_member_refcnt_var(struct member *member)
 {
-	return !member->props.is_function && typ(member->rettype)->sharedptr;
+	struct class *class;
+
+	if (member->props.is_function)
+		return 0;
+	class = to_class(typ(member->rettype));
+	return class && class->refcounted;
 }
 
 static int member_needs_construct(struct class *class, struct member *member)
@@ -2998,7 +2976,7 @@ static int member_needs_construct(struct class *class, struct member *member)
 
 static int member_needs_dispose(struct class *class, struct member *member)
 {
-	return is_member_shptr_var(member) || (is_member_lit_var(class, member)
+	return is_member_refcnt_var(member) || (is_member_lit_var(class, member)
 			&& typ(member->rettype)->u.class->destructor);
 }
 
@@ -3421,7 +3399,7 @@ static struct class *parse_struct(struct parser *parser, char *pos_struct, char 
 	char *declbegin, *retend, *membername, *nameend, *params, *declend, *next;
 	char *classname, *classnameend, *parentname, *prevnext;
 	int level, parent_primary, parent_virtual, is_lit_var, len, prevdeclend_lineno;
-	int first_virtual_warn, first_vmt_warn, need_destructor, have_retbase;
+	int first_virtual_warn, first_vmt_warn, need_constructor, need_destructor, have_retbase;
 	int is_coo_class, parent_zeroinit, has_vars, flushdecl_lineno, last_linestart_lineno;
 	struct classtype *parentclasstype, *classtype, *defclasstype;
 	struct parent *parent, *firstparent;
@@ -3459,7 +3437,7 @@ static struct class *parse_struct(struct parser *parser, char *pos_struct, char 
 	} else
 		class = NULL;
 
-	is_coo_class = parent_zeroinit = has_vars = need_destructor = 0;
+	is_coo_class = parent_zeroinit = has_vars = need_constructor = need_destructor = 0;
 	rettype = NULL, retbasetype = NULL;
 	next = skip_whitespace(parser, next);
 	if (class && *next == ':') {
@@ -3820,8 +3798,8 @@ static struct class *parse_struct(struct parser *parser, char *pos_struct, char 
 						"because member %s is zeroinit",
 						class->name, member->name);
 			}
-			if (retbasetype->sharedptr) {
-				class->num_shptr_vars++;
+			if ((varclass = to_class(retbasetype)) && varclass->refcounted) {
+				class->num_refcnt_vars++;
 				need_destructor = 1;
 			}
 		}
@@ -3842,27 +3820,29 @@ static struct class *parse_struct(struct parser *parser, char *pos_struct, char 
 	/* determine automatic zero-initialization */
 	class->zeroinit = parser->saw.k.zeroinit || parent_zeroinit
 		|| (is_coo_class && has_vars && !parser->saw.k.nozeroinit);
-	class->num_destr_vars += class->num_shptr_vars;
+	class->num_destr_vars += class->num_refcnt_vars;
 	if (!class->zeroinit)
-		class->num_init_vars += class->num_shptr_vars;
+		class->num_init_vars += class->num_refcnt_vars;
 
 	/* refcounted class needs vmt because the refcount is in the root class,
 	   so freer method needs to be virtual; or the class needs to be final */
 	if (class->refcounted) {
- 		if (class->is_final) {
+		if (class->vmt) {
+			if (class->destructor && !class->destructor->vmt)
+				pr_err(next, "refcounted class destructor must be virtual");
+ 		} else if (class->refcounted == class) {
 			flush_until(parser, next);
 			outprintf(parser, "\tcoo_atomic_t refcount;\n");
 			parser->pf.lines_coo++;
 			parser->pf.writepos = next;
-		} else if (class->vmt) {
-			if (class->destructor && !class->destructor->vmt)
-				pr_err(next, "refcounted class destructor must be virtual");
-		} else
-			pr_err(next, "refcounted class needs vmt or be final");
+			if (!class->zeroinit)
+				need_constructor = 1;
+		}
 	}
 
 	/* add constructor if there are literal class variables with root constructor */
-	if ((class->num_init_vars || class->num_parent_constr >= 2) && !class->has_constructor) {
+	need_constructor |= class->num_init_vars || class->num_parent_constr >= 2;
+	if (need_constructor && !class->has_constructor) {
 		member = class->prim_parent ? class->prim_parent->constructor : NULL;
 		addgenmember(parser, class, member, classname, classnameend);
 		class->gen_constructor = 1;
@@ -4062,7 +4042,7 @@ static void parse_method(struct parser *parser, char *stmtstart, struct methodpt
 	} else {
 		maybe_this = "";
 	}
-	newscope = open_tempscope(parser, &scope_varnr);
+	newscope = open_tempscope(parser, stmtstart, &scope_varnr);
 	if (tgtclass) {
 		goto hardref;
 	} else if (member->props.is_virtual) {
@@ -4078,8 +4058,6 @@ static void parse_method(struct parser *parser, char *stmtstart, struct methodpt
 	}
 	if (fslen < 0)
 		return;
-	parser->pf.pos = stmtstart;
-	flush(parser);
 	outprintf(parser, "%sstruct %s *coo_obj%d = %s",
 		newscope, memberdef->name, scope_varnr, pre);
 	outwrite(parser, exprstart, exprend - exprstart);
@@ -4191,9 +4169,7 @@ static struct member *parse_member(struct parser *parser, char *stmtstart,
 
 		if (member->props.is_virtual) {
 			if (!expr_is_oneword) {
-				newscope = open_tempscope(parser, &scope_varnr);
-				parser->pf.pos = stmtstart;
-				flush(parser);
+				newscope = open_tempscope(parser, stmtstart, &scope_varnr);
 				outprintf(parser, "%sstruct %s *coo_obj%d = %s",
 					newscope, class->name, scope_varnr,
 					ptrlvl(expr) == 0 ? "&" : "");
@@ -4409,9 +4385,7 @@ static char *insertmpcall(struct parser *parser, int expr_is_oneword, char *stmt
 		addinsert_format(parser, insert_before,
 			parenpos, parenpos+1, CONTINUE_AFTER, "%sobj%s", arrow, sep_or_end);
 	} else {
-		newscope = open_tempscope(parser, &scope_varnr);
-		parser->pf.pos = stmtstart;
-		flush(parser);
+		newscope = open_tempscope(parser, stmtstart, &scope_varnr);
 		outprintf(parser, "%s%s coo_mv%d = ", newscope, targetmp->name, scope_varnr);
 		outwrite(parser, exprstart, exprend - exprstart);
 		/* temp.var has been defined, now use it to replace expression */
@@ -4670,19 +4644,19 @@ static void print_disposers(struct parser *parser, char *position,
 }
 
 static void print_free_class_expr(struct parser *parser, struct class *class,
-		char *exprstart, char *exprend, int expr_is_oneword)
+		char *stmtstart, char *exprstart, char *exprend, int expr_is_oneword)
 {
 	struct member *destr = class->destructor;
 	char *newscope, *close_str, *vmtpath, *vmtaccess, tempvarname[16];
 	int scope_varnr, print_inserts = 1;
 
-	if (!destr) {
+	if (!destr && !class->refcounted) {
 		outputs(parser, "free(");
-	} else if (!destr->props.is_virtual) {
+	} else if (destr && !destr->props.is_virtual) {
 		outprintf(parser, "free_%s(", class->name);
 	} else {
 		if (!expr_is_oneword) {
-			newscope = open_tempscope(parser, &scope_varnr);
+			newscope = open_tempscope(parser, stmtstart, &scope_varnr);
 			outprintf(parser, "%sstruct %s *coo_obj%d = ",
 				newscope, class->name, scope_varnr);
 			print_inserts_fromto(parser, exprstart, exprend, REMOVE_PRINTED_INSERTS);
@@ -4691,13 +4665,19 @@ static void print_free_class_expr(struct parser *parser, struct class *class,
 		} else
 			tempvarname[0] = 0;
 
-		outprintf(parser, "((struct %s_vmt*)%s",
-			destr->origin->name, tempvarname);
+		if (destr)
+			outprintf(parser, "((struct %s_vmt*)%s", destr->origin->name, tempvarname);
+		else
+			outprintf(parser, "if (!coo_atomic_fetch_dec(&%s", tempvarname);
 		if (expr_is_oneword)
 			print_inserts_fromto(parser, exprstart, exprend, KEEP_PRINTED_INSERTS);
-		get_vmt_path(parser, destr->vmt, &vmtpath, &vmtaccess);
-		outprintf(parser, "->%s%svmt)->d_%s(%s", vmtpath, vmtaccess,
-			destr->implname, tempvarname);
+		if (destr) {
+			get_vmt_path(parser, destr->vmt, &vmtpath, &vmtaccess);
+			outprintf(parser, "->%s%svmt)->d_%s(%s", vmtpath, vmtaccess,
+				destr->implname, tempvarname);
+		} else {
+			outprintf(parser, "->refcount)) free(%s", tempvarname);
+		}
 	}
 
 	close_str = ")";
@@ -4725,7 +4705,7 @@ static void addinsert_free_class_expr(struct parser *parser, struct class *class
 	char *newscope, *tvarname;
 	int scope_varnr;
 
-	newscope = open_tempscope(parser, &scope_varnr);
+	newscope = open_tempscope(parser, stmtstart, &scope_varnr);
 	if (!expr_complex) {
 		/* simple expression, can repeat w/o side-effect */
 		insert_before = addinsert_format(parser, NULL, stmtstart, exprstart,
@@ -4758,7 +4738,7 @@ static void addinsert_free_class_funcres(struct parser *parser, struct class *cl
 			CONTINUE_BEFORE, "free_%s(", class->name);
 		addinsert(parser, NULL, funcend, ")", funcend, CONTINUE_AFTER);
 	} else {
-		newscope = open_tempscope(parser, &scope_varnr);
+		newscope = open_tempscope(parser, stmtstart, &scope_varnr);
 		fsaprintf(&tvarname, "coo_fres%u", scope_varnr);
 		outprintf(parser, "%sstruct %s *%s; ",
 			newscope, class->name, tvarname);
@@ -4771,31 +4751,52 @@ static void addinsert_free_class_funcres(struct parser *parser, struct class *cl
 static void addinsert_addref(struct parser *parser, struct class *exprclass,
 		char *stmtstart, char *exprstart, char *exprend, int expr_complex)
 {
-	char *newscope, *vmtpath, *vmtaccess;
+	char *newscope, *vmtpath, *vmtaccess, *ancaddr, *ancpath, *ancaccess;
 	struct insert *insert_before;
 	int scope_varnr;
 
-	get_vmt_path(parser, exprclass->vmt, &vmtpath, &vmtaccess);
-	if (!expr_complex) {
-		insert_before = addinsert_format(parser, NULL, exprstart, exprstart,
-			CONTINUE_BEFORE, "((struct %s_vmt*)", exprclass->name);
-		insert_before = dupinserts_until(parser, insert_before, exprend);
-		addinsert_format(parser, insert_before, exprend, exprstart, CONTINUE_AFTER,
-			"->%s%svmt)->coo_addref(", vmtpath, vmtaccess);
-		addinsert(parser, NULL, exprend, ")", exprend, CONTINUE_AFTER);
+	if (exprclass->vmt) {
+		get_vmt_path(parser, exprclass->vmt, &vmtpath, &vmtaccess);
+		if (!expr_complex) {
+			insert_before = addinsert_format(parser, NULL, exprstart, exprstart,
+				CONTINUE_BEFORE, "((struct %s_vmt*)", exprclass->name);
+			insert_before = dupinserts_until(parser, insert_before, exprend);
+			addinsert_format(parser, insert_before, exprend, exprstart,
+				CONTINUE_AFTER, "->%s%svmt)->coo_addref(", vmtpath, vmtaccess);
+			addinsert(parser, NULL, exprend, ")", exprend, CONTINUE_AFTER);
+		} else {
+			newscope = open_tempscope(parser, stmtstart, &scope_varnr);
+			outprintf(parser, "%sstruct %s *coo_obj%d = ",
+				newscope, exprclass->name, scope_varnr);
+			print_inserts_fromto(parser, exprstart, exprend, REMOVE_PRINTED_INSERTS);
+			outputs(parser, "; ");
+			addinsert_format(parser, NULL, exprstart, exprend, CONTINUE_BEFORE,
+				"((struct %s_vmt*)coo_obj%d->%s%svmt)->coo_addref(coo_obj%d)",
+				exprclass->name, scope_varnr, vmtpath, vmtaccess, scope_varnr);
+		}
 	} else {
-		newscope = open_tempscope(parser, &scope_varnr);
-		outprintf(parser, "%sstruct %s *coo_obj%d = ",
-			newscope, exprclass->name, scope_varnr);
-		print_inserts_fromto(parser, exprstart, exprend, REMOVE_PRINTED_INSERTS);
-
-		insert_before = addinsert_format(parser, NULL, stmtstart, exprstart,
-			CONTINUE_BEFORE, "%sstruct %s *coo_obj%d = ",
-			newscope, exprclass->name, scope_varnr);
-		addinsert(parser, insert_before, exprend, "; ", stmtstart, CONTINUE_AFTER);
-		addinsert_format(parser, NULL, exprstart, exprend, CONTINUE_BEFORE,
-			"((struct %s_vmt*)coo_obj%d->%s%svmt)->coo_addref(coo_obj%d)",
-			exprclass->name, scope_varnr, vmtpath, vmtaccess, scope_varnr);
+		if (exprclass->refcounted == exprclass) {
+			ancaddr = ancpath = ancaccess = "";
+		} else {
+			get_ancestor_path(parser, exprclass, exprclass->refcounted,
+				&ancaddr, &ancpath, &ancaccess);
+		}
+		if (!expr_complex) {
+			insert_before = addinsert(parser, NULL, exprstart,
+				"coo_atomic_inc_fetch(&", exprstart, CONTINUE_BEFORE);
+			insert_before = dupinserts_until(parser, insert_before, exprend);
+			addinsert_format(parser, insert_before, exprend, exprstart, CONTINUE_AFTER,
+				"->%s%scoo_refcount), ", ancpath, ancaccess);
+		} else {
+			newscope = open_tempscope(parser, stmtstart, &scope_varnr);
+			outprintf(parser, "%sstruct %s *coo_obj%d = ",
+				newscope, exprclass->name, scope_varnr);
+			print_inserts_fromto(parser, exprstart, exprend, REMOVE_PRINTED_INSERTS);
+			outputs(parser, "; ");
+			addinsert_format(parser, NULL, exprstart, exprend, CONTINUE_AFTER,
+				"coo_atomic_inc_fetch(&coo_obj%d->%s%scoo_refcount), coo_obj%d",
+				scope_varnr, ancpath, ancaccess, scope_varnr);
+		}
 	}
 }
 
@@ -4896,6 +4897,7 @@ struct paramstate {
 enum exprsrc {
 	EXPRSRC_VAR,      /* source of expression is a variable */
 	EXPRSRC_FUNCRES,  /* source of expression is result of function */
+	EXPRSRC_NEWINST,  /* source of expression is "new X" instance */
 };
 
 enum target_ctx {
@@ -5036,7 +5038,7 @@ static void parse_function(struct parser *parser, char *next)
 					outputs(parser, member->rettypestr);
 					parser->pf.writepos = classname;
 				} else if (classname > thisfuncret) {
-					/* add "struct ", remove "[shared]" etc. */
+					/* add "struct " etc. */
 					parse_type(parser, &parser->func_mem, thisclass,
 						thisfuncret, &rettype, print_type_insert);
 					/* TODO? match rettype and member->rettype? */
@@ -5118,7 +5120,7 @@ static void parse_function(struct parser *parser, char *next)
 			pr_err(classname, "class '%s' not declared", classname);
 		}
 	} else {
-		/* add "struct ", remove "[shared]" etc. */
+		/* add "struct " etc. */
 		parse_type(parser, &parser->global_mem, NULL,
 			thisfuncret, &rettype, print_type_insert);
 		/* remember global function */
@@ -5380,6 +5382,7 @@ static void parse_function(struct parser *parser, char *next)
 					continue;
 				}
 
+				pareninfo->exprsrc = EXPRSRC_NEWINST;
 				immdecl = to_anyptr(&classtype->t, 1);
 				exprclass = classtype->t.u.class;
 				if (exprclass->root_constructor) {
@@ -5448,7 +5451,7 @@ static void parse_function(struct parser *parser, char *next)
 					outwrite(parser, "_root", 5);
 					parser->pf.writepos = next;
 					/* fix class type, so ancestor paths are correct
-					   template instantions are non-shared types so we
+					   template instantions are non-refcounted types so we
 					   can modify them and want to keep the templ args */
 					if (decl->type != AT_TEMPLINST)
 						decl = &decl->u.class->rootclass->class.t;
@@ -5642,14 +5645,17 @@ static void parse_function(struct parser *parser, char *next)
 			add_ptrlvl(&immdecl, ptrlvl(pareninfo->exprdecl));
 			expr = sel_class(pareninfo->exprdecl) ?: sel_class(immdecl);
 			target = sel_class(pareninfo->targetdecl);
-			if (expr && typ(expr)->sharedptr) {
+			if (expr && typ(expr)->u.class->refcounted) {
 				exprclass = typ(expr)->u.class;
 				if (*curr == '=') {
 					/* variable is about to be assigned new value
-					   delete previous reference in it, if any */
-					addinsert_free_class_expr(parser, exprclass,
-						stmtstart, pareninfo->exprstart, next,
-						pareninfo->expr_complex);
+					   delete previous reference in it, if any
+					   if declaring new variable, then don't */
+					if (declvar == NULL) {
+						addinsert_free_class_expr(parser, exprclass,
+							stmtstart, pareninfo->exprstart, next,
+							pareninfo->expr_complex);
+					}
 				} else if (pareninfo->exprsrc == EXPRSRC_FUNCRES &&
 						pareninfo->target_ctx != TARGET_VAR) {
 					/* function increased refcount but not
@@ -5663,10 +5669,6 @@ static void parse_function(struct parser *parser, char *next)
 					addinsert_addref(parser, exprclass, stmtstart,
 						pareninfo->exprstart, next,
 						pareninfo->expr_complex);
-				} else if (pareninfo->target_ctx != TARGET_NONE &&
-						(!target || !typ(target)->sharedptr)) {
-					pr_err(name, "cannot assign shared pointer "
-						"to non-shared pointer");
 				}
 			}
 			if (target && expr && ptrlvl(target) <= 1)
@@ -5683,8 +5685,10 @@ static void parse_function(struct parser *parser, char *next)
 				parser->inserts = &parser->inserts_list;
 				initializer = NULL;
 			}
-			if (decl->sharedptr) {
-				/* initialize shared pointer variables */
+			if (to_class(decl) && decl->u.class->refcounted
+					&& pareninfo->target_ctx != TARGET_VAR) {
+				/* initialize refcounted pointer variables
+				   but not when already initialized (ctx == TARGET_VAR) */
 				flush_until(parser, curr);
 				outputs(parser, " = NULL");
 				parser->pf.writepos = curr;
@@ -5817,7 +5821,7 @@ static void parse_function(struct parser *parser, char *next)
 				expr = to_class(typ(immdecl)) ? immdecl : parenlvl0->exprdecl;
 				exprclass = to_class(typ(expr));
 				if (exprclass) {
-					print_free_class_expr(parser, exprclass,
+					print_free_class_expr(parser, exprclass, stmtstart,
 						pareninfo->exprstart, curr, expr_is_oneword);
 				} else {
 					pr_err(curr, "unknown variable to delete");
@@ -6141,6 +6145,8 @@ static void print_constructor(struct parser *parser, struct class *class)
 
 	print_func_header(parser, class, class->constructor);
 	print_construct_parents(parser, class, "", "", LITERAL_PARENT);
+	if (class->refcounted == class && !class->rootclass)
+		outprintf(parser, "\tthis->refcount = 0;\n");
 	flist_foreach(member, &class->members_list, next) {
 		if (member->origin != class)
 			continue;
@@ -6148,7 +6154,7 @@ static void print_constructor(struct parser *parser, struct class *class)
 			memberclass = typ(member->rettype)->u.class;
 			print_call_constructor(parser, memberclass,
 				"", "", member->name, memberclass->root_constructor);
-		} else if (!class->zeroinit && is_member_shptr_var(member)) {
+		} else if (!class->zeroinit && is_member_refcnt_var(member)) {
 			outprintf(parser, "\tthis->%s = NULL;\n", member->name);
 		}
 	}
@@ -6226,7 +6232,7 @@ static void print_destructor(struct parser *parser, struct class *class)
 		member = destruct_members[i];
 		memberclass = typ(member->rettype)->u.class;
 		/* member must be var, checked in needs_dispose */
-		if (typ(member->rettype)->sharedptr) {
+		if (memberclass->refcounted) {
 			outprintf(parser, "\tfree_%s(this->%s);\n",
 				memberclass->name, member->name);
 		} else {

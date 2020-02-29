@@ -560,8 +560,7 @@ the parser anyway.
 * test disposers/error goto/shared pointer within if/for/while expression
 * implement return from nested block with stack variables
 * dynamic cast assignment with shared pointers
-* free_X => destruct_X, free_X = if (X) X->vmt.d_X(X)
-* good8, check func1, increase refcount at return, decrease upon return
+* test refcounting in class E for good8
 
 ## License
 

@@ -47,9 +47,10 @@ int main(void)
 #line 31
   Derived_multiply(&d, &f);
   printf("%d\n", ((struct X*)d.Base.a)->x);
+  return 0;
 }
 
-#line 53 "good6.coo.c"
+#line 54 "good6.coo.c"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>

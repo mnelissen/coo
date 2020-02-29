@@ -112,6 +112,10 @@ struct E {
 	coo_atomic_t refcount;
 };
 
+#line 116 "good8.coo.c"
+struct E *new_E(void);
+struct E *E_E(struct E *this);
+#line 43 "good8.coo"
 struct A *func1(struct A *a)
 {
 	return ((struct A_vmt*)a->vmt)->coo_addref(a);
@@ -124,10 +128,10 @@ int main(void)
 	struct D d;
 	struct E *e;
 	int __coo_ret;
-#line 52
-	D_D(&d);
-	e = (struct E*)malloc(sizeof(struct E));
 #line 54
+	D_D(&d);
+	e = new_E();
+#line 56
 	{ free_A(a1); a1 = new_A(); }
 	{ free_B(b1); b1 = new_B(); }
 	{ free_A(a2); a2 = &(new_C())->A; }
@@ -141,17 +145,17 @@ int main(void)
 	((struct B_vmt*)b2->vmt)->d_B(b2), b2 = NULL;
 	free(e), e = NULL;
 	__coo_ret = 0;
-#line 145 "good8.coo.c"
+#line 149 "good8.coo.c"
 	free_B(b2);
 	free_B(b1);
 	free_A(a2);
 	free_A(a1);
 	D_d_D(&d);
 	return __coo_ret;
-#line 67 "good8.coo"
+#line 69 "good8.coo"
 }
 
-#line 155 "good8.coo.c"
+#line 159 "good8.coo.c"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -379,4 +383,23 @@ void free_D(struct D *this)
 void D_d_D(struct D *this)
 {
 	free_A(this->a);
+}
+
+const struct E_coo_class {
+	uint32_t num_parents;
+} E_coo_class = {
+	0,
+};
+
+struct E *new_E(void)
+{
+	struct E *this = malloc(sizeof(*this));
+	if (this == NULL) return NULL;
+	return E_E(this);
+}
+
+struct E *E_E(struct E *this)
+{
+	this->refcount = 0;
+	return this;
 }

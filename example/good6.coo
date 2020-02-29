@@ -30,4 +30,5 @@ int main(void)
   Derived<X*> d(&x);
   d.multiply(&f);
   printf("%d\n", d.a->x);
+  return 0;
 }

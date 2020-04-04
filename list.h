@@ -7,6 +7,7 @@
 #define flist_init(flist)    (flist)->last = &(flist)->first
 #define flist_empty(flist)   !(flist)->first
 #define flist_first(flist)   (flist)->first
+#define flist_last(flist, type, item) ((type*)((char*)(flist)->last - (char*)&((type*)0)->item))
 #define flist_add(flist, item, fieldname_next) \
         *(flist)->last = item, (flist)->last = &(item)->fieldname_next
 /* iterate forwards, provide item, address of flist, fieldname of item next pointer */
@@ -43,7 +44,7 @@
 #define dlist_first(dlist)         (dlist)->dnext
 #define dlist_last(dlist)          (dlist)->dprev
 #define dlist_head(dlist, iname) \
-        (void*)((size_t)(dlist) - ((size_t)(&(dlist)->dnext->iname.iprev) - (size_t)(dlist)->dnext))
+        (void*)((char*)(dlist) - ((char*)(&(dlist)->dnext->iname.iprev) - (char*)(dlist)->dnext))
 #define dlist_init(dlist, iname) \
         (dlist)->dnext = NULL, (dlist)->dprev = (dlist)->dnext = dlist_head(dlist, iname)
 #define dlist_insert_before(item, newitem, iname) \
@@ -63,9 +64,16 @@
         for (item = (dlist)->dnext; \
                 &(item)->iname.inext != &(dlist)->dnext; \
                 item = (item)->iname.inext)
+#define dlist_foreach_safe(item, next, dlist, iname) \
+        for (item = (dlist)->dnext, next = (item)->iname.inext; \
+                &(item)->iname.inext != &(dlist)->dnext; \
+                item = next, next = (item)->iname.inext)
 #define dlist_foreach_continue(item, dlist, iname) \
-        for (; &(item)->iname.inext != &(dlist)->dnext; \
-                item = (item)->iname.inext)
+        for (; &(item)->iname.inext != &(dlist)->dnext; item = (item)->iname.inext)
+#define dlist_foreach_continue_safe(item, next, dlist, iname) \
+        for (next = (item)->iname.inext; \
+                &(item)->iname.inext != &(dlist)->dnext; \
+                item = next, next = (item)->iname.inext)
 #define dlist_foreach_rev(item, dlist, iname) \
         for (item = (dlist)->dprev; \
                 &(item)->iname.iprev != &(dlist)->dprev; \

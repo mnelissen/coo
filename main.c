@@ -79,8 +79,8 @@ struct file_id {
 };
 
 enum parse_state {
-	FINDVAR, STMTSTART, DECLVAR, DECLMETHODVAR, CONSTRUCT, CASTVAR,
-	ACCESSMEMBER, ACCESSINHERITED, EXPRUNARY
+	STMTSTART, FINDVAR, EXPRUNARY, DECLVAR, DECLMETHODVAR,
+	CONSTRUCT, NO_CONSTRUCT, ACCESSMEMBER, ACCESSINHERITED
 };
 
 enum visibility {
@@ -147,7 +147,10 @@ struct class {
 	struct class *missing_root;  /* missing root constructor because of non-void ... */
 	struct class *prim_parent;   /* primary parent to mimic constructor of */
 	struct class *freer;         /* class to invoke (vmt) destructor */
-	struct class *destroyer;     /* class to deref + destruct 'this' */
+	char *freer_addr;            /* '&' iff freer ancestor path is literal class */
+	char *freer_arrow;           /* '->' iff ancestor path is not empty */
+	char *freer_path;            /* ancestor path to freer class */
+	struct class *destroyer;     /* class to deref + destruct 'this' (implements freer) */
 	struct class *refcounted;    /* base class that is refcounted */
 	struct rootclass *rootclass; /* root class for missing virtual base(s), if any */
 	struct hash_entry node;      /* node in parser.classes hash */
@@ -300,9 +303,9 @@ struct methodptr {
 enum insert_continue { CONTINUE_BEFORE, CONTINUE_AFTER };
 
 struct insert {   /* an insert, to insert some text in the output */
-	char *flush_until;   /* flush output until here (expression start) */
-	char *insert_text;   /* text to insert: e.g. 'this->' or 'vt->' */
-	char *continue_at;   /* where to continue writing (perhaps skip something) */
+	char *flush_until;        /* flush output until here (expression start) */
+	const char *insert_text;  /* text to insert: e.g. 'this->' or 'vt->' */
+	char *continue_at;        /* where to continue writing (perhaps skip something) */
 	enum insert_continue continue_after;  /* later-insert before or after this? */
 	dlist_item(struct insert) item;       /* in list (parser|initializer)->inserts */
 };
@@ -401,6 +404,8 @@ struct parser {
 	struct class *class;          /* parsing function of this class */
 	struct variable *last_local;  /* last local variable */
 	char *last_parentname;        /* cache to optimize parentname init */
+	char *declvar_start;          /* declaring a variable (can't open tempscope) */
+	struct insert *tscope_insb;   /* insert-before for addinsert in tempscope */
 	int include_ext_in_len;       /* length of include_ext_in, optimization */
 	int num_errors;               /* user errors, prevent spam */
 	int tempscope_varnr;          /* unique nr for vars in tempscope */
@@ -1066,14 +1071,11 @@ static void outputs(struct parser *parser, const char *src)
 	return outwrite(parser, src, strlen(src));
 }
 
-static void attr_format(2,3) outprintf(struct parser *parser, const char *format, ...)
+static void voutprintf(struct parser *parser, const char *format, va_list va_args)
 {
-	va_list va_args;
 	unsigned size;
 
-	va_start(va_args, format);
 	size = vsnprintf(parser->printbuffer, sizeof(parser->printbuffer), format, va_args);
-	va_end(va_args);
 	if (size >= sizeof(parser->printbuffer)) {
 		fprintf(stderr, "error: printbuffer too small\n");
 		size = sizeof(parser->printbuffer)-1;
@@ -1082,12 +1084,20 @@ static void attr_format(2,3) outprintf(struct parser *parser, const char *format
 	outwrite(parser, parser->printbuffer, size);
 }
 
+static void attr_format(2,3) outprintf(struct parser *parser, const char *format, ...)
+{
+	va_list va_args;
+
+	va_start(va_args, format);
+	voutprintf(parser, format, va_args);
+}
+
 static void flush_until(struct parser *parser, char *until)
 {
 	size_t size = until - parser->pf.writepos;
 
 	if (parser->pf.writepos > until) {
-		fprintf(stderr, "internal error, flushing into past\n");
+		pr_err(NULL, "(ierr) flushing into past");
 		parser->num_errors++;
 		return;
 	}
@@ -1782,7 +1792,6 @@ static struct member *addmember(struct parser *parser,
 				if (void_ret) {
 					psaprintf(&member->rettypestr,
 						"struct %s *", class->name);
-					member->rettype = to_anyptr(&class->t, 1);
 				} else if (to_class(typ(rettype)) != class || ptrlvl(rettype) != 1)
 					pr_err(parsepos, "constructor must be void or return "
 						"pointer to its own class type");
@@ -1975,7 +1984,7 @@ static struct insert *findinsert(struct parser *parser, char *flush_until)
 }
 
 static struct insert *newinsert(struct parser *parser, struct insert *insert_before,
-	char *flush_until, char *insert_text, char *continue_at,
+	char *flush_until, const char *insert_text, char *continue_at,
 	enum insert_continue insert_continue)
 {
 	struct insert *insert;
@@ -1993,13 +2002,27 @@ static struct insert *newinsert(struct parser *parser, struct insert *insert_bef
 }
 
 static struct insert *addinsert(struct parser *parser, struct insert *insert_before,
-		char *flush_until, char *insert_text, char *continue_at,
+		char *flush_until, const char *insert_text, char *continue_at,
 		enum insert_continue insert_continue)
 {
 	if (!insert_before)
 		insert_before = findinsert(parser, flush_until);
 	return newinsert(parser, insert_before,
 		flush_until, insert_text, continue_at, insert_continue);
+}
+
+static void dupinserts_backto(struct parser *parser,
+		struct insert *insert_before, char *from)
+{
+	struct insert *last;
+
+	/* duplicate from..(insert_before-1), insert before insert_before */
+	last = insert_before->item.iprev;
+	for (; last->flush_until > from; last = last->item.iprev) {
+		/* inserting reverse last..from, so keep inserting before newinsert */
+		insert_before = newinsert(parser, insert_before, last->flush_until,
+			last->insert_text, last->continue_at, last->continue_after);
+	}
 }
 
 static struct insert *dupinserts_until(struct parser *parser,
@@ -2026,19 +2049,30 @@ static struct insert *dupinserts_until(struct parser *parser,
 	return last->item.inext;
 }
 
+static struct insert *addinsert_vformat(struct parser *parser,
+		struct insert *before_insert, char *flush_until, char *continue_at,
+		enum insert_continue insert_continue, const char *format, va_list va_args)
+{
+	char *insert_text;
+
+	if (vaaprintf(&parser->func_mem, &insert_text, format, va_args) < 0)
+		return NULL;
+
+	if (before_insert == NULL && parser->tscope_insb)
+		before_insert = parser->tscope_insb;
+	return addinsert(parser, before_insert,
+			flush_until, insert_text, continue_at, insert_continue);
+}
+
 static attr_format(6,7) struct insert *addinsert_format(struct parser *parser,
 		struct insert *before_insert, char *flush_until, char *continue_at,
 		enum insert_continue insert_continue, char *insert_format, ...)
 {
 	va_list va_args;
-	char *insert_text;
 
 	va_start(va_args, insert_format);
-	if (vaaprintf(&parser->func_mem, &insert_text, insert_format, va_args) < 0)
-		return NULL;
-
-	return addinsert(parser, before_insert,
-			flush_until, insert_text, continue_at, insert_continue);
+	return addinsert_vformat(parser, before_insert, flush_until, continue_at,
+		insert_continue, insert_format, va_args);
 }
 
 static void addinsert_templpar(struct parser *parser,
@@ -2056,13 +2090,18 @@ static struct insert *insert_text(struct parser *parser, struct insert *before_i
 		char *pos, char *text, char *continue_at,
 		enum insert_continue insert_continue)
 {
+	if (parser->tscope_insb) {
+		before_insert = parser->tscope_insb;
+		goto addinsert;
+	}
 	if (!dlist_empty(parser->inserts, item))
-		return addinsert(parser, before_insert,
-			pos, text, continue_at, insert_continue);
+		goto addinsert;
 	flush_until(parser, pos);
 	outputs(parser, text);
 	parser->pf.writepos = continue_at;
 	return NULL;
+addinsert:
+	return addinsert(parser, before_insert, pos, text, continue_at, insert_continue);
 }
 
 static struct initializer *addinitializer(struct parser *parser,
@@ -2108,7 +2147,7 @@ static struct deleter *adddeleter(struct parser *parser,
 {
 	struct deleter *deleter;
 
-	if (!class->destructor)
+	if (!class->freer)
 		return NULL;
 	deleter = fgenalloc(sizeof *deleter);
 	if (deleter == NULL)
@@ -2158,10 +2197,73 @@ static void remove_locals(struct parser *parser, unsigned blocklevel)
 	}
 }
 
+static struct ancestor *get_ancestor_path(struct parser *parser, struct class *class,
+		struct class *destclass, char **ret_addr, char **ret_path, char **ret_access)
+{
+	struct ancestor *ancestor;
+
+	ancestor = hasho_find(&class->ancestors, destclass);
+	if (ancestor == NULL) {
+		pr_err(NULL, "(ierr) cannot find ancestor %s for %s",
+			destclass->name, class->name);
+		return NULL;
+	}
+
+	if (ancestor->parent->is_virtual)
+		*ret_addr = "", *ret_access = "->";
+	else
+		*ret_addr = "&", *ret_access = ".";
+	*ret_path = ancestor->path;
+	return ancestor;
+}
+
+static void get_vmt_path(struct parser *parser,
+		struct vmt *vmt, char **ret_path, char **ret_access)
+{
+	struct vmt *parent;
+	char *addr, *path;
+
+	if (!vmt->path) {
+		if (!vmt->alternate) {
+			get_ancestor_path(parser, vmt->class, vmt->origin,
+				&addr, &vmt->path, &vmt->access);
+		} else {
+			/* alternate only happens if there is a parent */
+			parent = vmt->parent;
+			get_vmt_path(parser, parent, &path, &vmt->access);
+			psaprintf(&vmt->path, "%s%s%s", parent->class->name,
+				vmt->is_parent_virtual ? "->" : ".", path);
+		}
+	}
+
+	*ret_path = vmt->path;
+	*ret_access = vmt->access;
+}
+
+static void get_freer_path(struct parser *parser, struct class *class,
+		char **ret_addr, char **ret_arrow, char **ret_path)
+{
+	char *acc;
+
+	if (!class->freer_path) {
+		if (class->freer == class) {
+			class->freer_addr = class->freer_arrow = class->freer_path = "";
+		} else {
+			class->freer_arrow = "->";
+			get_ancestor_path(parser, class, class->freer,
+				&class->freer_addr, &class->freer_path, &acc);
+		}
+	}
+
+	*ret_addr = class->freer_addr;
+	*ret_arrow = class->freer_arrow;
+	*ret_path = class->freer_path;
+}
+
 static void print_deleters(struct parser *parser, unsigned blocklevel)
 {
 	struct deleter *deleter;
-	char *prefix, *suffix;
+	char *prefix, *suffix, *freer_addr, *freer_arrow, *freer_path;
 	int inc_coo_lines;
 
 	if (blist_empty(&parser->deleters))
@@ -2176,8 +2278,9 @@ static void print_deleters(struct parser *parser, unsigned blocklevel)
 			blist_remove_until(&parser->deleters, deleter);
 			return;
 		}
-		outprintf(parser, "%sfree_%s(%s);%s", prefix,
-			deleter->class->name, deleter->name, suffix);
+		get_freer_path(parser, deleter->class, &freer_addr, &freer_arrow, &freer_path);
+		outprintf(parser, "%sfree_%s(%s%s%s%s);%s", prefix, deleter->class->freer->name,
+			freer_addr, deleter->name, freer_arrow, freer_path, suffix);
 		parser->pf.lines_coo += inc_coo_lines;
 	}
 	blist_clear(&parser->deleters);
@@ -2189,9 +2292,14 @@ static char *open_tempscope(struct parser *parser, char *stmtstart, int *varnr)
 	if ((*varnr = parser->tempscope_varnr++) > 0)
 		return "";
 
-	/* prepare for printing temp.var. declaration(s) */
-	parser->pf.pos = stmtstart;
-	flush(parser);
+	if (!parser->declvar_start) {
+		/* prepare for printing temp.var. declaration(s) */
+		parser->pf.pos = stmtstart;
+		flush(parser);
+	} else {
+		/* declaring variable, can't print tempscope here */
+		parser->tscope_insb = findinsert(parser, stmtstart);
+	}
 	return "{ ";
 }
 
@@ -2199,11 +2307,38 @@ static void close_tempscope(struct parser *parser, char *pos)
 {
 	if (parser->tempscope_varnr == 0)
 		return;
-	parser->pf.pos = pos;
-	flush(parser);
-	print_deleters(parser, TEMPSCOPE_BLOCKLEVEL);
-	outwrite(parser, " }", 2);
+
+	if (!parser->declvar_start) {
+		parser->pf.pos = pos;
+		flush(parser);
+		print_deleters(parser, TEMPSCOPE_BLOCKLEVEL);
+	}
+	insert_text(parser, NULL, pos, " }", pos, CONTINUE_AFTER);
 	parser->tempscope_varnr = 0;
+}
+
+static void insprint(struct parser *parser, const char *str)
+{
+	if (!parser->declvar_start)
+		outputs(parser, str);
+	else
+		addinsert(parser, parser->tscope_insb,
+			parser->declvar_start, str, parser->declvar_start, CONTINUE_AFTER);
+}
+
+/* start and end is extra text written before the formatted text */
+static void attr_format(2,3) insprintf(struct parser *parser, const char *format, ...)
+{
+	va_list va_args;
+
+	va_start(va_args, format);
+	if (!parser->declvar_start) {
+		voutprintf(parser, format, va_args);
+	} else {
+		parser->tscope_insb = addinsert_vformat(parser, parser->tscope_insb,
+			parser->declvar_start, parser->declvar_start,
+			CONTINUE_AFTER, format, va_args);
+	}
 }
 
 static void pr_lineno(struct parser *parser, int lineno)
@@ -3042,7 +3177,7 @@ static void print_root_classes(struct parser *parser, struct class *class)
 		return;
 
 	rootclass = NULL;
-	if (class->refcounted && !class->is_final)
+	if (class->refcounted && class->vmt && !class->is_final)
 		rootclass = open_root_class(parser, class);
 	hasho_foreach(entry, &class->ancestors) {
 		ancestor = entry->value;
@@ -3154,49 +3289,6 @@ static void print_coo_class_var(struct parser *parser, struct class *class)
 	outprintf(parser, "extern const struct %s_coo_class %s_coo_class;\n\n",
 		class->name, class->name);
 	parser->pf.lines_coo += 2;
-}
-
-static struct ancestor *get_ancestor_path(struct parser *parser, struct class *class,
-		struct class *destclass, char **ret_addr, char **ret_path, char **ret_access)
-{
-	struct ancestor *ancestor;
-
-	ancestor = hasho_find(&class->ancestors, destclass);
-	if (ancestor == NULL) {
-		pr_err(NULL, "(ierr) cannot find ancestor %s for %s",
-			destclass->name, class->name);
-		return NULL;
-	}
-
-	if (ancestor->parent->is_virtual)
-		*ret_addr = "", *ret_access = "->";
-	else
-		*ret_addr = "&", *ret_access = ".";
-	*ret_path = ancestor->path;
-	return ancestor;
-}
-
-static void get_vmt_path(struct parser *parser,
-		struct vmt *vmt, char **ret_path, char **ret_access)
-{
-	struct vmt *parent;
-	char *addr, *path;
-
-	if (!vmt->path) {
-		if (!vmt->alternate) {
-			get_ancestor_path(parser, vmt->class, vmt->origin,
-				&addr, &vmt->path, &vmt->access);
-		} else {
-			/* alternate only happens if there is a parent */
-			parent = vmt->parent;
-			get_vmt_path(parser, parent, &path, &vmt->access);
-			psaprintf(&vmt->path, "%s%s%s", parent->class->name,
-				vmt->is_parent_virtual ? "->" : ".", path);
-		}
-	}
-
-	*ret_path = vmt->path;
-	*ret_access = vmt->access;
 }
 
 static void print_param_names(struct parser *parser, char *params)
@@ -3429,6 +3521,7 @@ static struct class *parse_struct(struct parser *parser, char *pos_struct, char 
 		if (parser->saw.k.refcount) {
 			class->refcounted = class;
 			class->destroyer = class;
+			class->freer = class;
 		}
 		/* check for template */
 		if (*next == '<')
@@ -3832,7 +3925,7 @@ static struct class *parse_struct(struct parser *parser, char *pos_struct, char 
 				pr_err(next, "refcounted class destructor must be virtual");
  		} else if (class->refcounted == class) {
 			flush_until(parser, next);
-			outprintf(parser, "\tcoo_atomic_t refcount;\n");
+			outprintf(parser, "\tcoo_atomic_t coo_refcount;\n");
 			parser->pf.lines_coo++;
 			parser->pf.writepos = next;
 			if (!class->zeroinit)
@@ -3966,9 +4059,9 @@ static void print_inserts_fromto(struct parser *parser, char *from, char *until,
 	origpos = parser->pf.writepos;
 	parser->pf.writepos = from;
 	dlist_foreach(insert, inserts, item) {
-		if (from > insert->flush_until)
+		if (insert->flush_until < from)
 			continue;
-		if (until < insert->flush_until)
+		if (insert->flush_until > until)
 			break;
 		first = first ?: insert;
 		flush_until(parser, insert->flush_until);
@@ -3982,6 +4075,66 @@ static void print_inserts_fromto(struct parser *parser, char *from, char *until,
 	}
 	flush_until(parser, until);
 	parser->pf.writepos = origpos;
+}
+
+static void insprint_inserts_fromto(struct parser *parser, char *from, char *until,
+		enum remove_printed_inserts remove_inserts)
+{
+	insert_dlist_t *inserts = parser->inserts;
+	struct insert *insert, *insert_before, *next;
+	char *origpos;
+
+	if (!parser->tscope_insb)
+		return print_inserts_fromto(parser, from, until, remove_inserts);
+
+	/* modify last continue_at to continue at expression */
+	insert_before = parser->tscope_insb;
+	origpos = insert_before->item.iprev->continue_at;
+	insert_before->item.iprev->continue_at = from;
+	/* move/copy the inserts to the tempscope */
+	dlist_foreach_safe(insert, next, inserts, item) {
+		if (insert->flush_until < from)
+			continue;
+		if (insert->flush_until > until)
+			break;
+		if (remove_inserts) {
+			/* prevent removing insert_before, move it instead */
+			if (insert == insert_before) {
+				insert_before = insert->item.inext;
+			} else {
+				dlist_remove(insert, item);
+				dlist_insert_before(insert_before, insert, item);
+			}
+		} else {
+			newinsert(parser, insert_before, insert->flush_until,
+				insert->insert_text, insert->continue_at,
+				insert->continue_after);
+		}
+	}
+	/* flush rest of expression and jump back to original position in tempscope */
+	insert_before = newinsert(parser, insert_before, until, "", origpos, CONTINUE_AFTER);
+	/* update insert_before in case we moved it */
+	if (insert_before != parser->tscope_insb)
+		parser->tscope_insb = insert_before;
+}
+
+static void open_tempvar(struct parser *parser, char *typename, char *varprefix,
+		char *stmtstart, char *addr_of, char *exprstart, char *exprend,
+		char *varname, char **ret_varname)
+{
+	char *newscope;
+	int scope_varnr;
+
+	newscope = open_tempscope(parser, stmtstart, &scope_varnr);
+	if (varname) {
+		sprintf(varname, "%s%d", varprefix, scope_varnr);
+	} else {
+		fsaprintf(&varname, "%s%d", varprefix, scope_varnr);
+		*ret_varname = varname;
+	}
+	insprintf(parser, "%sstruct %s *%s = %s", newscope, typename, varname, addr_of);
+	insprint_inserts_fromto(parser, exprstart, exprend, REMOVE_PRINTED_INSERTS);
+	insprint(parser, "; ");
 }
 
 static struct ancestor *accessancestor(anyptr expr, char *exprstart,
@@ -4058,10 +4211,10 @@ static void parse_method(struct parser *parser, char *stmtstart, struct methodpt
 	}
 	if (fslen < 0)
 		return;
-	outprintf(parser, "%sstruct %s *coo_obj%d = %s",
+	insprintf(parser, "%sstruct %s *coo_obj%d = %s",
 		newscope, memberdef->name, scope_varnr, pre);
-	outwrite(parser, exprstart, exprend - exprstart);
-	outprintf(parser, "%s%s%s; "
+	insprint_inserts_fromto(parser, exprstart, exprend, REMOVE_PRINTED_INSERTS);
+	insprintf(parser, "%s%s%s; "
 		"%s(*coo_fv%d)(struct %s *this%s%s = %s; "
 		"%s coo_mv%d = { coo_obj%d, (%s(*)())coo_fv%d }; ",
 		maybe_this, post, ancpath,
@@ -4129,9 +4282,9 @@ static struct member *parse_member(struct parser *parser, char *stmtstart,
 	struct member *member;
 	struct class *class = to_class(typ(expr));
 	char *args, *flush_until, *insert_text, *continue_at;
-	char *newscope, insert_buf[16], *vmtpath, *vmtaccess;
+	char tvarname[16], *vmtpath, *vmtaccess;
 	enum insert_continue insert_continue;
-	int add_this, has_arguments, scope_varnr;
+	int add_this, has_arguments;
 	struct insert *insert_before;
 
 	if (class == NULL)
@@ -4169,15 +4322,11 @@ static struct member *parse_member(struct parser *parser, char *stmtstart,
 
 		if (member->props.is_virtual) {
 			if (!expr_is_oneword) {
-				newscope = open_tempscope(parser, stmtstart, &scope_varnr);
-				outprintf(parser, "%sstruct %s *coo_obj%d = %s",
-					newscope, class->name, scope_varnr,
-					ptrlvl(expr) == 0 ? "&" : "");
-				print_inserts_fromto(parser, exprstart, exprend,
-					REMOVE_PRINTED_INSERTS);
-				sprintf(insert_buf, "coo_obj%d->", scope_varnr);
-				insert_text = insert_buf;
+				open_tempvar(parser, class->name, "coo_obj",
+					stmtstart, ptrlvl(expr) == 0 ? "&" : "",
+					exprstart, exprend, tvarname, NULL);
 				flush_until = exprstart;
+				fsaprintf(&insert_text, "%s->", tvarname);
 				continue_at = name;
 			} else if (exprstart) {
 				/* user supplied expression, do not skip it */
@@ -4328,6 +4477,10 @@ static char *access_inherited(struct parser *parser, char *stmtstart,
 	if (!member)
 		return next;
 
+	if (!member->props.is_function) {
+		pr_err(name, "can only access function using class::member syntax");
+		return next;
+	}
 	if (tgtclass != thisclass) {
 		if (check_ancestor_visibility(parser, member, name) < 0)
 			return next;
@@ -4370,9 +4523,8 @@ static char *insertmpcall(struct parser *parser, int expr_is_oneword, char *stmt
 		char *exprstart, char *exprend, struct methodptr *targetmp,
 		char *parenpos, int pointerlevel)
 {
-	char *arrow, *newscope, *sep_or_end, *next;
+	char *arrow, *sep_or_end, *next, tvarname[16];
 	struct insert *insert_before;
-	int scope_varnr;
 
 	/* look ahead to see if there arguments, then need comma separator
 	   between "this" parameter and rest of user arguments */
@@ -4385,12 +4537,11 @@ static char *insertmpcall(struct parser *parser, int expr_is_oneword, char *stmt
 		addinsert_format(parser, insert_before,
 			parenpos, parenpos+1, CONTINUE_AFTER, "%sobj%s", arrow, sep_or_end);
 	} else {
-		newscope = open_tempscope(parser, stmtstart, &scope_varnr);
-		outprintf(parser, "%s%s coo_mv%d = ", newscope, targetmp->name, scope_varnr);
-		outwrite(parser, exprstart, exprend - exprstart);
+		open_tempvar(parser, targetmp->name, "coo_mv",
+			stmtstart, "", exprstart, exprend, tvarname, NULL);
 		/* temp.var has been defined, now use it to replace expression */
 		addinsert_format(parser, NULL, exprstart, parenpos+1, CONTINUE_AFTER,
-			"; coo_mv%d.func(coo_mv%d.obj%s", scope_varnr, scope_varnr, sep_or_end);
+			"%s.func(%s.obj%s", tvarname, tvarname, sep_or_end);
 	}
 
 	return next;
@@ -4498,7 +4649,7 @@ static void print_inserts(struct parser *parser, insert_dlist_t *inserts)
 static void print_initializers(struct parser *parser, char *position, unsigned blocklevel,
 		unsigned retblocknr, char *retvartype, char *retvartypeend)
 {
-	char *linestart, *params, *sep_or_end, *zeroinit_suffix;
+	char *linestart, *start, *params, *sep_or_end, *zeroinit_suffix;
 	struct initializer *initializer;
 	struct class *class;
 	struct member *member;
@@ -4524,7 +4675,7 @@ static void print_initializers(struct parser *parser, char *position, unsigned b
 		if (initializer->lineno != lineno) {
 			/* if moved to next line, only print line ending */
 			if (lineno)
-				outwrite(parser, ";\n", 2);
+				outwrite(parser, "\n", 1);
 			if (initializer->lineno != lineno + 1)
 				pr_lineno(parser, initializer->lineno);
 			outwrite(parser, linestart, position - linestart);
@@ -4532,7 +4683,7 @@ static void print_initializers(struct parser *parser, char *position, unsigned b
 			lineno = initializer->lineno;
 		} else {
 			/* concatenating initializers on one line, add a space */
-			outwrite(parser, "; ", 2);
+			outwrite(parser, " ", 1);
 		}
 		class = initializer->varclass;
 		if (class) {
@@ -4545,6 +4696,10 @@ static void print_initializers(struct parser *parser, char *position, unsigned b
 			} else {
 				sep_or_end = ")";
 				parser->pf.writepos = initializer->start;
+				if (!dlist_empty(&initializer->inserts, item))
+					if ((start = dlist_first(&initializer->inserts)
+							->flush_until) < initializer->start)
+						parser->pf.writepos = start;
 			}
 			member = class->root_constructor;
 			varaddr = "&", varaccess = ancpath = "";
@@ -4565,7 +4720,7 @@ static void print_initializers(struct parser *parser, char *position, unsigned b
 		print_inserts(parser, &initializer->inserts);
 		flush_until(parser, initializer->end);
 	}
-	outwrite(parser, ";\n", 2);
+	outwrite(parser, "\n", 1);
 	flist_clear(&parser->initializers);
 	parser->pf.writepos = linestart;
 	/* resync lineno in case there is an empty line between initialization section
@@ -4647,8 +4802,8 @@ static void print_free_class_expr(struct parser *parser, struct class *class,
 		char *stmtstart, char *exprstart, char *exprend, int expr_is_oneword)
 {
 	struct member *destr = class->destructor;
-	char *newscope, *close_str, *vmtpath, *vmtaccess, tempvarname[16];
-	int scope_varnr, print_inserts = 1;
+	char *close_str, *vmtpath, *vmtaccess, tempvarname[16];
+	int print_inserts = 1;
 
 	if (!destr && !class->refcounted) {
 		outputs(parser, "free(");
@@ -4656,11 +4811,8 @@ static void print_free_class_expr(struct parser *parser, struct class *class,
 		outprintf(parser, "free_%s(", class->name);
 	} else {
 		if (!expr_is_oneword) {
-			newscope = open_tempscope(parser, stmtstart, &scope_varnr);
-			outprintf(parser, "%sstruct %s *coo_obj%d = ",
-				newscope, class->name, scope_varnr);
-			print_inserts_fromto(parser, exprstart, exprend, REMOVE_PRINTED_INSERTS);
-			sprintf(tempvarname, "coo_obj%d", scope_varnr);
+			open_tempvar(parser, class->name, "coo_obj",
+				stmtstart, "", exprstart, exprend, tempvarname, NULL);
 			print_inserts = 0;
 		} else
 			tempvarname[0] = 0;
@@ -4702,48 +4854,47 @@ static void addinsert_free_class_expr(struct parser *parser, struct class *class
 		char *stmtstart, char *exprstart, char *exprend, int expr_complex)
 {
 	struct insert *insert_before;
-	char *newscope, *tvarname;
-	int scope_varnr;
+	char *tvarname, *freer_addr, *freer_arrow, *freer_path;
 
-	newscope = open_tempscope(parser, stmtstart, &scope_varnr);
+	get_freer_path(parser, class, &freer_addr, &freer_arrow, &freer_path);
 	if (!expr_complex) {
 		/* simple expression, can repeat w/o side-effect */
-		insert_before = addinsert_format(parser, NULL, stmtstart, exprstart,
-			CONTINUE_AFTER, "%sfree_%s(", newscope, class->name);
+		insert_before = addinsert_format(parser, NULL, exprstart, exprstart,
+			CONTINUE_BEFORE, "free_%s(%s", class->freer->name, freer_addr);
 		insert_before = dupinserts_until(parser, insert_before, exprend);
-		addinsert(parser, insert_before, exprend, "); ", stmtstart, CONTINUE_AFTER);
+		addinsert_format(parser, insert_before, exprend, exprstart,
+			CONTINUE_AFTER, "%s%s), ", freer_arrow, freer_path);
 	} else {
 		/* complicated expression involving function call,
 		   need to cache result of expression */
-		fsaprintf(&tvarname, "coo_tvar%u", scope_varnr);
-		outprintf(parser, "%sstruct %s **%s = &", newscope, class->name, tvarname);
-		outwrite(parser, exprstart, exprend - exprstart);
-		outwrite(parser, "; ", 2);
+		open_tempvar(parser, class->name, "coo_tvar",
+			stmtstart, "", exprstart, exprend, NULL, &tvarname);
 		addinsert_format(parser, NULL, stmtstart, stmtstart,
-			CONTINUE_AFTER, "free_%s(*%s); ", class->name, tvarname);
-		addinsert_format(parser, NULL, exprstart, exprend,
-			CONTINUE_BEFORE, "*%s", tvarname);
+			CONTINUE_AFTER, "free_%s(%s%s%s%s); ", freer_addr,
+			class->freer->name, freer_arrow, freer_path, tvarname);
+		addinsert(parser, NULL, exprstart, tvarname, exprend, CONTINUE_BEFORE);
 	}
 }
 
 static void addinsert_free_class_funcres(struct parser *parser, struct class *class,
 		char *stmtstart, char *exprstart, char *funcend, char *curr)
 {
-	char *newscope, *tvarname;
+	char *newscope, *tvarname, *freer_addr, *freer_arrow, *freer_path;
 	int scope_varnr;
 
 	if (*curr == ';') {
+		get_freer_path(parser, class, &freer_addr, &freer_arrow, &freer_path);
 		/* simple case at top-level, wrap with free() */
 		addinsert_format(parser, NULL, stmtstart, stmtstart,
-			CONTINUE_BEFORE, "free_%s(", class->name);
-		addinsert(parser, NULL, funcend, ")", funcend, CONTINUE_AFTER);
+			CONTINUE_BEFORE, "free_%s(%s", class->freer->name, freer_addr);
+		addinsert_format(parser, NULL, funcend, funcend,
+			CONTINUE_AFTER, "%s%s)", freer_arrow, freer_path);
 	} else {
 		newscope = open_tempscope(parser, stmtstart, &scope_varnr);
 		fsaprintf(&tvarname, "coo_fres%u", scope_varnr);
-		outprintf(parser, "%sstruct %s *%s; ",
-			newscope, class->name, tvarname);
+		insprintf(parser, "%sstruct %s *%s; ", newscope, class->name, tvarname);
 		addinsert_format(parser, NULL, exprstart, exprstart,
-			CONTINUE_AFTER, "coo_fres%u = ", scope_varnr);
+			CONTINUE_BEFORE, "coo_fres%u = ", scope_varnr);
 		adddeleter(parser, class, tvarname, TEMPSCOPE_BLOCKLEVEL);
 	}
 }
@@ -4751,9 +4902,8 @@ static void addinsert_free_class_funcres(struct parser *parser, struct class *cl
 static void addinsert_addref(struct parser *parser, struct class *exprclass,
 		char *stmtstart, char *exprstart, char *exprend, int expr_complex)
 {
-	char *newscope, *vmtpath, *vmtaccess, *ancaddr, *ancpath, *ancaccess;
+	char *vmtpath, *vmtaccess, *ancaddr, *ancpath, *ancaccess, tvarname[16];
 	struct insert *insert_before;
-	int scope_varnr;
 
 	if (exprclass->vmt) {
 		get_vmt_path(parser, exprclass->vmt, &vmtpath, &vmtaccess);
@@ -4765,14 +4915,11 @@ static void addinsert_addref(struct parser *parser, struct class *exprclass,
 				CONTINUE_AFTER, "->%s%svmt)->coo_addref(", vmtpath, vmtaccess);
 			addinsert(parser, NULL, exprend, ")", exprend, CONTINUE_AFTER);
 		} else {
-			newscope = open_tempscope(parser, stmtstart, &scope_varnr);
-			outprintf(parser, "%sstruct %s *coo_obj%d = ",
-				newscope, exprclass->name, scope_varnr);
-			print_inserts_fromto(parser, exprstart, exprend, REMOVE_PRINTED_INSERTS);
-			outputs(parser, "; ");
+			open_tempvar(parser, exprclass->name, "coo_obj",
+				stmtstart, "", exprstart, exprend, tvarname, NULL);
 			addinsert_format(parser, NULL, exprstart, exprend, CONTINUE_BEFORE,
-				"((struct %s_vmt*)coo_obj%d->%s%svmt)->coo_addref(coo_obj%d)",
-				exprclass->name, scope_varnr, vmtpath, vmtaccess, scope_varnr);
+				"((struct %s_vmt*)%s->%s%svmt)->coo_addref(%s)",
+				exprclass->name, tvarname, vmtpath, vmtaccess, tvarname);
 		}
 	} else {
 		if (exprclass->refcounted == exprclass) {
@@ -4782,20 +4929,18 @@ static void addinsert_addref(struct parser *parser, struct class *exprclass,
 				&ancaddr, &ancpath, &ancaccess);
 		}
 		if (!expr_complex) {
-			insert_before = addinsert(parser, NULL, exprstart,
-				"coo_atomic_inc_fetch(&", exprstart, CONTINUE_BEFORE);
-			insert_before = dupinserts_until(parser, insert_before, exprend);
-			addinsert_format(parser, insert_before, exprend, exprstart, CONTINUE_AFTER,
-				"->%s%scoo_refcount), ", ancpath, ancaccess);
+			insert_before = addinsert(parser, NULL, exprend,
+				", coo_atomic_inc_fetch(&", exprstart, CONTINUE_BEFORE);
+			/* expression ends before just inserted coo_atomic_inc_fetch */
+			dupinserts_backto(parser, insert_before->item.iprev, exprstart);
+			addinsert_format(parser, insert_before, exprend, exprend,
+				CONTINUE_AFTER, "->%s%scoo_refcount)", ancpath, ancaccess);
 		} else {
-			newscope = open_tempscope(parser, stmtstart, &scope_varnr);
-			outprintf(parser, "%sstruct %s *coo_obj%d = ",
-				newscope, exprclass->name, scope_varnr);
-			print_inserts_fromto(parser, exprstart, exprend, REMOVE_PRINTED_INSERTS);
-			outputs(parser, "; ");
+			open_tempvar(parser, exprclass->name, "coo_obj",
+				stmtstart, "", exprstart, exprend, tvarname, NULL);
 			addinsert_format(parser, NULL, exprstart, exprend, CONTINUE_AFTER,
-				"coo_atomic_inc_fetch(&coo_obj%d->%s%scoo_refcount), coo_obj%d",
-				scope_varnr, ancpath, ancaccess, scope_varnr);
+				"%s, coo_atomic_inc_fetch(&%s->%s%scoo_refcount)",
+				tvarname, tvarname, ancpath, ancaccess);
 		}
 	}
 }
@@ -4895,6 +5040,7 @@ struct paramstate {
 };
 
 enum exprsrc {
+	EXPRSRC_NONE,     /* source of expression is a constant/type/etc */
 	EXPRSRC_VAR,      /* source of expression is a variable */
 	EXPRSRC_FUNCRES,  /* source of expression is result of function */
 	EXPRSRC_NEWINST,  /* source of expression is "new X" instance */
@@ -5193,6 +5339,7 @@ static void parse_function(struct parser *parser, char *next)
 	expr_is_oneword = 1;  /* make compiler happy */
 	possible_type = 1;
 	initializer = NULL;
+	exprclass = NULL;
 	declvar = NULL;
 	member = NULL;
 	for (;;) {
@@ -5269,21 +5416,24 @@ static void parse_function(struct parser *parser, char *next)
 							break;
 						}
 					}
-				} else if (seqparen >= 2
-						&& typ(parencast->exprdecl)->type == AT_UNKNOWN) {
+				} else if (seqparen) {
 					/* this is a cast, like ((class_t*)x)->.. */
-					/* combine possible pointer dereference */
-					state = CASTVAR;
-					parencast->exprdecl = to_anyptr(typ(immdecl),
-						raw_ptrlvl(parencast->exprdecl) +
-						raw_ptrlvl(immdecl));
 					if (decl->type == AT_TEMPLPAR) {
 						/* cast to template parameter type
-						in expression, not safe to replace here */
+						   in expression, not safe to replace here */
 						addinsert_templpar(parser,
-								typ(immdecl)->u.tp, name, next);
+							typ(immdecl)->u.tp, name, next);
 					}
-					decl = &unknown_type;
+					/* combine possible pointer dereference */
+					if (seqparen >= 2 && typ(parencast->exprdecl)->type
+							== AT_UNKNOWN) {
+						parencast->exprdecl = to_anyptr(typ(immdecl),
+							raw_ptrlvl(parencast->exprdecl) +
+							raw_ptrlvl(immdecl));
+						immdecl = unknown_typeptr;
+					} else {
+						/* transfer immdecl handled by generic ')' */
+					}
 					continue;
 				}
 			}
@@ -5345,12 +5495,12 @@ static void parse_function(struct parser *parser, char *next)
 					continue;
 				}
 			} else if (strprefixcmp("return", curr) && !isalnum(curr[6])) {
-				next = curr + 7;  /* "return" */
+				next = curr + 6;  /* "return" */
 				if (need_retvar) {
 					/* != STMTSTART: if (expr) return X; */
 					insert_text(parser, NULL, curr,
-						state == STMTSTART ? "__coo_ret = "
-							: "{ __coo_ret = ",
+						state == STMTSTART ? "__coo_ret ="
+							: "{ __coo_ret =",
 						next, CONTINUE_AFTER);
 					next_retblocknr = retblocknr + 1;
 					goto_ret = state != STMTSTART ? GOTO_RET_BLOCK : GOTO_RET;
@@ -5411,6 +5561,7 @@ static void parse_function(struct parser *parser, char *next)
 						next, str2, name, CONTINUE_BEFORE);
 					addinsert(parser, insert_before, next,
 						"))", next, CONTINUE_AFTER);
+					state = NO_CONSTRUCT;
 				}
 				if (*next == '<') {
 					tmplpos = next;
@@ -5469,6 +5620,7 @@ static void parse_function(struct parser *parser, char *next)
 				immdecl = to_anyptr(decl, raw_ptrlvl(pareninfo->exprdecl));
 				clear_ptrlvl(&pareninfo->exprdecl);
 				declvar = addclsvariable(parser, blocklevel, immdecl, name, next);
+				parser->declvar_start = name;
 				declclass = to_class(decl);
 				if (ptrlvl(immdecl) == 0 && declclass) {
 					if (declclass->num_abstract) {
@@ -5517,11 +5669,12 @@ static void parse_function(struct parser *parser, char *next)
 								"root constructor", member->name);
 						}
 					}
+					pareninfo->exprsrc = EXPRSRC_VAR;
 					check_visibility(parser, thisclass, submember,
 						pareninfo->memberstart);
 				}
 				break;
-			case ACCESSINHERITED:  /* parsing class::member */
+			case ACCESSINHERITED:  /* parsing class::function */
 				next = access_inherited(parser, stmtstart,
 					to_mp(typ(pareninfo->targetdecl)), thisclass,
 					to_class(typ(immdecl)), accinhname, accinhcolons,
@@ -5531,13 +5684,16 @@ static void parse_function(struct parser *parser, char *next)
 				/* maybe it's a local (stack) variable? */
 				tgtparams = &pareninfo->targetparams.params;
 				if (find_local_e_class(parser, name, next,
-						&immdecl, tgtparams) >= 0)
+						&immdecl, tgtparams) >= 0) {
+					pareninfo->exprsrc = EXPRSRC_VAR;
 					break;
+				}
 				/* maybe it's a member field? "this" has pointerlevel 1 */
 				member = parse_member(parser, stmtstart,
 					to_mp(typ(pareninfo->targetdecl)), 0, NULL, NULL,
 					thisptr, name, next, &immdecl, tgtparams);
 				if (member != NULL) {
+					pareninfo->exprsrc = EXPRSRC_VAR;
 					if (is_constructor && member->parent_constructor) {
 						if (!member->constructor_called) {
 							num_constr_called++;
@@ -5553,8 +5709,10 @@ static void parse_function(struct parser *parser, char *next)
 				}
 				/* maybe it's a global variable? */
 				if (find_global_e_class(parser,
-						name, next, &immdecl, tgtparams) >= 0)
+						name, next, &immdecl, tgtparams) >= 0) {
+					pareninfo->exprsrc = EXPRSRC_VAR;
 					break;
+				}
 				/* are we at parenthesis level 1? */
 				if (pareninfo->prev == parenlvl0
 						&& ptrlvl(pareninfo->exprdecl) == PTRLVLMASK) {
@@ -5623,11 +5781,15 @@ static void parse_function(struct parser *parser, char *next)
 			}
 			state = FINDVAR;
 		} else if (*curr == '(') {
-			mp = to_mp(typ(immdecl)) ?: to_mp(typ(pareninfo->exprdecl));
-			if (mp && ptrlvl(pareninfo->exprdecl) < 2) {
-				next = insertmpcall(parser, expr_is_oneword, stmtstart,
-					pareninfo->exprstart, exprend, mp,
-					curr, ptrlvl(pareninfo->exprdecl));
+			if (state == NO_CONSTRUCT) {
+				pr_err(curr, "no constructor in class %s", exprclass->name);
+			} else {
+				mp = to_mp(typ(immdecl)) ?: to_mp(typ(pareninfo->exprdecl));
+				if (mp && ptrlvl(pareninfo->exprdecl) < 2) {
+					next = insertmpcall(parser, expr_is_oneword, stmtstart,
+						pareninfo->exprstart, exprend, mp,
+						curr, ptrlvl(pareninfo->exprdecl));
+				}
 			}
 		}
 
@@ -5681,7 +5843,7 @@ static void parse_function(struct parser *parser, char *next)
 					flush_until(parser, initializer->start);
 					parser->pf.writepos = curr;
 				}
-				initializer->end = curr;
+				initializer->end = curr+1;
 				parser->inserts = &parser->inserts_list;
 				initializer = NULL;
 			}
@@ -5725,7 +5887,7 @@ static void parse_function(struct parser *parser, char *next)
 			pareninfo->memberstart = NULL;  /* reset, assigned later */
 			pareninfo->exprstart = NULL;
 			pareninfo->exprdecl = unknown_typeptr;
-			pareninfo->exprsrc = EXPRSRC_VAR;
+			pareninfo->exprsrc = EXPRSRC_NONE;
 			pareninfo->target_ctx = parenprev->target_ctx;
 			pareninfo->targetparams.params = NULL;
 			parenprev->targetparams.index = -1;
@@ -5759,7 +5921,6 @@ static void parse_function(struct parser *parser, char *next)
 		} else if (*curr == '*') {
 			switch (state) {
 			case DECLVAR: add_ptrlvl(&pareninfo->exprdecl, 1); break;
-			case CASTVAR: add_ptrlvl(&parencast->exprdecl, 1); break;
 			case STMTSTART:
 			case ACCESSMEMBER:
 			case EXPRUNARY: sub_ptrlvl(&pareninfo->exprdecl, 1); break;
@@ -5847,6 +6008,8 @@ static void parse_function(struct parser *parser, char *next)
 			pareninfo = parenlvl0;
 			pareninfo->target_ctx = TARGET_NONE;
 			pareninfo->targetdecl = pareninfo->exprdecl = immdecl = unknown_typeptr;
+			parser->declvar_start = NULL;
+			parser->tscope_insb = NULL;
 			possible_type = 1;
 			state = STMTSTART;
 			if (goto_ret) {
@@ -5886,7 +6049,7 @@ static void parse_function(struct parser *parser, char *next)
 		if (*curr == ',' || *curr == '=' || *curr == ';') {
 			pareninfo->exprstart = NULL;
 			pareninfo->expr_complex = 0;
-			pareninfo->exprsrc = EXPRSRC_VAR;
+			pareninfo->exprsrc = EXPRSRC_NONE;
 		}
 		if (exprend == NULL && !isalnum(*curr))
 			expr_is_oneword = 0;
@@ -6146,7 +6309,7 @@ static void print_constructor(struct parser *parser, struct class *class)
 	print_func_header(parser, class, class->constructor);
 	print_construct_parents(parser, class, "", "", LITERAL_PARENT);
 	if (class->refcounted == class && !class->rootclass)
-		outprintf(parser, "\tthis->refcount = 0;\n");
+		outprintf(parser, "\tthis->coo_refcount = 0;\n");
 	flist_foreach(member, &class->members_list, next) {
 		if (member->origin != class)
 			continue;
@@ -6332,14 +6495,17 @@ static void print_class_free(struct parser *parser, struct class *class)
 
 	outprintf(parser, "\nvoid free_%s(struct %s *this)\n{\n"
 		"\tif (this == NULL)\n\t\treturn;\n", class->name, class->name);
-	if (destr->props.is_virtual) {
+	if (destr && destr->props.is_virtual) {
 		outprintf(parser, "\t((struct %s_vmt*)this->vmt)->d_%s(this);\n}\n",
 			class->name, class->name);
 	} else {
 		if (class->refcounted)
-			outputs(parser, "\tif (coo_atomic_fetch_dec(&this->refcount) != 0)\n"
+			outputs(parser, "\tif (coo_atomic_fetch_dec(&this->coo_refcount) != 0)\n"
 				"\t\treturn;\n");
-		print_call_destructor(parser, class);
+		if (destr)
+			print_call_destructor(parser, class);
+		else
+			outputs(parser, "\tfree(this);\n}\n");
 	}
 }
 

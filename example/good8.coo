@@ -36,8 +36,26 @@ void D::assign_a(A *new_a)
 	a = new_a;
 }
 
-final refcount struct E {
+refcount struct E {
 	int e;
+};
+
+refcount struct F : E {
+	int f;
+	F(int e, int f);
+};
+
+F::F(int new_e, int new_f)
+{
+	E();
+	e = new_e;
+	f = new_f;
+}
+
+struct G {
+	E *e;
+	void assign_e(E *new_e);
+	G(int new_e, int new_f);
 };
 
 E::coo_class;
@@ -47,12 +65,23 @@ A *func1(A *a)
 	return a;
 }
 
+void G::assign_e(E *new_e)
+{
+	e = new_e;
+}
+
+G::G(int new_e, int new_f)
+{
+	assign_e(new F(new_e,new_f));
+}
+
 int main(void)
 {
 	A *a1, *a2;
 	B *b1, *b2;
 	D d;
-	E *e = new E;
+	G *g = new G(2, 3);
+	F *f = (F*)g->e;
 	a1 = new A;
 	b1 = new B;
 	a2 = new C;
@@ -64,6 +93,6 @@ int main(void)
 	delete a2;
 	delete b1;
 	delete b2;
-	delete e;
+	delete g;
 	return 0;
 }

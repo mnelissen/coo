@@ -315,12 +315,12 @@ int main(int argc, char **argv)
 
 	int __coo_ret;
 #line 190
-	A_A_root_zi(&a); A_A_root_zi(&a_a);
+	A_A_root_zi(&a), A_A_root_zi(&a_a);
 	aa1 = a.a1;
 	B_B_root_zi(&b);
 	C_C_root(&c);
 	D_D_root_zi(&d, &(&c)->A); db1 = d.B.b1;
-	E_E_root_zi(&e);
+	E_E_root_zi(&e),
 	foo_foo_root_zi(&foo);
 #line 198
 	a.a1 = 10;

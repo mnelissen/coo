@@ -1,6 +1,8 @@
 #ifndef _COO_LIST_H
 #define _COO_LIST_H
 
+#include <inttypes.h>
+
 /* forward list, declare a 'next' variable yourself in the item type */
 #define flist(type)          struct { type *first, **last; }
 #define flist_clear(flist)   (flist)->first = NULL, flist_init(flist)
@@ -78,5 +80,54 @@
         for (item = (dlist)->dprev; \
                 &(item)->iname.iprev != &(dlist)->dprev; \
                 item = (item)->iname.iprev)
+
+/* xor circular double linked list
+   a not very practically usable thought experiment
+   using only one pointer per item/entry, and allowing forward and backward traversal
+   note that both inserting and deleting needs reference to two sequential entries
+   traversal also needs two sequential entries, therefore after using:
+     insert_before: can continue traversal because assigns newitem to prev
+     insert_after: can continue traversal
+     remove: needs a temp variable, assign temp to item to continue
+     also note that meaning of before/after is reversed when using reverse traversal
+    xfirst        A          B         C        xlast
+     0^A   <-> xfirst^B <-> A^C <-> B^xlast <->  C^0  */
+#define xlist(type)                  struct { type *xfirst, *xlast; }
+#define xlist_item_t                 struct { uintptr_t xlink; }
+#define xlist_head(l, iname) \
+        (void*)((char*)&(l)->xfirst - ((char*)(&(l)->xfirst->iname.xlink) - (char*)(l)->xfirst))
+#define xlist_tail(l, iname) \
+        (void*)((char*)&(l)->xlast - ((char*)(&(l)->xlast->iname.xlink) - (char*)(l)->xlast))
+#define xlist_init(xlist, iname) \
+        (xlist)->xfirst = xlist_tail(xlist, iname), (xlist)->xlast = xlist_head(xlist, iname)
+#define xlist_add_head(xlist, item, iname) \
+        (item)->iname.xlink = (uintptr_t)xlist_head(xlist, iname), \
+        (xlist)->xfirst->iname.xlink ^= (item)->iname.xlink ^ (uintptr_t)(item), \
+        (item)->iname.xlink ^= (uintptr_t)(xlist)->xfirst, (xlist)->xfirst = (item)
+#define xlist_add_tail(xlist, item, iname) \
+        (item)->iname.xlink = (uintptr_t)xlist_tail(xlist, iname), \
+        (xlist)->xlast->iname.xlink ^= (item)->iname.xlink ^ (uintptr_t)(item), \
+        (item)->iname.xlink ^= (uintptr_t)(xlist)->xlast, (xlist)->xlast = (item)
+#define xlist_insert_before(xlist, prev, item, newitem, iname) \
+        (prev)->iname.xlink ^= (uintptr_t)(item) ^ (uintptr_t)(newitem), \
+        (item)->iname.xlink ^= (uintptr_t)(prev) ^ (uintptr_t)(newitem), \
+        (newitem)->iname.xlink = (uintptr_t)(prev) ^ (uintptr_t)(item), prev = newitem
+#define xlist_insert_after(xlist, prev, item, temp, newitem, iname) \
+        temp = (void*)((item)->iname.xlink ^ (uintptr_t)(prev)), \
+        (item)->iname.xlink ^= (uintptr_t)(temp) ^ (uintptr_t)(newitem), \
+        (temp)->iname.xlink ^= (uintptr_t)(item) ^ (uintptr_t)(newitem), \
+        (newitem)->iname.xlink = (uintptr_t)(item) ^ (uintptr_t)(temp)
+#define xlist_remove(item, prev, temp, iname) \
+        temp = (void*)((item)->iname.xlink ^ (uintptr_t)(prev)), \
+        (temp)->iname.xlink ^= (uintptr_t)(item) ^ (uintptr_t)(prev), \
+        (prev)->iname.xlink ^= (uintptr_t)(item) ^ (uintptr_t)(temp)
+#define xlist_foreach(item, prev, temp, xlist, iname) \
+        for (item = (xlist)->xfirst, prev = xlist_head(xlist, iname); \
+                (void*)&(item)->iname.xlink != (void*)&(xlist)->xlast; \
+                temp = (void*)((item)->iname.xlink^(uintptr_t)(prev)), prev = item, item = temp)
+#define xlist_foreach_rev(item, prev, temp, xlist, iname) \
+        for (item = (xlist)->xlast, prev = xlist_tail(xlist, iname); \
+                (void*)&(item)->iname.xlink != (void*)&(xlist)->xfirst; \
+                temp = (void*)((item)->iname.xlink^(uintptr_t)(prev)), prev = item, item = temp)
 
 #endif

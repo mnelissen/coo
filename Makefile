@@ -23,6 +23,9 @@ testc.o: testc.c
 	gcc $(CFLAGS) -ansi -pedantic -c -o $@ $<
 testcpp.o: testcpp.cpp
 	g++ $(CFLAGS) -ansi -pedantic -c -o $@ $<
+testxlist: testxlist.o
+	gcc $(LDFLAGS) -o $@ $^
+testxlist.o testxlist.oo: testxlist.c list.h
 %.o: %.c $(wildcard %.h)
 	gcc $(CFLAGS) -c -o $@ $<
 %.oo: %.c $(wildcard %.h)

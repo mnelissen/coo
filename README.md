@@ -40,7 +40,6 @@ Planned:
 * structured error handling (in some form)
 * protected classes
 * special case for interfaces? (only virtual methods, no variables)
-* reference counted classes
 * function overloading? (in some form)
 
 ## C compatibility
@@ -78,21 +77,6 @@ int some_function(int a, int b)
   B var_B(a, b);
 }
 ```
-
-## Design
-
-A single pass find and replace text design. It does not parse the full
-expression grammar of C, it does not build a syntax tree. It only remembers
-struct types (calls them classes), and declared variables of these class types.
-Tokens are always single characters. It finds the ';', '{', etc delimiters and
-acts from there.
-
-Class functions are translated to C functions with class name and function
-name separated with an underscore.
-
-Virtual functions in classes cause a field called 'vmt' to be declared. The
-virtual function themselves generate a VMT struct (table) together with wrapper
-functions to call the functions in the table.
 
 ## Include files
 
@@ -513,7 +497,53 @@ int main(void)
 }
 ```
 
-## Technical details
+### Reference counting
+
+Also available are reference counted classes. In COO this is coupled to a class.
+Use the keyword 'refcount' in front of 'struct' to declare a class as a refcounted
+class. Assigning a refcounted class pointer to a variable automatically increases
+the reference count. When this variable goes out of scope the reference count
+is decreased again. If it falls below zero, the instance is freed.
+
+If a class inherits from a refcounted base, then refcounting works equally,
+accessing the refcounter in the base class. Declaring refcount on a class that
+inherits from a base class is tricky: when passing refcounted pointers to
+a non-refcounted parent class, the manipulations there as pointer to parent class
+are not refcounted. The user is responsible for making sure the lifetime guarantees
+are met (just like for any C pointer).
+
+It's not allowed to inherit literally from two refcounted base classes, as there
+would be two refcounters. In such case the base class needs to be virtually
+inherited (directly or indirectly). The cost is increasing/decreasing the
+refcount becomes a virtual call.
+
+``` c
+refcount struct A {
+  int a;
+};
+
+int main(void)
+{
+  A *a = new A;
+  a->a = 3;
+  return a->a;
+}
+```
+
+## Design details
+
+A single pass find and replace text design. It does not parse the full
+expression grammar of C, it does not build a syntax tree. It only remembers
+struct types (calls them classes), and declared variables of these class types.
+Tokens are always single characters. It finds the ';', '{', etc delimiters and
+acts from there.
+
+Class functions are translated to C functions with class name and function
+name separated with an underscore.
+
+Virtual functions in classes cause a field called 'vmt' to be declared. The
+virtual function themselves generate a VMT struct (table) together with wrapper
+functions to call the functions in the table.
 
 ### Dynamic casting details
 
@@ -543,6 +573,19 @@ pointed to by `p_a->vmt` have a reference to `B_coo_class`? `p_a->vmt` points to
 `C_coo_class`, then perform a recursive search through the parent hierarchy. In
 this case, it is immediately found as the `C_coo_class` has a pointer to `B_coo_class`.
 
+### Reference counting details
+
+When returning a refcounted pointer from a function, its refcount is automatically
+increased. If it's a local variable then this cancels out. A function result that
+is a refcounted pointer is decreased if it's not assigned to anything. If it's
+assigned to a variable then a simple assignment is sufficient: assign increase
+and decrease function result refcount cancel out.
+
+Explanation of class implementation variables:
+
+* freer: the class where the (virtual) destructor is declared to call/free an instance
+* destroyer: the class where the destructor is implemented
+
 ### String/memory pool
 
 Many strings allocated by the parser have lifetime of the parser itself,
@@ -559,7 +602,7 @@ the parser anyway.
 * remove get_vmt_name, replace with vmt->class->name or vmt->modified->class->name
 * test disposers/error goto/shared pointer within if/for/while expression
 * implement return from nested block with stack variables
-* dynamic cast assignment with shared pointers
+* dynamic cast assignment with refcounted pointers
 * test refcounting in class E for good8
 
 ## License
@@ -568,7 +611,7 @@ This program is licensed under GPLv3 or later (see file COPYING). Processed outp
 of this program, in particular macro defines that become part of the output program
 source code are licensed under BSD-3-clause (see file COPYING.BSD).
 
-Copyright 2018-2019 Micha Nelissen
+Copyright 2018-2020 Micha Nelissen
 
 ## Disclaimer
 

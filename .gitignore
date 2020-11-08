@@ -1,7 +1,13 @@
+.vscode
+*.gcda
+*.gcno
 *.o
+*.oc
 *.oo
 *.dSYM
 coo
+coo_cov
 coo_opt
 example/good*_exe
 example/good*_dbg
+testlist

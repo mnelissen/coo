@@ -1,7 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-struct A {
+struct /* C comment */ A // C++ comment
+{
 	virtual void vfunc_a(int arg) = 0;
 };
 

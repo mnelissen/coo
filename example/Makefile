@@ -7,14 +7,16 @@ SUFFIXES:=
 %: RCS/%,v
 %: SCCS/s.%
 COO=../coo_opt
+COO_COV=../coo_cov
 CFLAGS=-Iinc -I.. -Wall -Wextra -Wno-unused-parameter -Werror -g
 CC=gcc
 TESTS:=$(patsubst %.coo,%_run,$(wildcard fail*.coo))
-TESTS:=$(TESTS) $(patsubst %.coo,%_exe,$(wildcard good*.coo))
-TESTS:=$(TESTS) $(patsubst %.coo,%_dbg,$(wildcard good*.coo))
-TESTS:=$(TESTS) $(patsubst %.coo,%_run,$(wildcard good*.coo))
-TESTS:=$(TESTS) $(patsubst %.coo,%.coo.c,$(wildcard good*.coo))
-all: example $(TESTS)
+TESTS+=$(patsubst %.coo,%_exe,$(wildcard good*.coo))
+TESTS+=$(patsubst %.coo,%_dbg,$(wildcard good*.coo))
+TESTS+=$(patsubst %.coo,%_run,$(wildcard good*.coo))
+TESTS+=$(patsubst %.coo,%.coo.c,$(wildcard good*.coo))
+TESTS+=$(patsubst %.coo,%.cov.c,$(wildcard good*.coo))
+all: example $(TESTS) report/index.html
 clean:
 	rm -f example $(TESTS)
 example: example.coo.c
@@ -26,13 +28,20 @@ coortlopt.o: ../coortl.c
 coortldbg.o: ../coortl.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 fail%_run: fail%.coo fail%.exp $(COO)
-	$(COO) $< 2>&1 | diff -u fail$*.exp -
+	$(COO_COV) $< 2>&1 | diff -u fail$*.exp -
 good%.coo.c: good%.coo good%.exp $(COO)
 	$(COO) $< 2>&1 && touch good$*.coo.c
 	diff -u good$*.exp good$*.coo.c
+good%.cov.c: good%.coo $(COO_COV)
+	$(COO_COV) -xs.cov.c $< 2>&1
 good%_exe: good%.coo.c coortlopt.o
 	$(CC) $(CFLAGS) -O2 -o $@ $^
 good%_dbg: good%.coo.c coortldbg.o
 	$(CC) $(CFLAGS) -o $@ $^
 good%_run: good%_exe good%.ref
 	./$< | diff -u good$*.ref -
+report/index.html: report
+	lcov -c -q -d .. --output-file report/coverage.info
+	genhtml -q report/coverage.info --output-directory report
+report:
+	mkdir report

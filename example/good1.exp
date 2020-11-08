@@ -2,11 +2,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-struct A {
+struct /* C comment */ A // C++ comment
+{
 	const struct coo_vmt *vmt;
 };
 
-#line 10 "good1.coo.c"
+#line 11 "good1.coo.c"
 #include <coortl.h>
 extern const struct A_vmt {
 	struct coo_vmt vmt_base;
@@ -15,13 +16,13 @@ extern const struct A_vmt {
 
 extern const struct A_coo_class A_coo_class;
 
-#line 8 "good1.coo"
+#line 9 "good1.coo"
 struct B {
 	struct A A;
 	int b1, b2;
 };
 
-#line 25 "good1.coo.c"
+#line 26 "good1.coo.c"
 extern const struct B_vmt {
 	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct B *this, int arg);
@@ -38,13 +39,13 @@ void B_vfunc_b(struct B *this, int arg);
 int B_get_b1(struct B *this);
 int B_get_b2(struct B *this);
 struct B *B_B_root(struct B *this);
-#line 20 "good1.coo"
+#line 21 "good1.coo"
 struct C {
 	struct A A;
 	int c1, c2;
 };
 
-#line 48 "good1.coo.c"
+#line 49 "good1.coo.c"
 extern const struct C_vmt {
 	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct C *this, int arg);
@@ -61,7 +62,7 @@ int C_get_c2(struct C *this);
 void C_set_c1(struct C *this, int new_c1);
 void C_handle_pass_C(struct C *this, int arg, struct C *C);
 struct C *C_C_root(struct C *this);
-#line 31 "good1.coo"
+#line 32 "good1.coo"
 typedef struct {
 	void *obj;
 	void (*func)(void *this, int arg);
@@ -78,7 +79,7 @@ struct D {
 	pass_C_cb cb;
 };
 
-#line 82 "good1.coo.c"
+#line 83 "good1.coo.c"
 extern const struct D_vmt {
 	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct D *this, int arg);
@@ -99,17 +100,17 @@ void D_vfunc_a(struct D *this, int arg);
 void D_handle_pass_C(struct C *this, int arg, struct C *C);
 struct D *D_D(struct D *this);
 struct D *D_D_root(struct D *this);
-#line 42 "good1.coo"
+#line 43 "good1.coo"
 struct E {
 	struct A A;
 	int e1, e2;
 };
 
-#line 109 "good1.coo.c"
+#line 110 "good1.coo.c"
 extern const struct E_coo_class E_coo_class;
 
 struct E *E_E(struct E *this);
-#line 47 "good1.coo"
+#line 48 "good1.coo"
 void A_vfunc_a(struct A *this, int arg)
 {
 	printf("A::vfunc_a(%d)\n", arg);
@@ -182,9 +183,9 @@ struct D *D_D(struct D *this)
 	int_cb.func(int_cb.obj, 24);
 	if (this->C.c1 != 24)
 		printf("ERROR, c1 should be 24, is %d\n", this->C.c1);
-#line 186 "good1.coo.c"
+#line 187 "good1.coo.c"
 	return this;
-#line 119 "good1.coo"
+#line 120 "good1.coo"
 }
 
 void D_handle_pass_C(struct C *__this, int arg, struct C *C)
@@ -197,16 +198,16 @@ struct E *E_E(struct E *this)
 	integer_cb cb;
 	struct C c2;
 
-#line 129
+#line 130
 	C_C_root_zi(&c2);
-#line 131
+#line 132
 	{ struct A *coo_obj0 = &this->A; void (*coo_fv0)(struct A *this, int arg) = A_vfunc_a; integer_cb coo_mv0 = { coo_obj0, (void (*)())coo_fv0 }; cb = coo_mv0; }  /* TODO: fix this */
 	cb.func(cb.obj, 5);
 	{ struct C *coo_obj0 = &c2; void (*coo_fv0)(struct C *this, int new_c1) = C_set_c1; integer_cb coo_mv0 = { coo_obj0, (void (*)())coo_fv0 }; cb = coo_mv0; }
 	cb.func(cb.obj, 6);
-#line 208 "good1.coo.c"
+#line 209 "good1.coo.c"
 	return this;
-#line 135 "good1.coo"
+#line 136 "good1.coo"
 }
 
 int main(void)
@@ -233,7 +234,7 @@ int main(void)
 }
 
 
-#line 237 "good1.coo.c"
+#line 238 "good1.coo.c"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>

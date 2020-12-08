@@ -29,7 +29,9 @@ struct C : A {
 	virtual void handle_pass_C(int arg, C *C);
 };
 
-typedef void (*::integer_cb)(int arg);
+typedef /* test typedef newline split
+           multiline comment */
+  void (*::integer_cb)(int arg);
 typedef void (*::pass_C_cb)(int arg, C *c);
 
 struct D : B, C {

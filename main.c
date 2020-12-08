@@ -994,8 +994,6 @@ static int grow_dynarr(struct allocator *alloc, struct dynarr *dynarr)
 	return grow_dynarr_to(alloc, dynarr, dynarr->num+1);
 }
 
-#define pgrow_dynarr(dynarr) grow_dynarr(&parser->global_mem, dynarr)
-
 /*** print helpers ***/
 
 static void print_message(struct parser *parser,
@@ -7010,7 +7008,7 @@ static void parse(struct parser *parser)
 		curr = parser->pf.pos;
 		parser->saw.all = 0;
 		if (strprefixcmp("typedef ", curr)) {
-			parser->pf.pos = curr += 8;  /* "typedef " */
+			parser->pf.pos = curr = skip_whitespace(parser, curr + 8);  /* "typedef " */
 			parser->saw.k.typdef = 1;
 		}
 

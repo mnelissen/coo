@@ -9,6 +9,7 @@ SUFFIXES:=
 %.tex: %.w %.ch
 CFLAGS=-Wall -Wextra -g
 all: coo coo_opt coo_cov coortl.o coortl.oo
+debug: coo coortl.o
 coo: main.o hash.o hasho.o
 	gcc $(LDFLAGS) -o $@ $^
 coo_opt: main.oo hash.oo hasho.oo
@@ -33,6 +34,7 @@ testxlist.o testxlist.oo: testxlist.c list.h
 %.oo: %.c $(wildcard %.h)
 	gcc $(CFLAGS) -Os -c -o $@ $<
 %.oc: %.c $(wildcard %.h)
+	@rm -f $*.gcno $*.gcda
 	gcc $(CFLAGS) --coverage -c -o $@ $<
 clean:
 	rm -f *.o *.oo *.oc *.gcda *.gcno coo coo_opt coo_cov testxlist testcpp testc

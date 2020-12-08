@@ -160,7 +160,8 @@ static void D_test(struct D *this)
 
 void * foo_get_foo(struct foo *this, int a)
 {
-	printf("get_foo a=%d\n", a);
+	char ch_a = 'a';
+	printf("get_foo %c=%d\n", ch_a, a);
 	return this;
 }
 
@@ -197,9 +198,9 @@ void foo_vfunc(struct foo *this, int arg1, float *arg2)
 struct A *A_A(struct A *this)
 {
 	this->a1 = -1;
-#line 201 "example.coo.c"
+#line 202 "example.coo.c"
 	return this;
-#line 94 "example.coo"
+#line 95 "example.coo"
 }
 
 void A_d_A(struct A *this)
@@ -216,9 +217,9 @@ struct B *B_B(struct B *this)
 {
 	A_A(&this->A);
 	A_A_root(&this->a_local);
-#line 220 "example.coo.c"
+#line 221 "example.coo.c"
 	return this;
-#line 110 "example.coo"
+#line 111 "example.coo"
 }
 
 void B_vfunc_a(struct B *this, int arg)
@@ -272,18 +273,18 @@ struct D *D_D(struct D *this, struct A *a)
 {
 	this->B.b1 = -5;
 	B_B(&this->B);
-#line 276 "example.coo.c"
+#line 277 "example.coo.c"
 	return this;
-#line 163 "example.coo"
+#line 164 "example.coo"
 }
 
 struct E *E_E(struct E *this)
 {
 	this->D.B.A.a1 = -6;
 	D_D(&this->D, &this->D.B.A);
-#line 285 "example.coo.c"
+#line 286 "example.coo.c"
 	return this;
-#line 169 "example.coo"
+#line 170 "example.coo"
 }
 
 void E_d_E(struct E *this)
@@ -314,7 +315,7 @@ int main(int argc, char **argv)
 	struct foo foo;
 
 	int __coo_ret;
-#line 190
+#line 191
 	A_A_root_zi(&a), A_A_root_zi(&a_a);
 	aa1 = a.a1;
 	B_B_root_zi(&b);
@@ -322,7 +323,7 @@ int main(int argc, char **argv)
 	D_D_root_zi(&d, &(&c)->A); db1 = d.B.b1;
 	E_E_root_zi(&e),
 	foo_foo_root_zi(&foo);
-#line 198
+#line 199
 	a.a1 = 10;
 	((struct A_vmt*)a.vmt)->vfunc_a(&a, 11);
 
@@ -334,9 +335,9 @@ int main(int argc, char **argv)
 		{ __coo_ret = -1; goto __coo_out0; }
 
 	struct E e2;
-#line 208
-	E_E_root_zi(&e2);
 #line 209
+	E_E_root_zi(&e2);
+#line 210
 	c.A.a1 = 30;
 	c.C.c1 = 31;
 	((struct A_vmt*)c.A.vmt)->vfunc_a(&c.A, 32);
@@ -384,7 +385,7 @@ int main(int argc, char **argv)
 	printf("%d %d\n", aa1, db1);
 
 	__coo_ret = 0;
-#line 388 "example.coo.c"
+#line 389 "example.coo.c"
 __coo_out1:
 	E_d_E(&e2);
 __coo_out0:
@@ -395,10 +396,10 @@ __coo_out0:
 	A_d_A(&a_a);
 	A_d_A(&a);
 	return __coo_ret;
-#line 256 "example.coo"
+#line 257 "example.coo"
 }
 
-#line 402 "example.coo.c"
+#line 403 "example.coo.c"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>

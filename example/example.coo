@@ -54,7 +54,8 @@ void D::test(void)
 
 void * foo::get_foo(int a)
 {
-	printf("get_foo a=%d\n", a);
+	char ch_a = 'a';
+	printf("get_foo %c=%d\n", ch_a, a);
 	return this;
 }
 

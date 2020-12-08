@@ -609,7 +609,7 @@ static int skip_comment(struct parser *parser, char **retpos)
 		for (pos += 2;; pos++) {
 			pos = parser_strchrnul(parser, pos, '*');
 			if (pos[0] == 0)
-				goto moved;
+				goto moved;   /* LCOV_EXCL_LINE */
 			if (pos[1] == '/')
 				break;
 		}
@@ -620,7 +620,7 @@ static int skip_comment(struct parser *parser, char **retpos)
 	if (pos[1] == '/') {
 		pos = parser_strchrnul(parser, pos+2, '\n');
 		if (pos[0] == 0)
-			goto moved;
+			goto moved;   /* LCOV_EXCL_LINE */
 		pos++;
 		goto moved;
 	}
@@ -638,12 +638,12 @@ static char *skip_whitespace(struct parser *parser, char *p)
 			p++;
 		} else if (*p == '/') {
 			if (!skip_comment(parser, &p))
-				break;
+				break;   /* LCOV_EXCL_LINE */
 		} else if (*p == '"') {
 			for (;;) {
 				p = parser_strchrnul(parser, p + 1, '"');
 				if (*p == 0)
-					return p;
+					return p;   /* LCOV_EXCL_LINE */
 				if (*(p-1) != '\\')
 					break;
 			}
@@ -652,7 +652,7 @@ static char *skip_whitespace(struct parser *parser, char *p)
 		} else if (*p == '\'') {
 			p++;
 			if (*p == '\\')
-				p++;
+				p++;   /* LCOV_EXCL_LINE */
 			p++;
 			if (*p == '\'')
 				p++;
@@ -671,7 +671,7 @@ static int strskip_comment(char **retpos)
 		for (pos += 2;; pos++) {
 			pos = strchrnul(pos, '*');
 			if (pos[0] == 0)
-				goto moved;
+				goto moved;   /* LCOV_EXCL_LINE */
 			if (pos[1] == '/')
 				break;
 		}
@@ -682,11 +682,11 @@ static int strskip_comment(char **retpos)
 	if (pos[1] == '/') {
 		pos = strchrnul(pos+2, '\n');
 		if (pos[0] == 0)
-			goto moved;
+			goto moved;   /* LCOV_EXCL_LINE */
 		pos++;
 		goto moved;
 	}
-	return 0;
+	return 0;   /* LCOV_EXCL_LINE, all syntax errors */
 moved:
 	*retpos = pos;
 	return 1;
@@ -699,7 +699,7 @@ static char *strskip_whitespace(char *p)
 			p++;
 		else if (*p == '/') {
 			if (!strskip_comment(&p))
-				break;
+				break;   /* LCOV_EXCL_LINE */
 		} else
 			break;
 	}
@@ -747,11 +747,11 @@ static char *scan_token(struct parser *parser, char *pos, char *set)
 		if (!skip_comment(parser, &pos)) {
 			/* no comment detected, do we want this '/' as token? */
 			if (set[0] != '/')
-				return pos;
+				return pos;   /* LCOV_EXCL_LINE, never used */
 			/* no, skip it */
 			pos++;
 		} else if (pos[0] == 0)
-			return NULL;
+			return NULL;    /* LCOV_EXCL_LINE */
 	}
 }
 
@@ -2475,9 +2475,9 @@ static int need_translate_tp(struct parser *parser, struct dynarr *templ_map, an
 	if (anytype->type != AT_TEMPLPAR)
 		return 0;
 	if (anytype->u.tp->index >= templ_map->num) {
-		pr_err(NULL, "(ierr) parent tp index %u out of range %u",
-			anytype->u.tp->index, templ_map->num);
-		return 0;
+		pr_err(NULL, "(ierr) parent tp index %u out of range %u",   /* LCOV_EXCL_LINE */
+			anytype->u.tp->index, templ_map->num);              /* LCOV_EXCL_LINE */
+		return 0;                                                   /* LCOV_EXCL_LINE */
 	}
 	prtype = typ(templ_map->mem[anytype->u.tp->index]);
 	if (prtype->type == AT_TEMPLPAR) {
@@ -2615,10 +2615,9 @@ static void mergemember(struct parser *parser, struct class *class, struct membe
 	nameend = parentmember->name + strlen(parentmember->name);
 	member = find_member_e(class, parentmember->name, nameend);
 	if (member == NULL) {
-		fprintf(stderr, "(ierr) cannot find member %s in class %s "
-			"for merging\n", parentmember->name, class->name);
-		parser->num_errors++;
-		return;
+		pr_err(NULL, "(ierr) cannot find member %s in class %s "    /* LCOV_EXCL_LINE */
+			"for merging\n", parentmember->name, class->name);  /* LCOV_EXCL_LINE */
+		return;                                                     /* LCOV_EXCL_LINE */
 	}
 
 	/* both agree where they are defined, ok */
@@ -7298,10 +7297,8 @@ int main(int argc, char **argv)
 {
 	struct parser parser_s, *parser = &parser_s;
 
-	if (initparser(parser)) {
-		fprintf(stderr, "Out of memory allocating parser\n");
-		return 1;
-	}
+	if (initparser(parser))
+		return 1;          /* LCOV_EXCL_LINE */
 
 	g_pid = getpid();
 	argc--; argv++; /* skip our name */

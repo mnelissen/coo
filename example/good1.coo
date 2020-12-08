@@ -1,9 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-struct /* C comment */ A // C++ comment
-{
-	virtual void vfunc_a(int arg) = 0;
+struct /* C comment */ A {
+	virtual void vfunc_a(int arg) = 0;     // C++ comment
 };
 
 struct B : A {
@@ -121,7 +120,8 @@ void D::D(void)
 		printf("ERROR, c1 should be 24, is %d\n", c1);
 }
 
-void D::handle_pass_C(int arg, C *C)
+void D::handle_pass_C(int arg, // C++ comment in parameter list
+	C *C)
 {
 	printf("D::handle_pass_C c1=%d c2=%d %d %d\n", c1, c2, arg, (int)((char*)C-(char*)this));
 }

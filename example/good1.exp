@@ -2,12 +2,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-struct /* C comment */ A // C++ comment
-{
+struct /* C comment */ A {
 	const struct coo_vmt *vmt;
 };
 
-#line 11 "good1.coo.c"
+#line 10 "good1.coo.c"
 #include <coortl.h>
 extern const struct A_vmt {
 	struct coo_vmt vmt_base;
@@ -16,10 +15,11 @@ extern const struct A_vmt {
 
 extern const struct A_coo_class A_coo_class;
 
-#line 9 "good1.coo"
+#line 8 "good1.coo"
 struct B {
 	struct A A;
-	int b1, b2;
+	int b1, b2 /* test newline
+	              to semicolon */ ;
 };
 
 #line 26 "good1.coo.c"
@@ -63,7 +63,9 @@ void C_set_c1(struct C *this, int new_c1);
 void C_handle_pass_C(struct C *this, int arg, struct C *C);
 struct C *C_C_root(struct C *this);
 #line 32 "good1.coo"
-typedef struct {
+typedef /* test typedef newline split
+           multiline comment */
+  struct {
 	void *obj;
 	void (*func)(void *this, int arg);
 } integer_cb;
@@ -79,7 +81,7 @@ struct D {
 	pass_C_cb cb;
 };
 
-#line 83 "good1.coo.c"
+#line 85 "good1.coo.c"
 extern const struct D_vmt {
 	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct D *this, int arg);
@@ -100,17 +102,17 @@ void D_vfunc_a(struct D *this, int arg);
 void D_handle_pass_C(struct C *this, int arg, struct C *C);
 struct D *D_D(struct D *this);
 struct D *D_D_root(struct D *this);
-#line 43 "good1.coo"
+#line 45 "good1.coo"
 struct E {
 	struct A A;
 	int e1, e2;
 };
 
-#line 110 "good1.coo.c"
+#line 112 "good1.coo.c"
 extern const struct E_coo_class E_coo_class;
 
 struct E *E_E(struct E *this);
-#line 48 "good1.coo"
+#line 50 "good1.coo"
 void A_vfunc_a(struct A *this, int arg)
 {
 	printf("A::vfunc_a(%d)\n", arg);
@@ -183,12 +185,13 @@ struct D *D_D(struct D *this)
 	int_cb.func(int_cb.obj, 24);
 	if (this->C.c1 != 24)
 		printf("ERROR, c1 should be 24, is %d\n", this->C.c1);
-#line 187 "good1.coo.c"
+#line 189 "good1.coo.c"
 	return this;
-#line 120 "good1.coo"
+#line 122 "good1.coo"
 }
 
-void D_handle_pass_C(struct C *__this, int arg, struct C *C)
+void D_handle_pass_C(struct C *__this, int arg, // C++ comment in parameter list
+	struct C *C)
 {	struct D *this = container_of(__this, struct D, C.A);
 	printf("D::handle_pass_C c1=%d c2=%d %d %d\n", this->C.c1, this->C.c2, arg, (int)((char*)C-(char*)this));
 }
@@ -198,16 +201,16 @@ struct E *E_E(struct E *this)
 	integer_cb cb;
 	struct C c2;
 
-#line 130
+#line 133
 	C_C_root_zi(&c2);
-#line 132
+#line 135
 	{ struct A *coo_obj0 = &this->A; void (*coo_fv0)(struct A *this, int arg) = A_vfunc_a; integer_cb coo_mv0 = { coo_obj0, (void (*)())coo_fv0 }; cb = coo_mv0; }  /* TODO: fix this */
 	cb.func(cb.obj, 5);
 	{ struct C *coo_obj0 = &c2; void (*coo_fv0)(struct C *this, int new_c1) = C_set_c1; integer_cb coo_mv0 = { coo_obj0, (void (*)())coo_fv0 }; cb = coo_mv0; }
 	cb.func(cb.obj, 6);
-#line 209 "good1.coo.c"
+#line 212 "good1.coo.c"
 	return this;
-#line 136 "good1.coo"
+#line 139 "good1.coo"
 }
 
 int main(void)
@@ -234,7 +237,7 @@ int main(void)
 }
 
 
-#line 238 "good1.coo.c"
+#line 241 "good1.coo.c"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>

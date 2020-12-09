@@ -80,7 +80,7 @@ struct file_id {
 
 enum parse_state {
 	STMTSTART, FINDVAR, EXPRUNARY, DECLVAR, DECLMETHODVAR,
-	CONSTRUCT, NO_CONSTRUCT, ACCESSMEMBER, ACCESSINHERITED
+	CONSTRUCT, NO_CONSTRUCT, ACCESSMEMBER, OTHERCLASS
 };
 
 enum visibility {
@@ -4161,10 +4161,6 @@ static void parse_method(struct parser *parser, char *stmtstart, struct methodpt
 	struct ancestor *ancestor;
 	int scope_varnr, fslen;
 
-	if (targetmp == NULL) {
-		pr_err(exprstart, "did not detect target method pointer type");
-		return;
-	}
 	if (typ(expr)->u.class != memberdef) {
 		ancestor = accessancestor(expr, exprstart, name, memberdef, &pre, &post);
 		if (ancestor == NULL)
@@ -4187,7 +4183,6 @@ static void parse_method(struct parser *parser, char *stmtstart, struct methodpt
 	} else {
 		maybe_this = "";
 	}
-	newscope = open_tempscope(parser, stmtstart, &scope_varnr);
 	if (tgtclass) {
 		goto hardref;
 	} else if (member->props.is_virtual) {
@@ -4203,6 +4198,12 @@ static void parse_method(struct parser *parser, char *stmtstart, struct methodpt
 	}
 	if (fslen < 0)
 		return;    /* LCOV_EXCL_LINE */
+	if (!targetmp) {
+		addinsert(parser, NULL, exprstart, funcsource, nameend, CONTINUE_AFTER);
+		return;
+	}
+
+	newscope = open_tempscope(parser, stmtstart, &scope_varnr);
 	insprintf(parser, "%sstruct %s *coo_obj%d = %s",
 		newscope, memberdef->name, scope_varnr, pre);
 	insprint_inserts_fromto(parser, exprstart, exprend, REMOVE_PRINTED_INSERTS);
@@ -4455,34 +4456,40 @@ static int check_ancestor_visibility(struct parser *parser, struct member *membe
 	return 0;
 }
 
-static char *access_inherited(struct parser *parser, char *stmtstart,
+static char *access_other_class(struct parser *parser, char *stmtstart,
 		struct methodptr *targetmp, struct class *thisclass, struct class *tgtclass,
 		char *accinhname, char *colons, char *name, char *next, struct dynarr **retparams)
 {
 	struct member *member;
 	struct ancestor *ancestor;
 	struct insert *insert_before;
+	struct class *memberclass = thisclass ?: tgtclass;
 	char *thistext, *thispos;
 	anyptr expr;
 
-	member = find_member_e(thisclass, name, next);
+	member = find_member_e(memberclass, name, next);
 	if (!member)
 		return next;
-
 	if (!member->props.is_function) {
 		pr_err(name, "can only access function using class::member syntax");
 		return next;
 	}
+
 	if (tgtclass != thisclass) {
 		if (check_ancestor_visibility(parser, member, name) < 0)
 			return next;
-		ancestor = hasho_find(&thisclass->ancestors, tgtclass);
-		if (ancestor == NULL)
-			return next;
-		if (ancestor->parent->is_virtual)
-			thistext = "this->";
-		else
-			thistext = "&this->";
+		if (thisclass) {
+			ancestor = hasho_find(&thisclass->ancestors, tgtclass);
+			if (ancestor == NULL)
+				return next;
+			if (ancestor->parent->is_virtual)
+				thistext = "this->";
+			else
+				thistext = "&this->";
+		} else {
+			thistext = NULL;
+			ancestor = NULL;
+		}
 	} else {
 		thistext = "this";
 		ancestor = NULL;
@@ -4490,7 +4497,7 @@ static char *access_inherited(struct parser *parser, char *stmtstart,
 
 	next = skip_whitespace(parser, next);
 	if (*next != '(') {
-		expr = to_anyptr(&thisclass->t, 1);
+		expr = to_anyptr(&memberclass->t, 1);
 		/* pass accinhname as 'name', consider whole X::func to be
 		   name..nameend so that the X:: part is also replaced */
 		parse_method(parser, stmtstart, targetmp, NULL, NULL,
@@ -4499,13 +4506,16 @@ static char *access_inherited(struct parser *parser, char *stmtstart,
 	}
 
 	addinsert(parser, NULL, colons, "_", colons+2, CONTINUE_AFTER);
-	thispos = next + 1;
-	insert_before = addinsert(parser, NULL, thispos, thistext, thispos, CONTINUE_BEFORE);
-	if (ancestor)
-		insert_before = addinsert(parser, insert_before,
-			thispos, ancestor->path, thispos, CONTINUE_BEFORE);
-	if (member->paramstext[0] != ')')
-		addinsert(parser, insert_before, thispos, ", ", thispos, CONTINUE_BEFORE);
+	if (thistext) {
+		thispos = next + 1;
+		insert_before = addinsert(parser, NULL,
+			thispos, thistext, thispos, CONTINUE_BEFORE);
+		if (ancestor)
+			insert_before = addinsert(parser, insert_before,
+				thispos, ancestor->path, thispos, CONTINUE_BEFORE);
+		if (member->paramstext[0] != ')')
+			addinsert(parser, insert_before, thispos, ", ", thispos, CONTINUE_BEFORE);
+	}
 
 	*retparams = &member->params;
 	return next;
@@ -5116,7 +5126,7 @@ static void parse_function(struct parser *parser, char *next)
 	enum parse_funcvar_state funcvarstate;
 	enum parse_state state, nextstate;
 	enum goto_return goto_ret;
-	int is_constructor, expr_is_oneword, blocklevel, seqparen, numwords;
+	int is_constructor, expr_is_oneword, blocklevel, seqparen, numwords, funcvarmp;
 	int have_retvar, need_retvar, used_retvar, eval_retvar, have_return, in_return;
 	int retblocknr, next_retblocknr, unused_retblocknr, in_delete, possible_type;
 	unsigned num_constr_called, num_constr;
@@ -5666,8 +5676,8 @@ static void parse_function(struct parser *parser, char *next)
 						pareninfo->memberstart);
 				}
 				break;
-			case ACCESSINHERITED:  /* parsing class::function */
-				next = access_inherited(parser, stmtstart,
+			case OTHERCLASS:  /* parsing class::function */
+				next = access_other_class(parser, stmtstart,
 					to_mp(typ(pareninfo->targetdecl)), thisclass,
 					to_class(typ(immdecl)), accinhname, accinhcolons,
 					name, next, &pareninfo->targetparams.params);
@@ -5720,20 +5730,27 @@ static void parse_function(struct parser *parser, char *next)
 			continue;
 		}
 
-		if (funcvarstate == FV_NAME)
-			funcvarstate = *curr == ')' ? FV_PARENCLOSE : FV_NONE;
-		else if (funcvarstate == FV_PARENCLOSE) {
-			funcvarstate = FV_NONE;
-			if (*curr == '(') {
+		if (funcvarstate == FV_NAME && *curr == ')') {
+			funcvarstate = FV_PARENCLOSE;
+		} else {
+			if (funcvarstate == FV_PARENCLOSE && *curr == '(') {
+				/* pattern "(*name)(" detected */
 				next = scan_token(parser, curr+1, "/\n);");
 				if (next == NULL)
 					break;
 				if (*next == ')') {
-					addvariable(parser, NULL, blocklevel,
-						to_anyptr(decl, raw_ptrlvl(pareninfo->exprdecl)),
-						funcvarname, funcvarnameend, curr+1);
+					if (funcvarmp) {
+						addmpvariable(parser, blocklevel, x,
+							funcvarname, funcvarnameend);
+					} else {
+						addvariable(parser, NULL, blocklevel,
+							to_anyptr(decl, raw_ptrlvl(pareninfo->exprdecl)),
+							funcvarname, funcvarnameend, curr+1);
+					}
 				}
 			}
+			funcvarstate = FV_NONE;
+			funcvarmp = 0;
 		}
 
 		if (state == CONSTRUCT) {
@@ -5948,23 +5965,26 @@ static void parse_function(struct parser *parser, char *next)
 			if (member && member->is_constructor) {
 				/* recognized a class name as constructor member */
 				immdecl = to_anyptr(&member->origin->t, 0);
-				goto accessinherited;
+				goto otherclass;
 			} else if (to_class(decl)) {
 				/* in case using class::func at start of statement */
 				immdecl = to_anyptr(decl, 0);
 				decl = &unknown_type;
-			  accessinherited:
+			  otherclass:
 				/* convert "class::func" to "class_func" */
 				clear_ptrlvl(&immdecl);
 				next = curr + 2;
 				accinhname = name;
 				accinhcolons = curr;
-				state = ACCESSINHERITED;
+				state = OTHERCLASS;
 				numwords--;    /* for declaration detection, merge x->y words */
 			} else if (name && (classtype = find_classtype_e(parser, name, next))) {
 				/* in case using class::func in expression */
 				immdecl = to_anyptr(&classtype->t, 0);
-				goto accessinherited;
+				goto otherclass;
+			} else if (pareninfo->prev == parenlvl0
+					&& ptrlvl(pareninfo->exprdecl) == PTRLVLMASK) {
+				funcvarmp = 1;
 			} else {
 				pr_err(curr, "unexpected '::' encountered");
 			}

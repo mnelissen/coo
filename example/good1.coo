@@ -98,7 +98,7 @@ int C::get_c2(void)
 
 void C::handle_pass_C(int arg, C *C)
 {
-	printf("C::handle_pass_C %d %p %p", arg, this, C);
+	printf("C::handle_pass_C %d %d\n", arg, this == C);
 }
 
 void D::vfunc_a(int arg)
@@ -144,6 +144,9 @@ int main(void)
 	B *b = dynamic_cast<B*>(a);
 	C *c = dyn:a;
 	E *e = dyn:a;
+	void (*cb2)(C* th, int arg, C *C);
+	pass_C_cb cb3;
+
 	d = dyn:a;
 	d->vfunc_a(3);
 	d->vfunc_b(4);
@@ -156,6 +159,10 @@ int main(void)
 	printf("            d1=%d d2=%d\n", d->d1, d->d2);
 	printf("e=0x%zu\n", (size_t)e);
 	d->cb(48, d);
+	cb2 = C::handle_pass_C;
+	cb2(c, 50, d);
+	cb3 = c->handle_pass_C;
+	cb3(51, d);
 	delete d;
 	return 0;
 }

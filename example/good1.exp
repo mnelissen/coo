@@ -18,11 +18,10 @@ extern const struct A_coo_class A_coo_class;
 #line 8 "good1.coo"
 struct B {
 	struct A A;
-	int b1, b2 /* test newline
-	              to semicolon */ ;
+	int b1, b2;
 };
 
-#line 26 "good1.coo.c"
+#line 25 "good1.coo.c"
 extern const struct B_vmt {
 	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct B *this, int arg);
@@ -39,13 +38,13 @@ void B_vfunc_b(struct B *this, int arg);
 int B_get_b1(struct B *this);
 int B_get_b2(struct B *this);
 struct B *B_B_root(struct B *this);
-#line 21 "good1.coo"
+#line 20 "good1.coo"
 struct C {
 	struct A A;
 	int c1, c2;
 };
 
-#line 49 "good1.coo.c"
+#line 48 "good1.coo.c"
 extern const struct C_vmt {
 	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct C *this, int arg);
@@ -62,7 +61,7 @@ int C_get_c2(struct C *this);
 void C_set_c1(struct C *this, int new_c1);
 void C_handle_pass_C(struct C *this, int arg, struct C *C);
 struct C *C_C_root(struct C *this);
-#line 32 "good1.coo"
+#line 31 "good1.coo"
 typedef /* test typedef newline split
            multiline comment */
   struct {
@@ -81,7 +80,7 @@ struct D {
 	pass_C_cb cb;
 };
 
-#line 85 "good1.coo.c"
+#line 84 "good1.coo.c"
 extern const struct D_vmt {
 	struct coo_vmt vmt_base;
 	void (*vfunc_a)(struct D *this, int arg);
@@ -102,17 +101,17 @@ void D_vfunc_a(struct D *this, int arg);
 void D_handle_pass_C(struct C *this, int arg, struct C *C);
 struct D *D_D(struct D *this);
 struct D *D_D_root(struct D *this);
-#line 45 "good1.coo"
+#line 44 "good1.coo"
 struct E {
 	struct A A;
 	int e1, e2;
 };
 
-#line 112 "good1.coo.c"
+#line 111 "good1.coo.c"
 extern const struct E_coo_class E_coo_class;
 
 struct E *E_E(struct E *this);
-#line 50 "good1.coo"
+#line 49 "good1.coo"
 void A_vfunc_a(struct A *this, int arg)
 {
 	printf("A::vfunc_a(%d)\n", arg);
@@ -165,7 +164,7 @@ int C_get_c2(struct C *this)
 
 void C_handle_pass_C(struct C *this, int arg, struct C *C)
 {
-	printf("C::handle_pass_C %d %p %p", arg, this, C);
+	printf("C::handle_pass_C %d %d\n", arg, this == C);
 }
 
 void D_vfunc_a(struct D *this, int arg)
@@ -185,9 +184,9 @@ struct D *D_D(struct D *this)
 	int_cb.func(int_cb.obj, 24);
 	if (this->C.c1 != 24)
 		printf("ERROR, c1 should be 24, is %d\n", this->C.c1);
-#line 189 "good1.coo.c"
+#line 188 "good1.coo.c"
 	return this;
-#line 122 "good1.coo"
+#line 121 "good1.coo"
 }
 
 void D_handle_pass_C(struct C *__this, int arg, // C++ comment in parameter list
@@ -201,16 +200,16 @@ struct E *E_E(struct E *this)
 	integer_cb cb;
 	struct C c2;
 
-#line 133
+#line 132
 	C_C_root_zi(&c2);
-#line 135
+#line 134
 	{ struct A *coo_obj0 = &this->A; void (*coo_fv0)(struct A *this, int arg) = A_vfunc_a; integer_cb coo_mv0 = { coo_obj0, (void (*)())coo_fv0 }; cb = coo_mv0; }  /* TODO: fix this */
 	cb.func(cb.obj, 5);
 	{ struct C *coo_obj0 = &c2; void (*coo_fv0)(struct C *this, int new_c1) = C_set_c1; integer_cb coo_mv0 = { coo_obj0, (void (*)())coo_fv0 }; cb = coo_mv0; }
 	cb.func(cb.obj, 6);
-#line 212 "good1.coo.c"
+#line 211 "good1.coo.c"
 	return this;
-#line 139 "good1.coo"
+#line 138 "good1.coo"
 }
 
 int main(void)
@@ -220,6 +219,9 @@ int main(void)
 	struct B *b = coo_dyn_cast(&B_coo_class, &(a)->vmt);
 	struct C *c = coo_dyn_cast(&C_coo_class, &a->vmt);
 	struct E *e = coo_dyn_cast(&E_coo_class, &a->vmt);
+	void (*cb2)(struct C* th, int arg, struct C *C);
+	pass_C_cb cb3;
+
 	d = coo_dyn_cast(&D_coo_class, &a->vmt);
 	((struct A_vmt*)d->B.A.vmt)->vfunc_a(&d->B.A, 3);
 	((struct B_vmt*)d->B.A.vmt)->vfunc_b(&d->B, 4);
@@ -232,12 +234,16 @@ int main(void)
 	printf("            d1=%d d2=%d\n", d->d1, d->d2);
 	printf("e=0x%zu\n", (size_t)e);
 	d->cb.func(d->cb.obj, 48, &d->C);
+	cb2 = C_handle_pass_C;
+	cb2(c, 50, &d->C);
+	{ struct C *coo_obj0 = c; void (*coo_fv0)(struct C *this, int arg, struct C *C) = ((struct C_vmt*)coo_obj0->A.vmt)->handle_pass_C; pass_C_cb coo_mv0 = { coo_obj0, (void (*)())coo_fv0 }; cb3 = coo_mv0; }
+	cb3.func(cb3.obj, 51, &d->C);
 	free(d);
 	return 0;
 }
 
 
-#line 241 "good1.coo.c"
+#line 247 "good1.coo.c"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>

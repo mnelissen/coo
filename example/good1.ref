@@ -9,3 +9,5 @@ offset c=16 c1=24 c2=25
             d1=36 d2=37
 e=0x0
 D::handle_pass_C c1=24 c2=25 48 16
+C::handle_pass_C 50 1
+D::handle_pass_C c1=24 c2=25 51 16

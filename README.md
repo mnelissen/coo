@@ -604,6 +604,7 @@ the parser anyway.
 * implement return from nested block with stack variables
 * dynamic cast assignment with refcounted pointers
 * test refcounting in class E for good8
+* test global function prototype with COO class parameter type(s) + body later
 
 ## License
 

@@ -1449,20 +1449,20 @@ static char *parse_type(struct parser *parser, struct allocator *alloc,
 	struct methodptr *mp;
 	struct templpar *tp;
 	struct class *class;
-	char *name, *next, *tmplpos;
+	char *name, *next, *q, *tmplpos;
 	anyptr anyptr = unknown_typeptr;
 
 	for (;; pos = skip_whitespace(parser, pos)) {
-		if (strprefixcmp("const ", pos) != NULL) {
-			pos += 6;  /* const */
+		if ((q = strprefixcmp("const ", pos))) {
+			pos = q;
 			continue;
 		}
 		/* not necessary to parse unsigned/signed/int properly,
 		   (1) retnext is only used to parse typedef
 		   (1b) retnext usage is only interested in class types
 		   (2) use context like '(' and ';' to find member names */
-		if (strprefixcmp("struct ", pos)) {
-			name = skip_whitespace(parser, pos + 7);  /* "struct " */
+		if ((q = strprefixcmp("struct ", pos))) {
+			name = skip_whitespace(parser, q);
 			next = skip_word(name);
 			class = find_class_e(parser, name, next);
 			if (class)
@@ -1691,12 +1691,14 @@ static void parse_parameters_to(struct parser *parser, struct allocator *alloc,
 
 static char is_void_params(char *params)
 {
+	char *q;
+
 	params = strskip_whitespace(params);
 	if (*params == ')')
 		return 1;
-	if (strprefixcmp("void", params) == NULL)
+	if (!(q = strprefixcmp("void", params)))
 		return 0;
-	return *strskip_whitespace(params + 4) == ')';
+	return *strskip_whitespace(q) == ')';
 }
 
 static char is_void_rettype(char *rettype)
@@ -2441,13 +2443,15 @@ static char *parse_templargs(struct parser *parser, struct allocator *alloc,
 	return next;
 }
 
-static int is_abstract(struct parser *parser, char **pos)
+static int is_abstract(struct parser *parser, char **ppos)
 {
-	*pos = skip_whitespace(parser, *pos + 1);
-	if (**pos != '0')
+	char *pos = *ppos;
+
+	*ppos = pos = skip_whitespace(parser, pos + 1);
+	if (*pos != '0')
 		return 0;
-	*pos = skip_whitespace(parser, *pos + 1);
-	return **pos == ';';
+	*ppos = pos = skip_whitespace(parser, pos + 1);
+	return *pos == ';';
 }
 
 static int need_translate_tp(struct parser *parser, struct dynarr *templ_map, anyptr any)
@@ -3465,7 +3469,7 @@ static struct class *parse_struct(struct parser *parser, char *pos_struct, char 
 	struct class *class, *parentclass, *varclass;
 	struct memberprops memberprops = { 0 };
 	char *declbegin, *retend, *membername, *nameend, *params, *declend, *next;
-	char *classname, *classnameend, *parentname, *prevnext;
+	char *classname, *classnameend, *parentname, *prevnext, *q;
 	int level, parent_primary, parent_virtual, is_lit_var, len, prevdeclend_lineno;
 	int first_virtual_warn, first_vmt_warn, need_constructor, need_destructor, have_retbase;
 	int is_coo_class, parent_zeroinit, has_vars, flushdecl_lineno, last_linestart_lineno;
@@ -3517,14 +3521,14 @@ static struct class *parse_struct(struct parser *parser, char *pos_struct, char 
 		first_vmt_warn = 0;
 		firstparent = NULL;
 		outwrite(parser, "{", 1);
-		for (parentname = next;;) {
-			parentname = skip_whitespace(parser, parentname + 1);
-			if (strprefixcmp("public ", parentname)) {
-				parentname += 6;  /* "public" */
+		for (parentname = next + 1;;) {
+			parentname = skip_whitespace(parser, parentname);
+			if ((q = strprefixcmp("public ", parentname))) {
+				parentname = q;
 				continue;
 			}
-			if (strprefixcmp("virtual ", parentname)) {
-				parentname += 7;  /* "virtual" */
+			if ((q = strprefixcmp("virtual ", parentname))) {
+				parentname = q;
 				parent_virtual = 1;
 				class->need_root_constructor = 1;
 				continue;
@@ -3632,7 +3636,7 @@ static struct class *parse_struct(struct parser *parser, char *pos_struct, char 
 				break;
 			}
 			parent_primary = parent_virtual = 0;
-			parentname = next;
+			parentname = next + 1;
 		}
 
 		/* already printed '{', so start after '{' */
@@ -5121,7 +5125,7 @@ static void parse_function(struct parser *parser, char *next)
 	struct insert *insert_before;
 	char *curr, *funcname, *funcnameend, *classname, *name, *nameend;
 	char *exprend, *params, *param0, *paramend, *str1, *str2, *tmplpos;
-	char *funcvarname, *funcvarnameend, *stmtstart;
+	char *funcvarname, *funcvarnameend, *stmtstart, *q, *qdyn;
 	char *thispath, *thisprefix, *thisclassname, *thisfuncret, *thisfuncretend;
 	char *argsep, *dblcolonsep, *accothname, *accothcolons, *rettypestr;
 	enum parse_funcvar_state funcvarstate;
@@ -5238,10 +5242,10 @@ static void parse_function(struct parser *parser, char *next)
 			argsep = ", ";  /* start assumption: separate "this", rest params */
 			if (*param0 == ')') {
 				argsep = "";
-			} else if (strprefixcmp("void", param0)) {
-				next = skip_whitespace(parser, param0 + 4);
+			} else if ((q = strprefixcmp("void", param0))) {
+				next = skip_whitespace(parser, q);
 				if (*next == ')') {
-					param0 += 4;  /* skip "void" if adding "this" param */
+					param0 = q;  /* skip "void" if adding "this" param */
 					argsep = "";
 				}
 			}
@@ -5386,8 +5390,8 @@ static void parse_function(struct parser *parser, char *next)
 		}
 		if (!stmtstart) {
 			stmtstart = curr;
-			if (strprefixcmp("static ", curr)) {
-				next = curr + 7;  /* "static " */
+			if ((q = strprefixcmp("static ", curr))) {
+				next = q;
 				continue;
 			}
 		}
@@ -5451,23 +5455,23 @@ static void parse_function(struct parser *parser, char *next)
 		else if (iswordstart(*curr)) {
 			if (!pareninfo->memberstart)
 				pareninfo->memberstart = curr;
-			if (strprefixcmp("const ", curr)) {
-				next = curr + 6;  /* "const " */
+			if ((q = strprefixcmp("const ", curr))) {
+				next = q;
 				continue;   /* stay in e.g. declare-var state */
-			} else if (strprefixcmp("dyn", curr)) {
-				if (strprefixcmp("amic_cast<", curr+3)) {
-					if (strprefixcmp(">(", curr+13)) {
-						next = curr + 13;
+			} else if ((qdyn = strprefixcmp("dyn", curr))) {
+				if ((q = strprefixcmp("amic_cast<", qdyn))) {
+					if (strprefixcmp(">(", q)) {
+						next = q;
 						goto dyncast;
 					}
 					next = parse_type(parser, &parser->func_mem,
-						thisclass, curr+13, &rettype, NULL);
+						thisclass, q, &rettype, NULL);
 					if (next[0] != '>' || next[1] != '(')
 						pr_err(next, "'>' expected");
 					next++;
 					goto dyncast;
-				} else if (curr[3] == ':') {
-					next = curr + 4;
+				} else if (*qdyn == ':') {
+					next = qdyn + 1;
 					rettype = pareninfo->targetdecl;
 				   dyncast:
 					if (typ(rettype)->type != AT_CLASS) {
@@ -5502,8 +5506,8 @@ static void parse_function(struct parser *parser, char *next)
 						pareninfo->exprdecl = rettype;
 					continue;
 				}
-			} else if (strprefixcmp("return", curr) && !isalnum(curr[6])) {
-				next = curr + 6;  /* "return" */
+			} else if ((q = strprefixcmp("return", curr)) && !isalnum(*q)) {
+				next = q;
 				if (need_retvar) {
 					/* != STMTSTART: if (expr) return X; */
 					insert_text(parser, NULL, curr,
@@ -5524,8 +5528,8 @@ static void parse_function(struct parser *parser, char *next)
 				/* reset, to capture return expression */
 				pareninfo->exprstart = NULL;
 				continue;
-			} else if (is_expr(state) && strprefixcmp("new ", curr)) {
-				name = skip_whitespace(parser, curr + 4);  /* "new " */
+			} else if (is_expr(state) && (q = strprefixcmp("new ", curr))) {
+				name = skip_whitespace(parser, q);
 				next = skip_word(name);
 				classtype = find_classtype_e(parser, name, next);
 				if (classtype == NULL)
@@ -5585,9 +5589,9 @@ static void parse_function(struct parser *parser, char *next)
 					addinsert(parser, NULL, tmplpos, "", next, CONTINUE_AFTER);
 				}
 				continue;
- 			} else if (state == STMTSTART && strprefixcmp("delete ", curr)) {
+ 			} else if (state == STMTSTART && (q = strprefixcmp("delete ", curr))) {
 				flush_until(parser, curr);
-				parser->pf.writepos = next = curr + 7;  /* "delete " */
+				parser->pf.writepos = next = q;
 				pareninfo->exprstart = next;
 				in_delete = 1;
 				continue;
@@ -7005,7 +7009,7 @@ static void parse_global(struct parser *parser, char *next)
 
 static void parse(struct parser *parser)
 {
-	char *curr, *next;
+	char *curr, *next, *q;
 
 	/* write line directives for useful compiler messages */
 	parser->pf.linestart = parser->pf.pos - 1;
@@ -7020,8 +7024,8 @@ static void parse(struct parser *parser)
 		parser->pf.pos = skip_whitespace(parser, parser->pf.pos);
 		if (*parser->pf.pos == '#') {
 			parser->pf.pos++;
-			if (strprefixcmp("include ", parser->pf.pos)) {
-				parser->pf.pos += 8;  /* "include " */
+			if ((q = strprefixcmp("include ", parser->pf.pos))) {
+				parser->pf.pos = q;
 				parse_include(parser);
 			}
 
@@ -7036,8 +7040,8 @@ static void parse(struct parser *parser)
 
 		curr = parser->pf.pos;
 		parser->saw.all = 0;
-		if (strprefixcmp("typedef ", curr)) {
-			parser->pf.pos = curr = skip_whitespace(parser, curr + 8);  /* "typedef " */
+		if ((q = strprefixcmp("typedef ", curr))) {
+			parser->pf.pos = curr = skip_whitespace(parser, q);
 			parser->saw.k.typdef = 1;
 		}
 
@@ -7046,23 +7050,18 @@ static void parse(struct parser *parser)
 			parser->saw.k.typdef ? "/\n{;" : "/\n({;");
 		if (next == NULL)
 			break;
-		for (;;) {
-			if (strprefixcmp("final ", curr)) {
-				curr += 6;  /* "final " */
+		for (;; curr = q) {
+			if ((q = strprefixcmp("final ", curr)))
 				parser->saw.k.final = 1;
-			} else if (strprefixcmp("nodyncast ", curr)) {
-				curr += 10;  /* "nodyncast " */
+			else if ((q = strprefixcmp("nodyncast ", curr)))
 				parser->saw.k.nodyncast = 1;
-			} else if (strprefixcmp("nozeroinit ", curr)) {
-				curr += 11;  /* "nozeroinit " */
+			else if ((q = strprefixcmp("nozeroinit ", curr)))
 				parser->saw.k.nozeroinit = 1;
-			} else if (strprefixcmp("zeroinit ", curr)) {
-				curr += 9;  /* "zeroinit " */
+			else if ((q = strprefixcmp("zeroinit ", curr)))
 				parser->saw.k.zeroinit = 1;
-			} else if (strprefixcmp("refcount ", curr)) {
-				curr += 9;  /* "refcount " */
+			else if ((q = strprefixcmp("refcount ", curr)))
 				parser->saw.k.refcount = 1;
-			} else
+			else
 				break;
 		}
 		if (*next == '{' && strprefixcmp("struct ", curr)) {

@@ -776,7 +776,7 @@ static char *stmecpy(char *dest, char *end, const char *src, const char *src_end
 	len = src_end - src;
 	maxlen = end - dest - 1;
 	if (len > maxlen)
-		len = maxlen;
+		len = maxlen;     /* LCOV_EXCL_LINE */
 	memcpy(dest, src, len);
 	dest[len] = 0;
 	return dest + len;
@@ -797,8 +797,8 @@ static char *stredupto(char *dest, const char *src, const char *until)
 	int len = until-src;
 	char *newdest = realloc(dest, len+1);
 	if (newdest == NULL) {
-		free(dest);
-		return NULL;
+		free(dest);      /* LCOV_EXCL_LINE */
+		return NULL;     /* LCOV_EXCL_LINE */
 	}
 	memcpy(newdest, src, len);
 	newdest[len] = 0;
@@ -840,11 +840,11 @@ static char *replace_ext_temp(char *filename, char *strend, char *bufend, char *
 	}
 	ext = stmcpy(ext, bufend, new_ext);
 	if (ext+1 == bufend)
-		return NULL;
+		return NULL;     /* LCOV_EXCL_LINE */
 	/* prepare temporary filename already in this buffer */
 	pidend = ext + snprintf(ext, bufend-ext, ".%u", g_pid);
 	if (pidend >= bufend)
-		return NULL;
+		return NULL;     /* LCOV_EXCL_LINE */
 	return ext;
 }
 
@@ -865,8 +865,8 @@ static int vaaprintf(struct allocator *alloc, char **retbuf, const char *format,
 	}
 
 	if ((len < 0) || (str = astralloc(len+1)) == NULL) {
-		*retbuf = NULL;
-		return -1;
+		*retbuf = NULL;     /* LCOV_EXCL_LINE */
+		return -1;          /* LCOV_EXCL_LINE */
 	}
 	*retbuf = str;
 	return vsnprintf(str, len+1, format, ap);
@@ -923,7 +923,7 @@ static int get_file_id(FILE *fp, struct file_id *out_id)
 	struct stat stat;
 
 	if (fstat(fileno(fp), &stat) < 0)
-		return -1;
+		return -1;     /* LCOV_EXCL_LINE */
 
 	out_id->dev_id = stat.st_dev;
 	out_id->file_id = stat.st_ino;
@@ -938,7 +938,7 @@ static size_t file_size(FILE *fp)
 
 	/* size unknown on e.g. pipe, then use default buffer size */
 	if (fstat(fileno(fp), &stat) < 0 || !S_ISREG(stat.st_mode))
-		return STDIN_BUFSIZE;
+		return STDIN_BUFSIZE;     /* LCOV_EXCL_LINE */
 	return stat.st_size;
 }
 
@@ -1002,7 +1002,7 @@ static void print_message(struct parser *parser,
 	int colnr;
 
 	if (parser->num_errors == MAX_USER_ERRORS)
-		return;
+		return;     /* LCOV_EXCL_LINE */
 
 	parser->num_errors += severity[0] == 'e';
 	va_start(va_args, message);
@@ -1011,7 +1011,7 @@ static void print_message(struct parser *parser,
 	if (pos > parser->pf.linestart && pos < parser->pf.bufend)
 		colnr = (int)(pos - parser->pf.linestart);
 	else
-		colnr = 1;
+		colnr = 1;     /* LCOV_EXCL_LINE */
 	fprintf(stderr, "%s:%d:%d: %s: %s\n", parser->pf.filename,
 		parser->pf.lineno, colnr, severity, msgbuf);
 }
@@ -1026,9 +1026,9 @@ static int prepare_output_file(struct parser *parser)
 	*parser->pf.outfilename_end = '.';
 	parser->pf.out = fopen(parser->pf.outfilename, "wb");
 	if (parser->pf.out == NULL) {
-		fprintf(stderr, "%s: could not create\n", parser->pf.outfilename);
-		parser->pf.outfailed = 1;
-		return -1;
+		fprintf(stderr, "%s: could not create\n", parser->pf.outfilename);  /* LCOV_EXCL_LINE */
+		parser->pf.outfailed = 1;   /* LCOV_EXCL_LINE */
+		return -1;                  /* LCOV_EXCL_LINE */
 	}
 
 	/* restore original output filename for #line pragmas */
@@ -1044,14 +1044,14 @@ static void outwrite(struct parser *parser, const char *buffer, size_t size)
 	if (parser->pf.out == NULL) {
 		/* do not keep complaining */
 		if (parser->pf.outfailed)
-			return;
+			return;   /* LCOV_EXCL_LINE */
 		if (parser->pf.outpos && memcmp(parser->pf.outpos, buffer, size) == 0) {
 			parser->pf.outpos += size;
 			return;
 		}
 		/* input changed compared to output, start writing */
 		if (prepare_output_file(parser) < 0)
-			return;
+			return;   /* LCOV_EXCL_LINE */
 	}
 
 	fwrite(buffer, 1, size, parser->pf.out);
@@ -1088,9 +1088,9 @@ static void flush_until(struct parser *parser, char *until)
 	size_t size = until - parser->pf.writepos;
 
 	if (parser->pf.writepos > until) {
-		pr_err(NULL, "(ierr) flushing into past");
-		parser->num_errors++;
-		return;
+		pr_err(NULL, "(ierr) flushing into past");    /* LCOV_EXCL_LINE */
+		parser->num_errors++;                         /* LCOV_EXCL_LINE */
+		return;                                       /* LCOV_EXCL_LINE */
 	}
 
 	return outwrite(parser, parser->pf.writepos, size);
@@ -1192,7 +1192,7 @@ void set_from_tpdecl(struct allocator *alloc, struct anytype *dest, anyptr decl)
 		dest->from_tp = FT_ARGS;
 	} else {
 		if (grow_dynarr(alloc, &dest->args) < 0)
-			return;
+			return;   /* LCOV_EXCL_LINE */
 		dest->from_tp = dest->args.num >= FT_INDEX ? dest->args.num : FT_INDEX;
 		dest->args.mem[dest->from_tp] = decl;
 	}
@@ -1420,7 +1420,7 @@ static void save_type_insert(struct parser *parser, char *from, char *text, char
 	struct dynarr *dynarr = &parser->type_inserts;
 
 	if (grow_dynarr_to(&parser->global_mem, dynarr, dynarr->num + 3))
-		return;
+		return;     /* LCOV_EXCL_LINE */
 
 	dynarr->mem[dynarr->num++] = from;
 	dynarr->mem[dynarr->num++] = text;
@@ -1558,7 +1558,7 @@ static char *parse_parameters(struct parser *parser, struct allocator *alloc,
 		if (*next == ')')
 			return next + 1;
 		if (*next == 0)
-			return next;
+			return next;       /* LCOV_EXCL_LINE */
 	}
 }
 
@@ -1570,7 +1570,7 @@ static int insertmember(struct class *class,
 	/* check already exists */
 	if ((entry = strhash_insert(&class->members, member))) {
 		if (hash_insert_nomem(entry))
-			return -1;
+			return -1;   /* LCOV_EXCL_LINE */
 		*dupmember = container_of(entry, struct member, node);
 		return -1;
 	}
@@ -1636,7 +1636,7 @@ static void save_param_type(struct parser *parser, struct allocator *alloc, int 
 {	(void)parser; (void)name; (void)next;
 
 	if (grow_dynarr_to(alloc, tgttypes, position+1) < 0)
-		return;
+		return;   /* LCOV_EXCL_LINE */
 
 	tgttypes->mem[position] = decl;
 	tgttypes->num = position+1;
@@ -1930,7 +1930,7 @@ static struct methodptr *allocmethodvartype(struct parser *parser, struct alloca
 	struct methodptr *mptype;
 
 	if (!(mptype = agenzalloc(sizeof(*mptype))))
-		return NULL;
+		return NULL;     /* LCOV_EXCL_LINE */
 	mptype->t.u.mp = mptype;
 	mptype->t.type = vartype;
 	mptype->rettype = rettype;
@@ -2139,7 +2139,7 @@ static struct deleter *adddeleter(struct parser *parser,
 static int addincludepath(struct parser *parser, char *path)
 {
 	if (grow_dynarr(&parser->global_mem, &parser->includepaths) < 0)
-		return -1;
+		return -1;     /* LCOV_EXCL_LINE */
 
 	/* pointer to commandline so do not have to copy */
 	parser->includepaths.mem[parser->includepaths.num++] = path;
@@ -2155,7 +2155,7 @@ static struct parse_file_item *addfilestack(struct parser *parser)
 
 	newfile = pgenzalloc(sizeof *newfile);
 	if (newfile == NULL)
-		return NULL;
+		return NULL;   /* LCOV_EXCL_LINE */
 
 out:
 	blist_add(&parser->file_stack, newfile, prev);
@@ -2180,9 +2180,9 @@ static struct ancestor *get_ancestor_path(struct parser *parser, struct class *c
 
 	ancestor = hasho_find(&class->ancestors, destclass);
 	if (ancestor == NULL) {
-		pr_err(NULL, "(ierr) cannot find ancestor %s for %s",
-			destclass->name, class->name);
-		return NULL;
+		pr_err(NULL, "(ierr) cannot find ancestor %s for %s",   /* LCOV_EXCL_LINE */
+			destclass->name, class->name);                  /* LCOV_EXCL_LINE */
+		return NULL;                                            /* LCOV_EXCL_LINE */
 	}
 
 	if (ancestor->parent->is_virtual)
@@ -2637,7 +2637,7 @@ static struct ancestor *add_ancestor(struct parser *parser, struct class *class,
 	if (psaprintf((char**)&ancestor, "%*s%s%s%s",
 			(int)offsetof(struct ancestor, path),
 			"", via_class_name, link, path) < 0)
-		return NULL;
+		return NULL;   /* LCOV_EXCL_LINE */
 
 	ancestor->next = NULL;
 	ancestor->parent = origin_parent;
@@ -2821,7 +2821,7 @@ static struct vmt *find_vmt_origin(struct class *class, struct class *vmt_origin
 		if (vmt->origin == vmt_origin)
 			return vmt;
 
-	return NULL;
+	return NULL;     /* LCOV_EXCL_LINE */
 }
 
 static void import_parent(struct parser *parser, char *parsepos,
@@ -2847,9 +2847,9 @@ static void import_parent(struct parser *parser, char *parsepos,
 			/* find same vmt added earlier for this origin */
 			vmt = find_vmt_origin(class, vmtorigin);
 			if (vmt == NULL) {
-				pr_err(parsepos, "(ierr) vmt for parent %s origin %s not "
-					"found", parentclass->name, vmtorigin->name);
-				goto nextvmt;
+				pr_err(parsepos, "(ierr) vmt for parent %s origin %s not "   /* LCOV_EXCL_LINE */
+					"found", parentclass->name, vmtorigin->name);        /* LCOV_EXCL_LINE */
+				goto nextvmt;                                /* LCOV_EXCL_LINE */
 			}
 			/* don't add virtual bases multiple times */
 			if (parentvmt->from_virtual)
@@ -2933,7 +2933,7 @@ static void import_parent(struct parser *parser, char *parsepos,
 		/* point to a vmt for this class */
 		if (member->vmt) {
 			if (member->vmt->child == NULL)
-				pr_err(parsepos, "(ierr) parent's vmt does not point to ours?");
+				pr_err(parsepos, "(ierr) parent's vmt does not point to ours?");   /* LCOV_EXCL_LINE */
 			else {
 				if (parentmember == member->vmt->destructor) {
 					member->vmt->child->destructor = member;
@@ -3166,7 +3166,7 @@ static void print_root_classes(struct parser *parser, struct class *class)
 
 			parent = pgenzalloc(sizeof(*parent));
 			if (parent == NULL)
-				break;
+				break;     /* LCOV_EXCL_LINE */
 
 			parentclass = ancestor->parent->class;
 			parent->class = parentclass;
@@ -4222,9 +4222,9 @@ static void map_template_par(struct parser *parser, char *pos,
 {
 	if (typ(src)->type == AT_TEMPLPAR && typ(expr)->type == AT_TEMPLINST) {
 		if (typ(src)->u.tp->index >= typ(expr)->args.num) {
-			pr_err(pos, "(ierr) tp index %u out of range %u",
-				typ(src)->u.tp->index, typ(expr)->args.num);
-			*target = NULL;
+			pr_err(pos, "(ierr) tp index %u out of range %u",     /* LCOV_EXCL_LINE */
+				typ(src)->u.tp->index, typ(expr)->args.num);  /* LCOV_EXCL_LINE */
+			*target = NULL;                                       /* LCOV_EXCL_LINE */
 		} else {
 			/* TODO: fail on error? */
 			*target = translate_tp(&parser->func_mem, &typ(expr)->args, src);
@@ -4260,8 +4260,8 @@ static void cast_tp_expr(struct parser *parser, char *exprstart, char *exprend,
 		addinsert_format(parser, NULL, exprend, exprend, CONTINUE_AFTER,
 			", struct %s, %s)", class->name, ancestor->path);
 	} else {
-		pr_err(exprstart, "(ierr) template parameter class '%s' is "
-			"not an ancestor of '%s'?", tpclass->name, class->name);
+		pr_err(exprstart, "(ierr) template parameter class '%s' is "       /* LCOV_EXCL_LINE */
+			"not an ancestor of '%s'?", tpclass->name, class->name);   /* LCOV_EXCL_LINE */
 	}
 }
 
@@ -4478,7 +4478,7 @@ static char *access_other_class(struct parser *parser, char *stmtstart,
 		if (thisclass) {
 			ancestor = hasho_find(&thisclass->ancestors, tgtclass);
 			if (ancestor == NULL)
-				return next;
+				return next;     /* LCOV_EXCL_LINE */
 			if (ancestor->parent->is_virtual)
 				thistext = "this->";
 			else
@@ -4589,7 +4589,7 @@ static void parse_methodptr_typedef(struct parser *parser,
 	parser->pf.writepos = params;
 	mptype = addmethodptrtype(parser, rettype, rettypestr, next, name, nameend, params);
 	if (mptype == NULL)
-		return;
+		return;     /* LCOV_EXCL_LINE */
 
 	flush_until(parser, declend);
 	outputs(parser, ";\n} ");
@@ -4765,7 +4765,7 @@ static void print_disposers(struct parser *parser, char *position,
 			next_retblocknr = retblocknr;
 			/* in case no disposers, just to print label */
 			if (disposer == NULL)
-				break;
+				break;     /* LCOV_EXCL_LINE */
 		}
 		outwrite(parser, linestart, position - linestart);
 		memberclass = disposer->class;
@@ -4774,7 +4774,7 @@ static void print_disposers(struct parser *parser, char *position,
 		if (destrclass != memberclass) {
 			if (!get_ancestor_path(parser, memberclass, destrclass,
 					&addr_of, &ancpath, &ancaccess))
-				goto next;
+				goto next;   /* LCOV_EXCL_LINE */
 			dot = ".";
 		} else
 			addr_of = "&", dot = ancpath = "";
@@ -5216,7 +5216,7 @@ static void parse_function(struct parser *parser, char *next)
 				member = addmember(parser, thisclass, rettype,
 					rettypestr, funcname, funcnameend, params, props);
 				if (member == NULL)
-					return;
+					return;     /* LCOV_EXCL_LINE */
 				new_param_types = &member->params;
 			}
 			member->is_implemented = 1;
@@ -5274,13 +5274,13 @@ static void parse_function(struct parser *parser, char *next)
 			thisfuncret, &rettype, print_type_insert);
 		/* create function type for this function */
 		if (!(mp = pgenzalloc(sizeof *mp)))
-			return;
+			return;     /* LCOV_EXCL_LINE */
 		mp->t.u.mp = mp;
 		mp->t.type = AT_FUNCTION;
 		mp->rettype = rettype;
 		immdecl = to_anyptr(&mp->t, 0);
 		if (!(globalfunc = add_global(parser, classname, funcnameend, immdecl)))
-			return;
+			return;     /* LCOV_EXCL_LINE */
 		/* store parameter types */
 		new_param_types = &mp->params;
 	}
@@ -5288,7 +5288,7 @@ static void parse_function(struct parser *parser, char *next)
 	parser->class = thisclass;
 	paramend = scan_token(parser, next, "/\n)");
 	if (paramend == NULL)
-		return;
+		return;     /* LCOV_EXCL_LINE */
 
 	next = skip_whitespace(parser, paramend+1);
 	if (*next == ';') {
@@ -5312,7 +5312,7 @@ static void parse_function(struct parser *parser, char *next)
 	new_param = new_param_types ? param_to_variable_and_type : param_to_variable;
 	if (parse_parameters(parser, &parser->global_mem, thisclass, params, print_type_insert,
 			new_param, new_param_types, check_conflict_param_member) == NULL)
-		return;
+		return;     /* LCOV_EXCL_LINE */
 
 	/* prevent accidental corruption of param_types (of global function parameters) */
 	if (thispath) {
@@ -5325,7 +5325,7 @@ static void parse_function(struct parser *parser, char *next)
 	/* alloc for 2 parentheses levels, always have a next level to store target type */
 	parenlvl0 = pareninfo = fgenzalloc(2*sizeof(*pareninfo));
 	if (pareninfo == NULL)
-		return;
+		return;     /* LCOV_EXCL_LINE */
 
 	seqparen = numwords = 0;
 	parencast = parenprev = NULL;
@@ -5353,7 +5353,7 @@ static void parse_function(struct parser *parser, char *next)
 		curr = skip_whitespace(parser, next);
 		/* skip comments */
 		if (curr[0] == 0)
-			return;
+			return;     /* LCOV_EXCL_LINE */
 		/* pending initializers and this looks like statement, then print */
 		if (!flist_empty(&parser->initializers) && parenprev == NULL &&
 				(*curr == '=' || *curr == '(' || *curr == '{') && numwords < 2) {
@@ -5575,7 +5575,7 @@ static void parse_function(struct parser *parser, char *next)
 					tmplpos = next;
 					newtype = duptype(&parser->func_mem, typ(immdecl));
 					if (newtype == NULL)
-						return;
+						return;     /* LCOV_EXCL_LINE */
 					newtype->type = AT_TEMPLINST;
 					next = parse_templargs(parser, &parser->func_mem,
 						thisclass, newtype->u.class,
@@ -6132,7 +6132,7 @@ static void print_class_alloc(struct parser *parser, struct class *class)
 	} else if (constr_origin != class) {
 		if (!get_ancestor_path(parser, class, constr_origin,
 				&constr_addr, &constr_path, &ancaccess))
-			return;
+			return;     /* LCOV_EXCL_LINE */
 		constr_arrow = "->";
 		callend1 = "\treturn this;\n";
 	} else
@@ -6185,7 +6185,7 @@ static void print_class_zeroinit(struct parser *parser, struct class *class)
 		if (rootconstr->definition != class) {
 			if (!get_ancestor_path(parser, class, rootconstr->definition,
 					&constr_addr, &constr_path, &ancaccess))
-				return;
+				return;     /* LCOV_EXCL_LINE */
 			constr_arrow = "->";
 		} else {
 			constr_addr = constr_arrow = constr_path = "";
@@ -6478,7 +6478,7 @@ static void print_class_addref(struct parser *parser, struct class *class, struc
 	if (class->refcounted->vmt) {
 		path = access = "";
 	} else if (!get_ancestor_path(parser, rootclass, vmt->refcounted, &addr, &path, &access))
-		return;
+		return;     /* LCOV_EXCL_LINE */
 
 	outprintf(parser, "\nstatic struct %s *addref_%s%s%s(struct %s *%sthis)\n{\n",
 		vmtclass->name, class->name, sep, suffix, vmtclass->name, thispre);
@@ -6567,7 +6567,7 @@ static void print_trampolines(struct parser *parser, struct class *class, struct
 			if (implclass != rootclass) {
 				if (!get_ancestor_path(parser, rootclass, implclass,
 						&thisaddr, &thismember, &implaccess))
-					continue;
+					continue;     /* LCOV_EXCL_LINE */
 				thisarrow = "->";
 			} else {
 				thisaddr = thisarrow = thismember = "";
@@ -6684,7 +6684,7 @@ static void print_vmt(struct parser *parser, struct class *class, struct vmt *vm
 		   (but not necessarily toplevel) */
 		if (!get_ancestor_path(parser, rootclass, vmt->origin,
 				&ancaddr, &vmtpath, &vmtaccess))
-			return;
+			return;     /* LCOV_EXCL_LINE */
 		implsep = "_";
 		classsuffix = "root";
 	} else {
@@ -6818,17 +6818,17 @@ static FILE *locate_include_file(struct parser *parser, char *dir, char *nameend
 	/* check if we have already seen/parsed this file */
 	file_id = pgenzalloc(sizeof(*file_id));
 	if (file_id == NULL)
-		goto err_fp;
+		goto err_fp;     /* LCOV_EXCL_LINE */
 	if (get_file_id(fp_inc, file_id) < 0)
-		goto err_fp;
+		goto err_fp;     /* LCOV_EXCL_LINE */
 	if (hash_insert(&parser->files_seen, &file_id->node,
 			uint64hash(file_id->file_id)))
-		goto err_fp;
+		goto err_fp;     /* LCOV_EXCL_LINE */
 	parser->newfilename_end = p;
 	return fp_inc;
-err_fp:
-	fclose(fp_inc);
-	return NULL;
+err_fp:                          /* LCOV_EXCL_LINE */
+	fclose(fp_inc);          /* LCOV_EXCL_LINE */
+	return NULL;             /* LCOV_EXCL_LINE */
 }
 
 enum {
@@ -6859,7 +6859,7 @@ static int try_include_file(struct parser *parser, char *dir, char *nameend)
 	/* allocate temporary to store current state */
 	parse_file_item = addfilestack(parser);
 	if (parse_file_item == NULL)
-		goto err_add;
+		goto err_add;     /* LCOV_EXCL_LINE */
 
 	/* make copy before overwriting parse_file, newfilename is reused later */
 	parse_file = &parse_file_item->pf;
@@ -6913,9 +6913,9 @@ static int try_include_file(struct parser *parser, char *dir, char *nameend)
 	}
 	/* fp_inc was closed by parse_source */
 	return 0;
-err_add:
-	fclose(fp_inc);
-	return -1;
+err_add:                    /* LCOV_EXCL_LINE */
+	fclose(fp_inc);     /* LCOV_EXCL_LINE */
+	return -1;          /* LCOV_EXCL_LINE */
 }
 
 static void try_include(struct parser *parser, char *nameend, enum include_location loc)
@@ -7027,7 +7027,7 @@ static void parse(struct parser *parser)
 
 			next = strchr(parser->pf.pos, '\n');
 			if (next == NULL)
-				break;
+				break;     /* LCOV_EXCL_LINE */
 
 			/* do not skip lineend, let skip_whitespace count lineno */
 			parser->pf.pos = next;
@@ -7103,7 +7103,7 @@ static int parse_source_size(struct parser *parser, char *filename,
 	parser->pf.filename = filename;
 	buffer = read_file_until(in, parser->pf.buffer, size);
 	if (buffer == NULL)
-		return -1;
+		return -1;     /* LCOV_EXCL_LINE */
 	fclose(in);
 
 	/* scan (previously generated) output file for comparison, if applicable */
@@ -7116,7 +7116,7 @@ static int parse_source_size(struct parser *parser, char *filename,
 		parser->newfilename_end = replace_ext_temp(parser->newfilename,
 			parser->newfilename_end, bufend, ext_out);
 		if (parser->newfilename_end == NULL)
-			return -1;
+			return -1;     /* LCOV_EXCL_LINE */
 
 		/* newfilename includes temporary (pid) extension, make a copy
 		 * without it for outfilename, so we can reuse newfilename later */
@@ -7132,7 +7132,7 @@ static int parse_source_size(struct parser *parser, char *filename,
 			parser->pf.outpos = parser->pf.outbuffer;
 			fclose(fp_dest);
 			if (parser->pf.outbuffer == NULL)
-				return -1;
+				return -1;     /* LCOV_EXCL_LINE */
 		} else {
 			parser->pf.outpos = NULL;
 		}
@@ -7150,7 +7150,7 @@ static int parse_source_size(struct parser *parser, char *filename,
 	prev_num_errors = parser->num_errors;
 	parse(parser);
 	if (parser->memerror)
-		return -1;
+		return -1;     /* LCOV_EXCL_LINE */
 	new_errors = parser->num_errors > prev_num_errors;
 	if (!new_errors)
 		print_class_impl(parser);  /* vmt(s), alloc, constr. */

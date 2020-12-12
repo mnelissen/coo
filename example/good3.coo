@@ -26,10 +26,12 @@ void A::A(void)
 	xa = 2;
 }
 
+typedef B C;
+
 int main(void)
 {
-	B b;
-	printf("%d %d\n", b.xa, b.h.xh);
+	C c;
+	printf("%d %d\n", c.xa, c.h.xh);
 	return 0;
 }
 

@@ -1198,12 +1198,6 @@ void set_from_tpdecl(struct allocator *alloc, struct anytype *dest, anyptr decl)
 	}
 }
 
-static void init_anytype(struct anytype *dest, anyptr source)
-{
-	memcpy(dest, typ(source), sizeof(*dest));
-	dest->pointerlevel += raw_ptrlvl(source);
-}
-
 /*** parser helpers ***/
 
 static void *alloc_namestruct_s(struct allocator *alloc,
@@ -4630,8 +4624,11 @@ static void parse_typedef(struct parser *parser, char *declend)
 	next = skip_word(parser->pf.pos);
 	if (class) {
 		classtype = addclasstype(parser, parser->pf.pos, next);
-		if (classtype)
-			init_anytype(&classtype->t, typeptr);
+		if (classtype) {
+			memcpy(&classtype->t, typ(typeptr), sizeof(classtype->t));
+			classtype->t.pointerlevel += raw_ptrlvl(typeptr);
+			classtype->t.implicit = 0;
+		}
 	} else  /* mptype, TODO: do something with type.decl.pointerlevel! */
 		dupfunctiontype(parser, parser->pf.pos, next, func);
 	parser->pf.pos = declend + 1;

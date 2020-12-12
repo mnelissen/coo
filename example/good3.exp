@@ -44,18 +44,20 @@ struct A *A_A(struct A *this)
 #line 27 "good3.coo"
 }
 
+typedef struct B C;
+
 int main(void)
 {
-	struct B b;
-#line 31
-	A_A(&b.A);
-#line 32
-	printf("%d %d\n", b.A.xa, b.A.h.xh);
+	C c;
+#line 33
+	A_A(&c.A);
+#line 34
+	printf("%d %d\n", c.A.xa, c.A.h.xh);
 	return 0;
 }
 
 
-#line 59 "good3.coo.c"
+#line 61 "good3.coo.c"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>

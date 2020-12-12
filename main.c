@@ -114,7 +114,7 @@ enum fromtp { FT_NONE, FT_ARGS,  /* args.mem = declared tp anytype */
 const struct anytype {
 	union {
 		struct class *class;
-		struct methodptr *mp;
+		struct function *fn;
 		struct templpar *tp;    /* template parameter type */
 	} u;
 	struct dynarr args;          /* struct anytype *, template arguments */
@@ -290,12 +290,12 @@ struct classtype {
 	char name[];
 };
 
-struct methodptr {
-	struct anytype t;         /* this func/methodptr as an anytype */
+struct function {
+	struct anytype t;         /* this func/function as an anytype */
 	anyptr rettype;           /* return type of functions/methods of this type */
 	char *rettypestr;         /* return type string to copy for casting */
 	struct dynarr params;     /* parameters in case class parsing is needed */
-	struct hash_entry node;   /* node in parser.methodptrtypes */
+	struct hash_entry node;   /* node in parser.functypes */
 	char name[];
 };
 
@@ -383,7 +383,7 @@ struct parser {
 	struct hash classtypes;       /* struct classtype pointers */
 	struct hash globals;          /* struct variable pointers */
 	struct hash locals;           /* struct variable pointers */
-	struct hash methodptrtypes;   /* struct methodptr pointers */
+	struct hash functypes;        /* struct function pointers */
 	flist(struct class) classes_list;          /* for in-order printing impl */
 	flist(struct initializer) initializers;    /* initializers to be printed */
 	blist(struct disposer) disposers;          /* class variables on stack */
@@ -430,7 +430,7 @@ DEFINE_STRHASH_FIND_E(parser, classes, class, class)
 DEFINE_STRHASH_FIND_E(parser, classtypes, classtype, classtype)
 DEFINE_STRHASH_FIND_E(parser, globals, global, variable)
 DEFINE_STRHASH_FIND_E(parser, locals, local, variable)
-DEFINE_STRHASH_FIND_E(parser, methodptrtypes, methodptr, methodptr)
+DEFINE_STRHASH_FIND_E(parser, functypes, function, function)
 
 pid_t g_pid;
 
@@ -1321,14 +1321,14 @@ static struct class *to_class(const struct anytype *any)
 	return NULL;
 }
 
-static struct methodptr *to_func(const struct anytype *any)
+static struct function *to_func(const struct anytype *any)
 {
-	return any->type == AT_FUNCTION || any->type == AT_METHOD ? any->u.mp : NULL;
+	return any->type == AT_FUNCTION || any->type == AT_METHOD ? any->u.fn : NULL;
 }
 
-static struct methodptr *to_mp(const struct anytype *any)
+static struct function *to_mp(const struct anytype *any)
 {
-	return any->type == AT_METHOD ? any->u.mp : NULL;
+	return any->type == AT_METHOD ? any->u.fn : NULL;
 }
 
 #if 0
@@ -1446,7 +1446,7 @@ static char *parse_type(struct parser *parser, struct allocator *alloc,
 {
 	struct classtype *classtype;
 	struct anytype *newtype = NULL;
-	struct methodptr *mp;
+	struct function *fn;
 	struct templpar *tp;
 	struct class *class;
 	char *name, *next, *q, *tmplpos;
@@ -1501,8 +1501,8 @@ static char *parse_type(struct parser *parser, struct allocator *alloc,
 			}
 			break;
 		}
-		if ((mp = find_methodptr_e(parser, pos, next)) != NULL) {
-			anyptr = to_anyptr(&mp->t, 0);
+		if ((fn = find_function_e(parser, pos, next)) != NULL) {
+			anyptr = to_anyptr(&fn->t, 0);
 			break;
 		}
 		if (ctxclass == NULL)
@@ -1749,9 +1749,9 @@ static struct member *addmember(struct parser *parser,
 		class->num_abstract++;
 	member->rettype = rettype;
 	if (typ(rettype)->type == AT_METHOD && !params) {
-		member->rettypestr = typ(rettype)->u.mp->rettypestr;
+		member->rettypestr = typ(rettype)->u.fn->rettypestr;
 		member->paramstext = "";
-		memcpy(&member->params, &typ(rettype)->u.mp->params, sizeof(member->params));
+		memcpy(&member->params, &typ(rettype)->u.fn->params, sizeof(member->params));
 		goto out;
 	}
 
@@ -1880,29 +1880,29 @@ static struct variable *add_global(struct parser *parser,
 	return variable;
 }
 
-static struct methodptr *allocmethodptrtype(struct parser *parser,
+static struct function *allocfunctiontype(struct parser *parser,
 		anyptr rettype, char *name, char *nameend)
 {
-	struct methodptr *mptype;
+	struct function *mptype;
 
-	mptype = alloc_namestruct(&parser->global_mem, struct methodptr, name, nameend);
+	mptype = alloc_namestruct(&parser->global_mem, struct function, name, nameend);
 	if (mptype == NULL)
 		return NULL;    /* LCOV_EXCL_LINE */
-	if (strhash_insert(&parser->methodptrtypes, mptype))
+	if (strhash_insert(&parser->functypes, mptype))
 		return NULL;
 
 	mptype->t.type = AT_METHOD;
-	mptype->t.u.mp = mptype;
+	mptype->t.u.fn = mptype;
 	mptype->rettype = rettype;
 	return mptype;
 }
 
-static struct methodptr *addmethodptrtype(struct parser *parser, anyptr rettype,
+static struct function *addfunctiontype(struct parser *parser, anyptr rettype,
 	char *rettypestr, char *rettypeend, char *name, char *nameend, char *params)
 {
-	struct methodptr *mptype;
+	struct function *mptype;
 
-	mptype = allocmethodptrtype(parser, rettype, name, nameend);
+	mptype = allocfunctiontype(parser, rettype, name, nameend);
 	if (mptype == NULL)
 		return NULL;    /* LCOV_EXCL_LINE */
 
@@ -1912,12 +1912,12 @@ static struct methodptr *addmethodptrtype(struct parser *parser, anyptr rettype,
 	return mptype;
 }
 
-static struct methodptr *dupmethodptrtype(struct parser *parser,
-		char *name, char *nameend, struct methodptr *source)
+static struct function *dupfunctiontype(struct parser *parser,
+		char *name, char *nameend, struct function *source)
 {
-	struct methodptr *mptype;
+	struct function *mptype;
 
-	mptype = allocmethodptrtype(parser, source->rettype, name, nameend);
+	mptype = allocfunctiontype(parser, source->rettype, name, nameend);
 	if (mptype == NULL)
 		return NULL;
 
@@ -1926,14 +1926,14 @@ static struct methodptr *dupmethodptrtype(struct parser *parser,
 	return mptype;
 }
 
-static struct methodptr *allocmethodvartype(struct parser *parser, struct allocator *alloc,
+static struct function *allocfuncvartype(struct parser *parser, struct allocator *alloc,
 		enum anytyp vartype, anyptr rettype, char *params)
 {
-	struct methodptr *mptype;
+	struct function *mptype;
 
 	if (!(mptype = agenzalloc(sizeof(*mptype))))
 		return NULL;     /* LCOV_EXCL_LINE */
-	mptype->t.u.mp = mptype;
+	mptype->t.u.fn = mptype;
 	mptype->t.type = vartype;
 	mptype->rettype = rettype;
 	parse_parameters(parser, &parser->func_mem, NULL, params, print_type_insert,
@@ -2329,13 +2329,13 @@ static void pr_lineno(struct parser *parser, int lineno)
 
 static int var_to_decl_params(struct variable *var, anyptr *ret_decl, struct dynarr **retparams)
 {
-	struct methodptr *mp;
+	struct function *fn;
 
 	if (var == NULL)
 		return -1;
 
 	*ret_decl = var->decl;
-	*retparams = (mp = to_func(typ(var->decl))) ? &mp->params : NULL;
+	*retparams = (fn = to_func(typ(var->decl))) ? &fn->params : NULL;
 	return 0;
 }
 
@@ -4138,7 +4138,7 @@ static struct ancestor *accessancestor(anyptr expr, char *exprstart,
 	return ancestor;
 }
 
-static void parse_method(struct parser *parser, char *stmtstart, struct methodptr *targetmp,
+static void parse_method(struct parser *parser, char *stmtstart, struct function *targetmp,
 		char *exprstart, char *exprend, anyptr expr, struct class *tgtclass,
 		char *name, char *nameend, struct member *member)
 	/* assumes expr->type == AT_CLASS */
@@ -4270,7 +4270,7 @@ static void cast_tp_expr(struct parser *parser, char *exprstart, char *exprend,
 }
 
 static struct member *parse_member(struct parser *parser, char *stmtstart,
-	struct methodptr *targetmp, int expr_is_oneword, char *exprstart, char *exprend,
+	struct function *targetmp, int expr_is_oneword, char *exprstart, char *exprend,
 	anyptr expr, char *name, char *nameend, anyptr *retdecl, struct dynarr **retparams)
 {
 	struct member *member;
@@ -4458,7 +4458,7 @@ static int check_ancestor_visibility(struct parser *parser, struct member *membe
 }
 
 static char *access_other_class(struct parser *parser, char *stmtstart,
-		struct methodptr *targetmp, struct class *thisclass, struct class *tgtclass,
+		struct function *targetmp, struct class *thisclass, struct class *tgtclass,
 		char *accothname, char *colons, char *name, char *next, struct dynarr **retparams)
 {
 	struct member *member;
@@ -4523,7 +4523,7 @@ static char *access_other_class(struct parser *parser, char *stmtstart,
 }
 
 static char *insertmpcall(struct parser *parser, int expr_is_oneword, char *stmtstart,
-		char *exprstart, char *exprend, struct methodptr *targetmp,
+		char *exprstart, char *exprend, struct function *targetmp,
 		char *parenpos, int pointerlevel)
 {
 	char *arrow, *sep_or_end, *next, tvarname[16];
@@ -4564,7 +4564,7 @@ static void parse_methodptr_typedef(struct parser *parser,
 		anyptr rettype, char *rettypestr, char *next, char *declend)
 {
 	char *params, *nameend, *opentext, *name = next + 4;   /* after '(*::' */
-	struct methodptr *mptype;
+	struct function *mptype;
 
 	nameend = skip_word(name);
 	params = skip_whitespace(parser, nameend);
@@ -4591,7 +4591,7 @@ static void parse_methodptr_typedef(struct parser *parser,
 	/* also parses the params and inserts implicit struct where necessary
 	   so make sure printing upto params is complete */
 	parser->pf.writepos = params;
-	mptype = addmethodptrtype(parser, rettype, rettypestr, next, name, nameend, params);
+	mptype = addfunctiontype(parser, rettype, rettypestr, next, name, nameend, params);
 	if (mptype == NULL)
 		return;     /* LCOV_EXCL_LINE */
 
@@ -4606,7 +4606,7 @@ static void parse_methodptr_typedef(struct parser *parser,
 static void parse_typedef(struct parser *parser, char *declend)
 {
 	struct classtype *classtype;
-	struct methodptr *func;
+	struct function *func;
 	struct class *class;
 	char *next, *typestr;
 	anyptr typeptr;
@@ -4633,7 +4633,7 @@ static void parse_typedef(struct parser *parser, char *declend)
 		if (classtype)
 			init_anytype(&classtype->t, typeptr);
 	} else  /* mptype, TODO: do something with type.decl.pointerlevel! */
-		dupmethodptrtype(parser, parser->pf.pos, next, func);
+		dupfunctiontype(parser, parser->pf.pos, next, func);
 	parser->pf.pos = declend + 1;
 }
 
@@ -5121,7 +5121,7 @@ static void parse_function(struct parser *parser, char *next)
 	struct member *member, *submember, *constr;
 	struct variable *declvar, *globalfunc;
 	struct initializer *initializer;
-	struct methodptr *mp;
+	struct function *fn;
 	struct insert *insert_before;
 	char *curr, *funcname, *funcnameend, *classname, *name, *nameend;
 	char *exprend, *params, *param0, *paramend, *str1, *str2, *tmplpos;
@@ -5214,7 +5214,7 @@ static void parse_function(struct parser *parser, char *next)
 				parse_type(parser, &parser->func_mem, thisclass,
 					thisfuncret, &rettype, save_print_type_insert);
 				props.is_function = 1;
-				/* construct proper rettypestr in case used for methodptr */
+				/* construct proper rettypestr in case used for function */
 				rettypestr = print_type_inserts(parser, &parser->global_mem,
 					thisfuncret, thisfuncretend);
 				member = addmember(parser, thisclass, rettype,
@@ -5277,16 +5277,16 @@ static void parse_function(struct parser *parser, char *next)
 		parse_type(parser, &parser->global_mem, NULL,
 			thisfuncret, &rettype, print_type_insert);
 		/* create function type for this function */
-		if (!(mp = pgenzalloc(sizeof *mp)))
+		if (!(fn = pgenzalloc(sizeof *fn)))
 			return;     /* LCOV_EXCL_LINE */
-		mp->t.u.mp = mp;
-		mp->t.type = AT_FUNCTION;
-		mp->rettype = rettype;
-		immdecl = to_anyptr(&mp->t, 0);
+		fn->t.u.fn = fn;
+		fn->t.type = AT_FUNCTION;
+		fn->rettype = rettype;
+		immdecl = to_anyptr(&fn->t, 0);
 		if (!(globalfunc = add_global(parser, classname, funcnameend, immdecl)))
 			return;     /* LCOV_EXCL_LINE */
 		/* store parameter types */
-		new_param_types = &mp->params;
+		new_param_types = &fn->params;
 	}
 
 	parser->class = thisclass;
@@ -5751,10 +5751,10 @@ static void parse_function(struct parser *parser, char *next)
 				if (*next == ')') {
 					/* create temporary type */
 					rettype = to_anyptr(decl, raw_ptrlvl(pareninfo->exprdecl));
-					if ((mp = allocmethodvartype(parser, &parser->func_mem,
+					if ((fn = allocfuncvartype(parser, &parser->func_mem,
 							funcvartype, rettype, curr+1)) != NULL) {
 						addvariable(parser, blocklevel,
-							to_anyptr(&mp->t, raw_ptrlvl(immdecl)),
+							to_anyptr(&fn->t, raw_ptrlvl(immdecl)),
 							funcvarname, funcvarnameend);
 					}
 				}
@@ -5805,10 +5805,10 @@ static void parse_function(struct parser *parser, char *next)
 			if (state == NO_CONSTRUCT) {
 				pr_err(curr, "no constructor in class %s", exprclass->name);
 			} else {
-				mp = to_mp(typ(immdecl)) ?: to_mp(typ(pareninfo->exprdecl));
-				if (mp && ptrlvl(pareninfo->exprdecl) < 2) {
+				fn = to_mp(typ(immdecl)) ?: to_mp(typ(pareninfo->exprdecl));
+				if (fn && ptrlvl(pareninfo->exprdecl) < 2) {
 					next = insertmpcall(parser, expr_is_oneword, stmtstart,
-						pareninfo->exprstart, exprend, mp,
+						pareninfo->exprstart, exprend, fn,
 						curr, ptrlvl(pareninfo->exprdecl));
 				}
 			}
@@ -5927,8 +5927,8 @@ static void parse_function(struct parser *parser, char *next)
 					   for functions, don't copy the last type upwards */
 					parenprev->exprsrc = EXPRSRC_FUNCRES;
 					parenprev->targetparams.params = NULL;
-					if ((mp = to_func(typ(parenprev->exprdecl))) != NULL)
-						parenprev->exprdecl = mp->rettype;
+					if ((fn = to_func(typ(parenprev->exprdecl))) != NULL)
+						parenprev->exprdecl = fn->rettype;
 				} else if (typ(parenprev->exprdecl)->type == AT_UNKNOWN) {
 					if (typ(pareninfo->exprdecl)->type != AT_UNKNOWN)
 						parenprev->exprdecl = pareninfo->exprdecl;
@@ -7285,7 +7285,7 @@ static int initparser(struct parser *parser)
 		strhash_init(&parser->classtypes, 64, classtype) < 0 ||
 		strhash_init(&parser->globals, 64, variable) < 0 ||
 		strhash_init(&parser->locals, 16, variable) < 0 ||
-		strhash_init(&parser->methodptrtypes, 16, methodptr) < 0 ||
+		strhash_init(&parser->functypes, 16, function) < 0 ||
 		hash_init(&parser->files_seen, compare_file_ids,
 			64, offsetof(struct file_id, node), 0) < 0;
 }
@@ -7309,7 +7309,7 @@ static void deinit_parser(struct parser *parser)
 	hash_deinit(&parser->classtypes);
 	hash_deinit(&parser->globals);
 	hash_deinit(&parser->locals);
-	hash_deinit(&parser->methodptrtypes);
+	hash_deinit(&parser->functypes);
 	hash_deinit(&parser->files_seen);
 	blist_foreach_rev(pfitem, &parser->file_avail, prev)
 		free_file(&pfitem->pf);

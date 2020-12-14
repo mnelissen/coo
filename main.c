@@ -1250,8 +1250,13 @@ static struct class *addclass(struct parser *parser, char *classname, char *name
 	if (class == NULL)
 		return NULL;    /* LCOV_EXCL_LINE */
 
+	if (!init_class(parser, class)) {
+		pr_err(classname, "duplicate class '%s'", class->name);
+		return NULL;
+	}
+
 	flist_add(&parser->classes_list, class, next);
-	return init_class(parser, class);
+	return class;
 }
 
 static char *get_class_funcinsert(struct parser *parser, struct class *class)
@@ -1272,6 +1277,7 @@ static struct classtype *addclasstype(struct parser *parser, char *typename, cha
 
 	if (strhash_insert(&parser->classtypes, type)) {
 		/* already exists, no free necessary, using parser memory */
+		pr_err(typename, "duplicate classtype '%s'", type->name);
 		return NULL;
 	}
 	return type;
@@ -1713,7 +1719,7 @@ static struct member *addmember(struct parser *parser,
 		char *membername, char *nameend, char *params, struct memberprops props)
 {
 	struct member *member, *dupmember;
-	char *end, *parsepos = rettypestr, void_ret;
+	char *end, *parsepos = rettypestr, *message, void_ret;
 
 	/* special check for destructors because their names vary (== ~classname) */
 	if (membername[0] == '~' && class->vmt && class->vmt->destructor) {
@@ -1724,11 +1730,12 @@ static struct member *addmember(struct parser *parser,
 
 	member = allocmember_e(parser, class, membername, nameend, &dupmember);
 	if (member == NULL) {
-		*nameend = 0;
 		if (dupmember) {
-			pr_err(membername, "duplicate member %s, inherited from %s,"
-				" did you mean override?", membername,
-				dupmember->origin->name);
+			message = dupmember->origin != class
+				? "duplicate member %s, inherited from %s,"
+					" did you mean override?"
+				: "duplicate member %s";
+			pr_err(membername, message, dupmember->name, dupmember->origin->name);
 		}
 		return NULL;
 	}
@@ -1847,7 +1854,8 @@ static struct variable *addvariable(struct parser *parser, unsigned blocklevel,
 	variable->prev = parser->last_local;
 	parser->last_local = variable;
 	if (strhash_insert(&parser->locals, variable)) {
-		/* no need to free variable, ref stored in dynarr */
+		/* don't bother freeing variable from temporary function memory */
+		pr_err(membername, "duplicate variable name %s", variable->name);
 		return NULL;
 	}
 
@@ -3529,6 +3537,7 @@ static struct class *parse_struct(struct parser *parser, char *pos_struct, char 
 			}
 
 			nameend = skip_word(parentname);
+			next = skip_whitespace(parser, nameend);
 			parentclasstype = find_classtype_e(parser, parentname, nameend);
 			if (parentclasstype == NULL) {
 				pr_err(parentname, "cannot find parent class");
@@ -3569,7 +3578,6 @@ static struct class *parse_struct(struct parser *parser, char *pos_struct, char 
 			}
 
 			/* check template types to be mapped */
-			next = skip_whitespace(parser, nameend);
 			if (*next == '<')
 				if ((next = parse_templargs(parser, &parser->global_mem,
 					class, parentclass, next, &parent->templ_map)) == NULL)
@@ -3765,7 +3773,7 @@ static struct class *parse_struct(struct parser *parser, char *pos_struct, char 
 			| memberprops.is_virtual | memberprops.is_function;
 		if (memberprops.is_virtual && !memberprops.is_function) {
 			pr_err(membername, "member variable cannot be virtual");
-			continue;
+			goto finish_addmember;
 		}
 
 		/* do not print functions or static variables inside the struct */
@@ -5629,6 +5637,9 @@ static void parse_function(struct parser *parser, char *next)
 				immdecl = to_anyptr(decl, raw_ptrlvl(pareninfo->exprdecl));
 				clear_ptrlvl(&pareninfo->exprdecl);
 				declvar = addvariable(parser, blocklevel, immdecl, name, next);
+				if (declvar == NULL)
+					break;
+
 				parser->declvar_start = name;
 				declclass = to_class(decl);
 				if (ptrlvl(immdecl) == 0 && declclass) {

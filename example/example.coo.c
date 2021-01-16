@@ -421,7 +421,8 @@ struct foo *new_foo(void)
 {
 	struct foo *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
-	return foo_foo_root(this);
+	if (!foo_foo_root(this)) return free(this), NULL;
+	return this;
 }
 
 void foo_foo_root_zi(struct foo *this)
@@ -459,7 +460,8 @@ struct A *new_A(void)
 {
 	struct A *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
-	return A_A_root(this);
+	if (!A_A_root(this)) return free(this), NULL;
+	return this;
 }
 
 void A_A_root_zi(struct A *this)
@@ -507,7 +509,8 @@ struct B *new_B(void)
 {
 	struct B *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
-	return B_B_root(this);
+	if (!B_B_root(this)) return free(this), NULL;
+	return this;
 }
 
 void B_B_root_zi(struct B *this)
@@ -564,7 +567,7 @@ struct C *new_C(void)
 {
 	struct C_root *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
-	C_C_root(this);
+	if (!C_C_root(this)) return free(this), NULL;
 	return &this->C;
 }
 
@@ -579,7 +582,8 @@ struct C *C_C_root(struct C_root *this)
 	this->C.A = &this->A;
 	this->A.vmt = &A_vmt.vmt_base;
 	this->C.vmt = &C_vmt.vmt_base;
-	A_A(this->C.A);
+	if (!A_A(this->C.A))
+		return NULL;
 	return &this->C;
 }
 
@@ -620,7 +624,8 @@ struct D *new_D(struct A *a)
 {
 	struct D *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
-	return D_D_root(this, a);
+	if (!D_D_root(this, a)) return free(this), NULL;
+	return this;
 }
 
 void D_D_root_zi(struct D *this, struct A *a)
@@ -669,7 +674,8 @@ struct E *new_E(void)
 {
 	struct E *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
-	return E_E_root(this);
+	if (!E_E_root(this)) return free(this), NULL;
+	return this;
 }
 
 void E_E_root_zi(struct E *this)

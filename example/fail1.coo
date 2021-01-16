@@ -1,30 +1,247 @@
 #include <stdio.h>
 
-struct A {
+typedef struct A {
 	int a1;
 	virtual void vfunc_a(int a2);
-	void A();
-} A;
-
-struct B : A {
-	override vfunc_a;
+	virtual void vfunc_aa(int aa);
+	void func_aa(int aa);
 	virtual void vfunc_b(int b2);
-	int b1;
-	A a_local;
-	void B();
+	A* A(int a1);
+	virtual ~A();
+ protected:
+	int prot_a;
+ private:
+	int priv_a;
+} AA;
+
+struct A {};          /* duplicate class */
+struct AA {};         /* duplicate classtype */
+struct AB<0> {};      /* invalid template parameter name */
+struct AC<T:0> {};    /* invalid class name for templpar */
+struct AD<T:X*> {};   /* unknown class name for templpar */
+struct AE<T:A**> {};  /* expect single pointer type */
+
+struct Aa {
+	virtual void vfunc_aa(int a1) = 0;
 };
 
-void A::A(void)
+struct An {
+	static int static_an;
+	int a1;
+	void ~invalid();        /* wrong destructor name */
+ protected:
+	int prot_an;
+	int prot_an_func();
+ private:
+        int priv_an;
+};
+
+struct Ar : virtual A, An {     /* put non-virtual first */
+	int ar;
+};
+
+struct As : An, A {             /* put parent with vmt first */
+	int as;
+};
+
+struct Aq : An @ {              /* invalid character */
+};
+
+struct At<T> {
+	T at;
+};
+
+nozeroinit struct B : A {       /* must be zeroinit because A is zeroinit */
+	override a vfunc_a();   /* wrong extra "a", no parameters allowed */
+	override vfunc_a2;      /* does not exist */
+	override func_aa;       /* exists, but not virtual */
+	void vfunc_b(int b2);   /* should use override */
+	int b1 -;               /* ignore unexpected character at end */
+	char b1;                /* duplicate member */
+	virtual int b2;         /* member fields cannot be virtual */
+	Aa a_local;             /* cannot have literal of abstract class */
+	A a_local;              /* B must be zeroinit, because A is */
+	A a_forgot;             /* not initialized in constructor */
+	An an;
+	void B();
+	virtual ~B();           /* should use override */
+	override ~C();          /* wrong destructor name */
+ private:
+	override vfunc_b;       /* cannot decrease visibility */
+ unknown:                       /* unknown visibility modifier */
+};
+
+struct B5 : Aa {
+	override vfunc_aa;
+};
+
+refcount struct C<T:A*> {
+	T *a;
+	int C;   /* constructor name, must be a function */
+	int C_root();   /* must return void or C* */
+	virtual void vfunc_C(void) = 2;   /* invalid syntax */
+	int func_C(void);
+	void ~C();      /* refcount class destructor must be virtual */
+};
+
+refcount struct C2 {
+	int a1;   /* causes duplicate with An in D */
+	A a;      /* causes missing root constructor due to non-void member */
+};
+refcount struct C3 {
+	int c3;
+};
+final struct C4 {};
+struct C5 : Aa {
+	override vfunc_aa;
+};
+
+typedef A* pA;
+
+struct D : C,     /* need template argument */
+           Ax,    /* non-existent Ax */
+	   pA,    /* cannot inherit from pointer type */
+	   C4 {   /* cannot inherit from final */
+	          /* must be refcounted because C2 is refcounted */
+};
+
+refcount struct D2 : C2, C3 {   /* cannot inherit from multiple refcounting classes */
+	int d2;
+};
+
+struct D5 : B5, C5 {   /* need override vfunc_a */
+};
+
+struct E : B, A {  /* duplicate field a1 from A, and via B */
+	int e;
+};
+
+C *missing;   /* expect template argument */
+D *d_global;
+D *d_global;  /* duplicate global variable */
+typedef C2 *pC2_t;
+typedef void (*func)(C *c);
+typedef void (*func)(C *c);   /* duplicate function type */
+typedef func func2;
+typedef func func2;           /* duplicate function type */
+typedef void (*func%);        /* don't trip over invalid syntax */
+typedef void (*func)%;        /* don't trip over invalid syntax */
+func::coo_class;  /* func is a function type, not a coo class */
+
+A* A::A(void)
 {
 	a1 = -1;
+	this->priv_a = 1;     /* OK: can access private member */
+}
+
+void func_D(D* d)
+{
 }
 
 void A::vfunc_a(int arg)
 {
+	A a1;         /* need to provide arguments to construct class A */
+	Aa *a = new Aa;  /* cannot instantiate abstract class */
+	Aa a2;           /* also not as literal */
+	An an(3);     /* class An does not have a constructor */
+	B<D*> *b;     /* B is not a template class */
+	Ar ar, *par;  /* cannot combine pointer/non-pointer root-req class */
+	C2 *c2 = new C2;
+	pC2_t *pc2 = new pC2_t;   /* 'new <type>' cannot be pointer type */
+	D *c2;        /* duplicate variable name */
+	C<int> c;     /* template arguments must be a pointer type */
+	C<A*,B*> c;   /* too many template arguments */
+	C<0> c;       /* expect a name as template argument */
+	C<A*;         /* invalid syntax */
+	C<An*> can;   /* An does not descend from A */
+	void (*::mvar)(void);  /* methodvars have to be typedef'ed types */
+	void (::xx);  /* invalid syntax, unexpected :: */
+	At<B*> *ab = new X;   /* unknown class X */
+	At<A*> *aa;
+	At<A**> *apa;
+	At<func> *afunc;
+	At<void*> *avoid;
+	At<unsigned int*> *aint;
+	At<int@>;       /* invalid syntax */
+	ab = aa;        /* B is not an ancestor of A */
+	aa = afunc;     /* incompatible template argument function vs A */
+	aa = apa;       /* wrong pointerlevel */
+	aa = avoid;     /* expect a class */
+	aint = avoid;   /* unknown types */
+	delete c2 + 1;  /* cannot delete complex expression */
+	delete unknown; /* unknown variable */
+	func_D(ab->at); /* parameter need D* not an ancestor of B */
+	aa = dynamic_cast<func;        /* invalid syntax, expect '>' */
+	aa = dynamic_cast<A**>(x);     /* expect single pointer */
+	aa = dynamic_cast<An*>(x);     /* An is not dynamic castable */
 	printf("A::vfunc(%d), a1=%d\n", arg, a1);
+}
+
+void As::As()
+{
+	/* constructor must be declared in class */
+	A();
+	A();
+}
+
+void An::~An()
+{
+	/* destructor must be declared in class */
+}
+
+void An::syntax(void)@{}     /* syntax error */
+
+void Aerror::func(void)
+{
+	/* class Aerror not declared */
 }
 
 void B::B()
 {
 	a_local.A_root();
+	a_local.A_root();   /* duplicate call to member root constructor */
+	an.y = 1;           /* member does not exist */
+	an.static_an = 1;   /* cannot access static member this way */
+	an.prot_an = 1;     /* cannot access protected member */
+	an.priv_an = 1;     /* cannot access private member */
+	priv_a = 1;         /* cannot access inherited private member */
+	this->prot_a = 1;   /* OK: can access inherited protected member */
+	An::a1 = 1;         /* can only access functions with X::A */
+	An::a2 = An::prot_an_func;  /* does not exist; cannot access protected */
+}
+
+void B::vfunc_aa(int aa)
+{
+	/* overriding vfunc_aa without declaring makes it invisible */
+	{
+		B b;
+		aa = 1;     /* TODO error does not trigger without this line */
+		return;     /* cannot return from nested block with variables */
+	}
+}
+
+void B::func_aa(int aa)
+{
+	/* normal function func_aa is defined in A, not B */
+}
+
+void B::func_b(int a1, int an)   /* also have member named 'a1', 'an' */
+{
+}
+
+int C::func_C(void)
+{
+	B b;
+	func_A(c);
+	/* no return statement while using destruct-required literal B */
+}
+
+void C::~C()
+{
+	/* destructor must be declared in class */
+}
+
+void C::~invalid()
+{
+	/* wrong destructor name */
 }

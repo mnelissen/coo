@@ -17,7 +17,7 @@ struct B : A {
 	int get_b2(void);
 };
 
-struct C : A {
+struct C : public A {    /* redundant public */
  protected:
 	int c1, c2;
  public:

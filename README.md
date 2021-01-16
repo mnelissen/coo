@@ -506,16 +506,18 @@ the reference count. When this variable goes out of scope the reference count
 is decreased again. If it falls below zero, the instance is freed.
 
 If a class inherits from a refcounted base, then refcounting works equally,
-accessing the refcounter in the base class. Declaring refcount on a class that
-inherits from a base class is tricky: when passing refcounted pointers to
-a non-refcounted parent class, the manipulations there as pointer to parent class
-are not refcounted. The user is responsible for making sure the lifetime guarantees
-are met (just like for any C pointer).
+accessing the inherited refcounter. When a refcounted base class has virtual
+methods, the refcounter is placed inside the root class for that class.
 
-It's not allowed to inherit literally from two refcounted base classes, as there
-would be two refcounters. In such case the base class needs to be virtually
-inherited (directly or indirectly). The cost is increasing/decreasing the
-refcount becomes a virtual call.
+Declaring refcount on a class that inherits from a base class is tricky: when
+passing refcounted pointers to a non-refcounted parent class, the manipulations
+there as pointer to parent class are not refcounted. The user is responsible for
+making sure the lifetime guarantees are met (just like for any C pointer).
+
+It's not allowed to inherit literally from two refcounted base classes that have
+no virtual methods, as there would be two refcounters. In such case the base class
+needs to be virtually inherited (directly or indirectly). The cost is
+increasing/decreasing the refcount becomes a virtual call.
 
 ``` c
 refcount struct A {
@@ -604,7 +606,11 @@ the parser anyway.
 * implement return from nested block with stack variables
 * dynamic cast assignment with refcounted pointers
 * test refcounting in class E for good8
+* test class with non-vmt refcounting parent plus a vmt refcounting parent
 * test global function prototype with COO class parameter type(s) + body later
+* test nested struct
+* test stack variable literal that is template rootclass
+* generate (root) constructor with automatic unwind (destruct?) on error
 
 ## License
 

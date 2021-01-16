@@ -183,7 +183,8 @@ struct A *new_A(int *init_a)
 {
 	struct A *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
-	return A_A_root(this, init_a);
+	if (!A_A_root(this, init_a)) return free(this), NULL;
+	return this;
 }
 
 void A_A_root_zi(struct A *this, int *init_a)
@@ -227,7 +228,8 @@ struct B *new_B(char *init_b)
 {
 	struct B *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
-	return B_B_root(this, init_b);
+	if (!B_B_root(this, init_b)) return free(this), NULL;
+	return this;
 }
 
 void B_B_root_zi(struct B *this, char *init_b)
@@ -259,7 +261,8 @@ struct Z *new_Z(int *init_z)
 {
 	struct Z *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
-	return Z_Z(this, init_z);
+	if (!Z_Z(this, init_z)) return free(this), NULL;
+	return this;
 }
 
 void Z_Z_zi(struct Z *this, int *init_z)
@@ -314,7 +317,8 @@ struct C *new_C(int *init_a, char *init_b, int *init_z)
 {
 	struct C *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
-	return C_C_root(this, init_a, init_b, init_z);
+	if (!C_C_root(this, init_a, init_b, init_z)) return free(this), NULL;
+	return this;
 }
 
 void C_C_root_zi(struct C *this, int *init_a, char *init_b, int *init_z)

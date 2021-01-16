@@ -40,7 +40,7 @@ int B_get_b2(struct B *this);
 struct B *B_B_root(struct B *this);
 #line 20 "good1.coo"
 struct C {
-	struct A A;
+	struct A A;    /* redundant public */
 	int c1, c2;
 };
 
@@ -274,7 +274,8 @@ struct B *new_B(void)
 {
 	struct B *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
-	return B_B_root(this);
+	if (!B_B_root(this)) return free(this), NULL;
+	return this;
 }
 
 void B_B_root_zi(struct B *this)
@@ -308,7 +309,8 @@ struct C *new_C(void)
 {
 	struct C *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
-	return C_C_root(this);
+	if (!C_C_root(this)) return free(this), NULL;
+	return this;
 }
 
 void C_C_root_zi(struct C *this)
@@ -357,7 +359,8 @@ struct D *new_D(void)
 {
 	struct D *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
-	return D_D_root(this);
+	if (!D_D_root(this)) return free(this), NULL;
+	return this;
 }
 
 void D_D_root_zi(struct D *this)

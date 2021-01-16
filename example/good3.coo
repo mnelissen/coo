@@ -26,12 +26,28 @@ void A::A(void)
 	xa = 2;
 }
 
+B::coo_class;
+
+zeroinit struct Dz {
+	int xd;
+};
+
+nozeroinit struct Dn {
+	int xd;
+};
+
 typedef B C;
+typedef Dz Ez;
+typedef Dn En;
 
 int main(void)
 {
 	C c;
-	printf("%d %d\n", c.xa, c.h.xh);
+	C *pc = new C;
+	Ez *pez = new Ez;
+	En *pen = new En;
+	pen->xd = 3;
+	printf("%d %d %d %d %d %d\n", c.xa, c.h.xh, pc->xa, pc->h.xh, pez->xd, pen->xd);
 	return 0;
 }
 

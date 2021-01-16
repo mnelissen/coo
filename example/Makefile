@@ -30,7 +30,7 @@ coortlopt.o: ../coortl.c
 coortldbg.o: ../coortl.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 fail%_run: fail%.coo fail%.exp $(COO)
-	$(COO_COV) $< 2>&1 | diff -u fail$*.exp -
+	$(COO_COV) -m999 $< 2>&1 | cut -f4- -d: | diff -u fail$*.exp -
 good%.coo.c: good%.coo good%.exp $(COO)
 	$(COO) $< 2>&1 && touch good$*.coo.c
 	diff -u good$*.exp good$*.coo.c
@@ -43,6 +43,7 @@ good%_run: good%_exe good%.ref
 %.cov.c: %.coo $(COO_COV)
 	$(COO_COV) -xs.cov.c $< 2>&1
 report/index.html: report $(TESTS_COV) $(TESTS_FAIL)
+	$(COO_COV) -h 2>/dev/null || true
 	lcov -c -q -d .. --output-file report/coverage.info
 	genhtml -q report/coverage.info --output-directory report
 report:

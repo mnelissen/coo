@@ -66,7 +66,8 @@ struct Base *new_Base(void *init_a)
 {
 	struct Base *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
-	return Base_Base(this, init_a);
+	if (!Base_Base(this, init_a)) return free(this), NULL;
+	return this;
 }
 
 void Base_Base_zi(struct Base *this, void *init_a)
@@ -85,7 +86,7 @@ struct Derived *new_Derived(void *init_a)
 {
 	struct Derived *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
-	Base_Base(&this->Base, init_a);
+	if (!Base_Base(&this->Base, init_a)) return free(this), NULL;
 	return this;
 }
 

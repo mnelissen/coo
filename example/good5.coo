@@ -64,11 +64,7 @@ void E::E(T n_e1, T n_e2)
 	e2 = n_e2;
 }
 
-void E::use_t(void)
-{
-	e1->m = 6;
-	e2->m = 7;
-}
+void E::use_t(void);    /* prototype, body defined later after main as test */
 
 U E::set_e3(U arg)
 {
@@ -108,4 +104,10 @@ int main(void)
 	printf("a1=%d l1=%d a2=%d l2=%d o1.m=%d o2.m=%d o2.n=%d o2.n=%d p_n1->n=%d",
 		a1.a, l1.l, a2.a, l2.l, o1.m, o2.m, o1.n, o2.n, p_n1->n);
 	return 0;
+}
+
+void E::use_t(void)
+{
+	e1->m = 6;
+	e2->m = 7;
 }

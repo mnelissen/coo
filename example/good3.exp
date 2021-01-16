@@ -44,20 +44,38 @@ struct A *A_A(struct A *this)
 #line 27 "good3.coo"
 }
 
+struct Dz {
+	int xd;
+};
+
+void Dz_Dz_zi(struct Dz *this);
+struct Dn {
+	int xd;
+};
+
 typedef struct B C;
+typedef struct Dz Ez;
+typedef struct Dn En;
 
 int main(void)
 {
 	C c;
-#line 33
+	C *pc;
+	Ez *pez;
+	En *pen;
+#line 45
 	A_A(&c.A);
-#line 34
-	printf("%d %d\n", c.A.xa, c.A.h.xh);
+	pc = new_B();
+	pez = (Ez*)calloc(1, sizeof(Ez));
+	pen = (En*)malloc(sizeof(En));
+#line 49
+	pen->xd = 3;
+	printf("%d %d %d %d %d %d\n", c.A.xa, c.A.h.xh, pc->A.xa, pc->A.h.xh, pez->xd, pen->xd);
 	return 0;
 }
 
 
-#line 61 "good3.coo.c"
+#line 79 "good3.coo.c"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -73,7 +91,8 @@ struct H *new_H(void)
 {
 	struct H *this = malloc(sizeof(*this));
 	if (this == NULL) return NULL;
-	return H_H(this);
+	if (!H_H(this)) return free(this), NULL;
+	return this;
 }
 
 const struct A_coo_class {
@@ -86,5 +105,20 @@ struct A *new_A(void)
 {
 	struct A *this = malloc(sizeof(*this));
 	if (this == NULL) return NULL;
-	return A_A(this);
+	if (!A_A(this)) return free(this), NULL;
+	return this;
+}
+
+const struct B_coo_class {
+	uint32_t num_parents;
+} B_coo_class = {
+	0,
+};
+
+struct B *new_B(void)
+{
+	struct B *this = malloc(sizeof(*this));
+	if (this == NULL) return NULL;
+	if (!A_A(&this->A)) return free(this), NULL;
+	return this;
 }

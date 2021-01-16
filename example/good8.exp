@@ -32,7 +32,8 @@ struct B {
 	const struct coo_vmt *vmt;
 };
 
-#line 36 "good8.coo.c"
+/* multiple refcount bases allowed because they have vmt */
+#line 37 "good8.coo.c"
 struct B_root {
 	struct B B;
 	coo_atomic_t refcount;
@@ -50,14 +51,14 @@ void B_B_root_zi(struct B_root *this);
 void free_B(struct B *this);
 void B_d_B(struct B *this);
 struct B *B_B_root(struct B_root *this);
-#line 14 "good8.coo"
+#line 15 "good8.coo"
 struct C {
 	struct A A;
 	struct B B;
 	int c;
 };
 
-#line 61 "good8.coo.c"
+#line 62 "good8.coo.c"
 struct C_root {
 	struct C C;
 	coo_atomic_t refcount;
@@ -81,17 +82,17 @@ void C_C_root_zi(struct C_root *this);
 #define free_C(this) free_A(&(this)->A)
 void C_d_C(struct C *this);
 struct C *C_C_root(struct C_root *this);
-#line 18 "good8.coo"
+#line 19 "good8.coo"
 struct D {
 	struct A *a;
 };
 
-#line 90 "good8.coo.c"
+#line 91 "good8.coo.c"
 struct D *new_D(void);
 void free_D(struct D *this);
 struct D *D_D(struct D *this);
 void D_d_D(struct D *this);
-#line 22 "good8.coo"
+#line 23 "good8.coo"
 void A_d_A(struct A *this)
 {
 	this->a = -1;
@@ -112,43 +113,43 @@ struct E {
 	coo_atomic_t coo_refcount;
 };
 
-#line 116 "good8.coo.c"
+#line 117 "good8.coo.c"
 struct E *new_E(void);
 void free_E(struct E *this);
 struct E *E_E(struct E *this);
-#line 43 "good8.coo"
+#line 44 "good8.coo"
 struct F {
 	struct E E;
 	int f;
 };
 
-#line 126 "good8.coo.c"
+#line 127 "good8.coo.c"
 struct F *new_F(int e, int f);
 void F_F_zi(struct F *this, int e, int f);
 struct F *F_F(struct F *this, int e, int f);
-#line 48 "good8.coo"
+#line 49 "good8.coo"
 struct F *F_F(struct F *this, int new_e, int new_f)
 {
 	E_E(&this->E);
 	this->E.e = new_e;
 	this->f = new_f;
-#line 136 "good8.coo.c"
+#line 137 "good8.coo.c"
 	return this;
-#line 53 "good8.coo"
+#line 54 "good8.coo"
 }
 
 struct G {
 	struct E *e;
 };
 
-#line 145 "good8.coo.c"
+#line 146 "good8.coo.c"
 struct G *new_G(int new_e, int new_f);
 void G_G_zi(struct G *this, int new_e, int new_f);
 void free_G(struct G *this);
 void G_assign_e(struct G *this, struct E *new_e);
 struct G *G_G(struct G *this, int new_e, int new_f);
 void G_d_G(struct G *this);
-#line 61 "good8.coo"
+#line 62 "good8.coo"
 struct A *func1(struct A *a)
 {
 	return ((struct A_vmt*)a->vmt)->coo_addref(a);
@@ -162,9 +163,9 @@ void G_assign_e(struct G *this, struct E *new_e)
 struct G *G_G(struct G *this, int new_e, int new_f)
 {
 	{ struct F *coo_fres0; G_assign_e(this, &(coo_fres0 = new_F(new_e,new_f))->E); free_E(&coo_fres0->E); }
-#line 166 "good8.coo.c"
+#line 167 "good8.coo.c"
 	return this;
-#line 76 "good8.coo"
+#line 77 "good8.coo"
 }
 
 int main(void)
@@ -175,11 +176,11 @@ int main(void)
 	struct G *g;
 	struct F *f;
 	int __coo_ret;
-#line 82
+#line 83
 	D_D(&d);
 	g = new_G(2, 3);
 	{ struct F *coo_obj0 = (struct F*)g->e; f = coo_obj0, coo_atomic_inc_fetch(&coo_obj0->E.coo_refcount); }
-#line 85
+#line 86
 	free_A(a1), a1 = new_A();
 	free_B(b1), b1 = new_B();
 	free_A(a2), a2 = &(new_C())->A;
@@ -193,7 +194,7 @@ int main(void)
 	((struct B_vmt*)b2->vmt)->d_B(b2), b2 = NULL;
 	free_G(g);
 	__coo_ret = 0;
-#line 197 "good8.coo.c"
+#line 198 "good8.coo.c"
 	free_E(&f->E);
 	free_B(b2);
 	free_B(b1);
@@ -201,10 +202,10 @@ int main(void)
 	free_A(a1);
 	D_d_D(&d);
 	return __coo_ret;
-#line 98 "good8.coo"
+#line 99 "good8.coo"
 }
 
-#line 208 "good8.coo.c"
+#line 209 "good8.coo.c"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -243,7 +244,7 @@ struct A *new_A(void)
 {
 	struct A_root *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
-	A_A_root(this);
+	if (!A_A_root(this)) return free(this), NULL;
 	return &this->A;
 }
 
@@ -299,7 +300,7 @@ struct B *new_B(void)
 {
 	struct B_root *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
-	B_B_root(this);
+	if (!B_B_root(this)) return free(this), NULL;
 	return &this->B;
 }
 
@@ -379,7 +380,7 @@ struct C *new_C(void)
 {
 	struct C_root *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
-	C_C_root(this);
+	if (!C_C_root(this)) return free(this), NULL;
 	return &this->C;
 }
 
@@ -412,7 +413,8 @@ struct D *new_D(void)
 {
 	struct D *this = malloc(sizeof(*this));
 	if (this == NULL) return NULL;
-	return D_D(this);
+	if (!D_D(this)) return free(this), NULL;
+	return this;
 }
 
 struct D *D_D(struct D *this)
@@ -444,7 +446,8 @@ struct E *new_E(void)
 {
 	struct E *this = malloc(sizeof(*this));
 	if (this == NULL) return NULL;
-	return E_E(this);
+	if (!E_E(this)) return free(this), NULL;
+	return this;
 }
 
 struct E *E_E(struct E *this)
@@ -472,7 +475,8 @@ struct F *new_F(int e, int f)
 {
 	struct F *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
-	return F_F(this, e, f);
+	if (!F_F(this, e, f)) return free(this), NULL;
+	return this;
 }
 
 void F_F_zi(struct F *this, int e, int f)
@@ -491,7 +495,8 @@ struct G *new_G(int new_e, int new_f)
 {
 	struct G *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
-	return G_G(this, new_e, new_f);
+	if (!G_G(this, new_e, new_f)) return free(this), NULL;
+	return this;
 }
 
 void G_G_zi(struct G *this, int new_e, int new_f)

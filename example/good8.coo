@@ -11,6 +11,7 @@ refcount struct B {
 	virtual ~B();
 };
 
+/* multiple refcount bases allowed because they have vmt */
 refcount struct C : A, B {
 	int c;
 };

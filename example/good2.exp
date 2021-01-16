@@ -210,7 +210,8 @@ struct C *new_C(int val_b, int val_c)
 {
 	struct C *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
-	return C_C_root(this, val_b, val_c);
+	if (!C_C_root(this, val_b, val_c)) return free(this), NULL;
+	return this;
 }
 
 void C_C_root_zi(struct C *this, int val_b, int val_c)
@@ -265,7 +266,8 @@ struct E *new_E(int val_b, int val_c, int val_d, int val_e)
 {
 	struct E *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
-	return E_E_root(this, val_b, val_c, val_d, val_e);
+	if (!E_E_root(this, val_b, val_c, val_d, val_e)) return free(this), NULL;
+	return this;
 }
 
 void E_E_root_zi(struct E *this, int val_b, int val_c, int val_d, int val_e)

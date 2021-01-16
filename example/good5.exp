@@ -91,11 +91,7 @@ struct E *E_E(struct E *this, struct M *n_e1, struct M *n_e2)
 #line 65 "good5.coo"
 }
 
-static void E_use_t(struct E *this)
-{
-	this->e1->m = 6;
-	this->e2->m = 7;
-}
+static void E_use_t(struct E *this);    /* prototype, body defined later after main as test */
 
 static struct M *E_set_e3(struct E *this, struct M *arg)
 {
@@ -119,9 +115,9 @@ int main(void)
 	struct N *p_n1;
 	struct F f;
 	struct L l1, l2;
-#line 93
+#line 89
 	E_E_zi(&f.E, &(&o1)->N.M, &(&o2)->N.M);
-#line 95
+#line 91
 	b_a = &c->B;
 	C_set_b1_c1(c, &l1);
 	B_set_b2(&c->B, &a1);
@@ -140,7 +136,13 @@ int main(void)
 	return 0;
 }
 
-#line 144 "good5.coo.c"
+void E_use_t(struct E *this)
+{
+	this->e1->m = 6;
+	this->e2->m = 7;
+}
+
+#line 146 "good5.coo.c"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -178,7 +180,8 @@ struct E *new_E(struct M *n_e1, struct M *n_e2)
 {
 	struct E *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
-	return E_E(this, n_e1, n_e2);
+	if (!E_E(this, n_e1, n_e2)) return free(this), NULL;
+	return this;
 }
 
 void E_E_zi(struct E *this, struct M *n_e1, struct M *n_e2)
@@ -197,7 +200,7 @@ struct F *new_F(struct M *n_e1, struct M *n_e2)
 {
 	struct F *this = calloc(1, sizeof(*this));
 	if (this == NULL) return NULL;
-	E_E(&this->E, n_e1, n_e2);
+	if (!E_E(&this->E, n_e1, n_e2)) return free(this), NULL;
 	return this;
 }
 

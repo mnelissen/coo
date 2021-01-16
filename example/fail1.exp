@@ -1,1 +1,108 @@
-fail1.coo:30:1: error: missing parent constructor A call
+ error: duplicate class 'A'
+ error: duplicate classtype 'AA'
+ error: expected a name
+ error: expected a type
+ error: expected '>' or ','
+ error: expected a class type
+ error: expected single pointer type
+ error: invalid member name, did you mean ~An?
+ warning: put non-virtual base class first for efficiency
+ error: duplicate member a1 from parent class A and An
+ warning: put virtual function class first for efficiency
+ error: duplicate member a1 from parent class An and A
+ error: expected comma or brace after parent class
+ error: class B must be zeroinit because parent A is zeroinit
+ error: membername must follow override
+ error: no parameters allowed for override
+ error: cannot find member to override
+ error: inherited member A::func_aa is not virtual
+ error: duplicate member vfunc_b, inherited from A, did you mean override?
+ error: duplicate member b1
+ error: member variable cannot be virtual
+ error: cannot instantiate abstract class Aa
+ error: class B must be zeroinit because member a_local is zeroinit
+ error: class B must be zeroinit because member a_forgot is zeroinit
+ error: class B must be zeroinit because member an is zeroinit
+ error: use override (not virtual) to override virtual ~A
+ error: destructor must be named ~B
+ error: no parameters allowed for override
+ error: cannot decrease visibility of inherited member A::vfunc_b
+ error: unrecognized visibility modifier
+ error: constructor must be a function
+ error: constructor must be void or return pointer to its own class type
+ error: expected ';' after declaration
+ error: return type is not allowed for destructor
+ error: refcounted class destructor must be virtual
+ error: destructor must be virtual too
+ error: class D must be refcounted because parent C is refcounted
+ error: expected 1 template argument for class C, got 0
+ error: cannot find parent class
+ error: parent type cannot be pointer type
+ error: cannot inherit from final class C4
+ error: cannot inherit from multiple refcounting classes
+ error: duplicate inheritance, need override for member vfunc_aa
+ error: inherit duplicate class A, non-virtual field a1
+ error: expected 1 template argument
+ error: duplicate name 'd_global'
+ error: duplicate function type 'func'
+ error: duplicate function type 'func2'
+ error: unknown class name
+ error: provide arguments to construct class 'A'
+ error: cannot instantiate abstract class Aa
+ error: cannot instantiate abstract class Aa
+ error: no constructor in class An
+ error: B is not a template class
+ error: too many arguments, expect 0
+ error: provide arguments to construct class 'Ar_root'
+ error: cannot combine pointer and non-pointer declarations of root-requiring classes
+ error: 'new <type>' cannot be pointer type
+ error: duplicate variable name c2
+ error: template argument must be a pointer type
+ error: parent template parameter expects class 'A'
+ warning: non-void root constructor may fail
+ error: too many arguments, expect 1
+ error: duplicate variable name c
+ error: template parameter name expected
+ error: expected '>' or ','
+ error: 'An' is not a descendant of 'A'
+ warning: non-void root constructor may fail
+ error: only typedef'ed methodvar declarations supported
+ error: unexpected '::' encountered
+ error: unknown classtype for new
+ error: expected separator or asterisk
+ error: template argument 1 'B' is not an ancestor of 'A'
+ error: template argument 1 got 'function', expect 'A'
+ error: template argument 1 pointerlevel got 2, expect 1
+ error: template argument 1 got 'void*', expect 'A'
+ error: template argument 1 got 'void*', expect 'unsigned int*'
+ error: cannot delete refcounted class in complex expression
+ error: unknown variable to delete
+ error: incompatible types, expect 'D', got 'B'
+ error: '>' expected
+ error: expected a class, not a function
+ error: dynamic cast must be to single pointer
+ error: target class 'An' is not dynamic castable
+ error: (root) constructor must be declared in class
+ error: duplicate call to parent constructor A
+ error: destructor must be declared in class
+ error: return type is not allowed for destructor
+ error: expected ';' or '{' after function definition
+ error: class 'Aerror' not declared
+ error: duplicate call to member a_local root constructor
+ error: cannot find member in class 'An'
+ error: cannot access static member An::static_an
+ error: cannot access protected member An::prot_an
+ error: cannot access private member An::priv_an
+ error: cannot access private member A::priv_a
+ error: class::member syntax can only reference functions
+ error: unknown class member
+ error: cannot access protected member An::prot_an_func
+ error: missing parent constructor A call
+ error: missing member root constructor call a_forgot.A_root()
+ warning: overriding virtual method without override in class declaration, is invisible to descendent classes
+ error: cannot return from nested block with stack variables
+ error: function 'func_aa' is defined in 'A'
+ warning: class B also has member named 'a1' inherited from A; change parameter name to avoid confusion
+ warning: class B also has member named 'an'; change parameter name to avoid confusion
+ error: must return a value
+ error: destructor name must be ~C

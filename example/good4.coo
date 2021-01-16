@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+typedef int voidint;   /* test not match "void" */
+
 /*  plain      ----base-------   alt_base
       |       /     |         \   |
     inherit_sec	  inherit_pri  both
@@ -34,7 +36,7 @@ struct S_alt_base {
 
 struct S_both : S_base, S_alt_base {
 	int g, h;
-	void func_both();
+	voidint func_both();
 };
 
 S_base::S_base(void)
@@ -69,9 +71,10 @@ S_alt_base::~S_alt_base(void)
 	a = -1;
 }
 
-void S_both::func_both(void)
+voidint S_both::func_both(void)
 {
 	printf("func_both!\n");
+	return 0;
 }
 
 int main(void)

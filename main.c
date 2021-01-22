@@ -1,4 +1,4 @@
-/* Copyright 2018-2020, Micha Nelissen, GPLv3 license, see README.md disclaimer */
+/* Copyright 2018-2021, Micha Nelissen, GPLv3 license, see README.md disclaimer */
 
 #include <stdio.h>
 #include <ctype.h>
@@ -344,7 +344,6 @@ enum line_pragma_mode { LINE_PRAGMA_INPUT, LINE_PRAGMA_OUTPUT, LINE_PRAGMA_INVAL
 struct parse_file {
 	FILE *out;                /* file writing to */
 	char *filename;           /* input filename */
-	char *buffer;             /* input buffer */
 	char *writepos;           /* input buffer written to output till here */
 	char *pos;                /* parsed input buffer till here */
 	char *bufend;             /* end of input buffer */
@@ -352,7 +351,7 @@ struct parse_file {
 	char *outpos;             /* compared output until here, NULL if writing */
 	char *outfilename;        /* output filename */
 	char *outfilename_end;    /* pointer to null-character of output filename */
-	char *newfilename_path;   /* points to start of path (last in stack) */
+ 	char *newfilename_path;   /* points to start of path (last in stack) */
 	char *newfilename_file;   /* points after parsing file dir in newfilename */
 	char *linestart;	  /* points to line-end before currently parsing line */
 	int outfailed;            /* prevent error spam if creating file failed */
@@ -361,11 +360,6 @@ struct parse_file {
 	enum line_pragma_mode line_pragma_mode;  /* refer to input file or not? */
 	char coo_rtl_included;    /* included coortl.h? */
 	char defined_tp_impl;     /* defined template parameter impl type */
-};
-
-struct parse_file_item {
-	struct parse_file_item *prev;  /* previous in parser->file_stack/avail */
-	struct parse_file pf;     /* parse file state */
 };
 
 struct allocator {
@@ -390,8 +384,6 @@ struct parser {
 	flist(struct initializer) initializers;    /* initializers to be printed */
 	blist(struct disposer) disposers;          /* class variables on stack */
 	blist(struct deleter) deleters;            /* temporary refcnt pointers */
-	blist(struct parse_file_item) file_stack;  /* files' state being parsed */
-	blist(struct parse_file_item) file_avail;  /* memory available for reuse */
 	struct dynarr includepaths;   /* char pointers */
 	struct dynarr type_inserts;   /* 3x char *, replace from/text/to */
 	insert_dlist_t inserts_list;  /* struct insert pointers (outer layer) */
@@ -795,24 +787,8 @@ static char *stmcpy(char *dest, char *end, const char *src)
 #define stfcpy(d,s) ((stmcpy(d,&d[sizeof(d)],s) == &d[sizeof(d)-1]) ? -1 : 0)
 /* like stfcpy, but outputs pointer to end null-terminator in 'e' */
 #define stfcpy_e(d,s,e) ((*(e) = stmcpy(d,&d[sizeof(d)],s), *(e) == &d[sizeof(d)-1]) ? -1 : 0)
-
-static char *stredupto(char *dest, const char *src, const char *until)
-{
-	int len = until-src;
-	char *newdest = realloc(dest, len+1);
-	if (newdest == NULL) {
-		free(dest);      /* LCOV_EXCL_LINE */
-		return NULL;     /* LCOV_EXCL_LINE */
-	}
-	memcpy(newdest, src, len);
-	newdest[len] = 0;
-	return newdest;
-}
-
-static char *strdupto(char *dest, const char *src)
-{
-	return stredupto(dest, src, src + strlen(src));
-}
+#define stredupa(s,e)  memcpy(alloca(e-s+1), s, e-s+1)
+#define strdupa(s,psz)  (*psz = strlen(s)+1, memcpy(alloca(*psz), s, *psz))
 
 static char *astredup(struct allocator *alloc, const char *src, const char *until)
 {
@@ -955,9 +931,9 @@ static int compare_file_ids(void *a, void *b)
 		|| file_id_a->file_id != file_id_b->file_id;
 }
 
-static void *read_file_until(FILE *fp, char *buffer, size_t size)
+static void *read_file_until(FILE *fp, size_t size)
 {
-	buffer = realloc(buffer, size+1);
+	char *buffer = malloc(size+1);
 	if (buffer == NULL) {
 		fprintf(stderr, "No memory for file buffer\n");    /* LCOV_EXCL_LINE */
 		return NULL;                                       /* LCOV_EXCL_LINE */
@@ -968,9 +944,9 @@ static void *read_file_until(FILE *fp, char *buffer, size_t size)
 	return buffer;
 }
 
-static void *read_file(FILE *fp, char *buffer)
+static void *read_file(FILE *fp)
 {
-	return read_file_until(fp, buffer, file_size(fp));
+	return read_file_until(fp, file_size(fp));
 }
 
 /*** dynamic array ***/
@@ -2219,22 +2195,6 @@ static int addincludepath(struct parser *parser, char *path)
 	/* pointer to commandline so do not have to copy */
 	parser->includepaths.mem[parser->includepaths.num++] = path;
 	return 0;
-}
-
-static struct parse_file_item *addfilestack(struct parser *parser)
-{
-	struct parse_file_item *newfile;
-
-	if (blist_pop_last(&parser->file_avail, &newfile, prev))
-		goto out;
-
-	newfile = pgenzalloc(sizeof *newfile);
-	if (newfile == NULL)
-		return NULL;   /* LCOV_EXCL_LINE */
-
-out:
-	blist_add(&parser->file_stack, newfile, prev);
-	return newfile;
 }
 
 static void remove_locals(struct parser *parser, unsigned blocklevel)
@@ -6965,10 +6925,9 @@ static int parse_source(struct parser *parser, char *filename, FILE *in, char *e
 static int try_include_file(struct parser *parser, char *dir, char *nameend)
 {
 	FILE *fp_inc;
-	char *buffer, *bufend, *outbuffer, *fullname, *filename, *outfilename;
-	char *p, *new_newfilename_file;
-	struct parse_file_item *parse_file_item;
-	struct parse_file *parse_file;
+	char *p, *fullname, *filename, *new_newfilename_file;
+	struct parse_file save_parse_file;
+	size_t namesize;
 	int parse_ret;
 
 	/* if directory specified, use from there, otherwise including current dir */
@@ -6980,27 +6939,13 @@ static int try_include_file(struct parser *parser, char *dir, char *nameend)
 	if (fp_inc == NULL)
 		return -1;
 
-	/* allocate temporary to store current state */
-	parse_file_item = addfilestack(parser);
-	if (parse_file_item == NULL)
-		goto err_add;     /* LCOV_EXCL_LINE */
-
 	/* make copy before overwriting parse_file, newfilename is reused later */
-	parse_file = &parse_file_item->pf;
-	filename = strdupto(parse_file->filename, fullname);
-	/* reuse old buffers, if any */
-	buffer = parse_file->buffer;
-	bufend = parse_file->bufend;
-	outbuffer = parse_file->outbuffer;
-	outfilename = parse_file->outfilename;
-	/* save current parsing state */
-	memcpy(parse_file, &parser->pf, sizeof(*parse_file));
-	/* parser->filename assigned in parse_source */
+	filename = strdupa(fullname, &namesize);
+	/* save and reset current parsing state */
+	memcpy(&save_parse_file, &parser->pf, sizeof(save_parse_file));
 	parser->pf.out = NULL;
-	parser->pf.buffer = buffer;
-	parser->pf.bufend = bufend;
-	parser->pf.outbuffer = outbuffer;
-	parser->pf.outfilename = outfilename;
+	parser->pf.outbuffer = NULL;
+	parser->pf.outfilename = NULL;
 	parser->pf.coo_rtl_included = 0;
 	parser->pf.defined_tp_impl = 0;
 	parser->pf.outfailed = 0;
@@ -7010,21 +6955,11 @@ static int try_include_file(struct parser *parser, char *dir, char *nameend)
 	parser->pf.newfilename_file = new_newfilename_file;
 	/* recursively parse! */
 	parse_ret = parse_source(parser, filename, fp_inc, parser->header_ext_out);
-	/* restore parser state, swap the buffers back, we can reuse them later */
-	buffer = parser->pf.buffer;
-	bufend = parser->pf.bufend;
-	filename = parser->pf.filename;
-	outbuffer = parser->pf.outbuffer;
-	outfilename = parser->pf.outfilename;
-	memcpy(&parser->pf, parse_file, sizeof(parser->pf));
-
-	parse_file->buffer = buffer;
-	parse_file->bufend = bufend;
-	parse_file->filename = filename;
-	parse_file->outbuffer = outbuffer;
-	parse_file->outfilename = outfilename;
-	blist_remove_last(&parser->file_stack, prev);
-	blist_add(&parser->file_avail, parse_file_item, prev);
+	if (parse_ret < 0)
+		return -1;    /* LCOV_EXCL_LINE */
+	/* restore parser state */
+	memcpy(&parser->pf, &save_parse_file, sizeof(parser->pf));
+	/* we updated file? then write new included filename */
 	if (parse_ret == OUTPUT_FILE_WRITTEN) {
 		/* write new output filename, filename generated by
 		 * parse_source_size in newfilename_path for rename() target
@@ -7037,9 +6972,6 @@ static int try_include_file(struct parser *parser, char *dir, char *nameend)
 	}
 	/* fp_inc was closed by parse_source */
 	return 0;
-err_add:                    /* LCOV_EXCL_LINE */
-	fclose(fp_inc);     /* LCOV_EXCL_LINE */
-	return -1;          /* LCOV_EXCL_LINE */
 }
 
 static void try_include(struct parser *parser, char *nameend, enum include_location loc)
@@ -7208,21 +7140,21 @@ static void parse(struct parser *parser)
 
 /* parser->pf.out == NULL => parser->newfilename contains input filename, transform
  * this filename to output filename and read it into outbuffer
- * parser->pf.out != NULL => do not scan output file, output immediately */
+ * parser->pf.out != NULL => do not scan output file, output immediately (stdout) */
 static int parse_source_size(struct parser *parser, char *filename,
 		FILE *in, size_t size, char *ext_out)
 {
-	char *buffer, *outfilename, *outfilename_file, *p;
-	int prev_num_errors, new_errors;
+	char *buffer, *outfilename_file, *p;
+	int prev_num_errors, new_errors, ret = -1;
 	size_t commonlen, outnamelen;
 	FILE *fp_dest;
 
 	/* read entire input file in one go to make scanning easier */
 	parser->pf.filename = filename;
-	buffer = read_file_until(in, parser->pf.buffer, size);
+	buffer = read_file_until(in, size);
+	fclose(in);
 	if (buffer == NULL)
 		return -1;     /* LCOV_EXCL_LINE */
-	fclose(in);
 
 	/* scan (previously generated) output file for comparison, if applicable */
 	parser->pf.lineno = 1;
@@ -7234,30 +7166,29 @@ static int parse_source_size(struct parser *parser, char *filename,
 		parser->newfilename_end = replace_ext_temp(parser->newfilename,
 			parser->newfilename_end, bufend, ext_out);
 		if (parser->newfilename_end == NULL)
-			return -1;     /* LCOV_EXCL_LINE */
+			goto out_inbuf;     /* LCOV_EXCL_LINE */
 
 		/* newfilename includes temporary (pid) extension, make a copy
 		 * without it for outfilename, so we can reuse newfilename later */
-		outfilename = strdupto(parser->pf.outfilename, parser->pf.newfilename_path);
-		parser->pf.outfilename = outfilename;
-		parser->pf.outfilename_end = outfilename
+		parser->pf.outfilename = strdupa(parser->pf.newfilename_path, &outnamelen);
+		parser->pf.outfilename_end = parser->pf.outfilename
 			+ (parser->newfilename_end - parser->pf.newfilename_path);
 		*parser->pf.outfilename_end = 0;
 		/* open read-only, because if we want to modify, write temporary file later */
-		fp_dest = fopen(outfilename, "rb");
+		fp_dest = fopen(parser->pf.outfilename, "rb");
 		if (fp_dest) {
-			parser->pf.outbuffer = read_file(fp_dest, parser->pf.outbuffer);
+			parser->pf.outbuffer = read_file(fp_dest);
 			parser->pf.outpos = parser->pf.outbuffer;
 			fclose(fp_dest);
 			if (parser->pf.outbuffer == NULL)
-				return -1;     /* LCOV_EXCL_LINE */
+				goto out_inbuf;     /* LCOV_EXCL_LINE */
 		} else {
 			parser->pf.outpos = NULL;
 		}
 	}
 
 	/* prepare input buffer pointers for scanning */
-	parser->pf.buffer = parser->pf.writepos = parser->pf.pos = buffer;
+	parser->pf.writepos = parser->pf.pos = buffer;
 	parser->pf.bufend = buffer + size;
 	/* make sure filename_file points to filename (after last /) */
 	for (p = parser->pf.newfilename_file; *p; p++)
@@ -7268,32 +7199,39 @@ static int parse_source_size(struct parser *parser, char *filename,
 	prev_num_errors = parser->num_errors;
 	parse(parser);
 	if (parser->memerror)
-		return -1;     /* LCOV_EXCL_LINE */
+		goto out_bufs;     /* LCOV_EXCL_LINE */
 	new_errors = parser->num_errors > prev_num_errors;
 	if (!new_errors)
 		print_class_impl(parser);  /* vmt(s), alloc, constr. */
-	/* if no syntax added by coo parser, then can keep original filename in #include */
+	/* if no syntax added by coo parser, then can keep original filename in #include
+	   if parsing included file, and if nothing changed, do not write any output */
 	if (parser->pf.writepos == buffer) {
-		/* if parsing included file, and nothing changed, do not write any output */
-		if (!blist_empty(&parser->file_stack)) {
-			/* probably written first #line pragma already, remove file */
+		if (ext_out == parser->header_ext_out) {
+			/* if we wrote anything anyway, remove it */
 			if (parser->pf.out) {
 				fclose(parser->pf.out);
-				*parser->pf.outfilename_end = '.';
-				unlink(parser->pf.outfilename_end);
+				unlink(parser->pf.outfilename);
+				parser->pf.out = NULL;
 			}
-			return OUTPUT_FILE_SKIPPED;
+			/* if old processed file is present, remove it to prevent confusion */
+			if (parser->pf.outbuffer) {
+				*parser->pf.outfilename_end = 0;
+				unlink(parser->pf.outfilename);
+			}
+			ret = OUTPUT_FILE_SKIPPED;
+			goto out_bufs;
 		}
-		/* otherwise flush now, we always want output of main file */
+		/* otherwise flush now, always output of main file */
 		flush(parser);
-		return OUTPUT_FILE_WRITTEN;
+		ret = OUTPUT_FILE_WRITTEN;
+		goto out_bufs;
 	}
-	/* also write output file if it became shorter (outwrite cannot detect this)
-	   if exactly equal, we expect a null-terminator at outpos (put by read_file) */
-	if (parser->pf.out == NULL && !parser->pf.outfailed && parser->pf.outpos[0])
-		prepare_output_file(parser);
 	/* store output filename (1) for rename below (2) for caller #include "..." */
 	if (parser->pf.outfilename) {
+		/* also write output file if it became shorter (outwrite cannot detect this)
+		   if exactly equal, we expect a null-terminator at outpos (put by read_file) */
+		if (parser->pf.out == NULL && !parser->pf.outfailed && parser->pf.outpos[0])
+			prepare_output_file(parser);
 		/* newfilename_path..newfilename_file was not modified, is common
 		   align to newfilename_path so that caller can use for #include */
 		/* outfilename already has the temporary extension in buffer, but has
@@ -7304,25 +7242,27 @@ static int parse_source_size(struct parser *parser, char *filename,
 		outnamelen = parser->pf.outfilename_end - outfilename_file;
 		memcpy(parser->pf.newfilename_file, outfilename_file, outnamelen);
 		parser->pf.newfilename_file[outnamelen] = 0;
-	}
-	if (parser->pf.out) {
-		fclose(parser->pf.out);
-		parser->pf.out = NULL;
-		/* rename temporary output filename to final filename
-		 * might not be present in case of stdout output */
-		if (parser->pf.outfilename) {
+		if (parser->pf.out) {
+			fclose(parser->pf.out);
+			parser->pf.out = NULL;
+			/* rename temporary output filename to final filename */
 			if (!new_errors)
 				rename(parser->pf.outfilename, parser->pf.newfilename_path);
 			else
 				unlink(parser->pf.outfilename);
 		}
-	}
-	if (parser->pf.outfilename && new_errors) {
-		/* delete output filename, might already exist, but out-of-date now */
-		unlink(parser->pf.newfilename_path);
+		if (new_errors) {
+			/* delete output filename, might already exist, but out-of-date now */
+			unlink(parser->pf.newfilename_path);
+		}
 	}
 
-	return OUTPUT_FILE_WRITTEN;
+	ret = OUTPUT_FILE_WRITTEN;
+out_bufs:
+	free(parser->pf.outbuffer);
+out_inbuf:
+	free(buffer);
+	return ret;
 }
 
 static int parse_source(struct parser *parser, char *filename, FILE *in, char *ext_out)
@@ -7411,17 +7351,8 @@ static int initparser(struct parser *parser)
 			64, offsetof(struct file_id, node), 0) < 0;
 }
 
-static void free_file(struct parse_file *pf)
-{
-	free(pf->buffer);
-	free(pf->filename);
-	free(pf->outbuffer);
-	free(pf->outfilename);
-}
-
 static void deinit_parser(struct parser *parser)
 {
-	struct parse_file_item *pfitem;
 	void *item;
 
 	hash_foreach(item, &parser->classes)
@@ -7432,13 +7363,6 @@ static void deinit_parser(struct parser *parser)
 	hash_deinit(&parser->locals);
 	hash_deinit(&parser->functypes);
 	hash_deinit(&parser->files_seen);
-	blist_foreach_rev(pfitem, &parser->file_avail, prev)
-		free_file(&pfitem->pf);
-	blist_foreach_rev(pfitem, &parser->file_stack, prev)
-		free_file(&pfitem->pf);
-	free(parser->pf.buffer);
-	free(parser->pf.outfilename);
-	free(parser->pf.outbuffer);
 	deinit_allocator(&parser->global_mem);
 	deinit_allocator(&parser->func_mem);
 }

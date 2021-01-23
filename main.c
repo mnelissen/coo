@@ -3,21 +3,24 @@
 #include <stdio.h>
 #include <ctype.h>
 #include <limits.h>
-#include <alloca.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
+#include <malloc.h>
 #include <windows.h>
 typedef uint32_t dev_t;
 typedef uint64_t ino_t;
 typedef uint32_t pid_t;
 #define DIRSEP '\\'
-#define getpid() GetProcessId()
+#define getpid() GetCurrentProcessId()
 #else
+#include <alloca.h>
+#include <fcntl.h>
 #include <unistd.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #define DIRSEP '/'
@@ -421,7 +424,6 @@ struct parser {
 	char newfilename[NEWFN_MAX];  /* (stacked) store curdir + new input filename */
 };
 
-DEFINE_STRHASH_FIND(parser, classes, class, class)
 DEFINE_STRHASH_FIND_E(parser, classes, class, class)
 DEFINE_STRHASH_FIND_E(parser, classtypes, classtype, classtype)
 DEFINE_STRHASH_FIND_E(parser, globals, global, variable)
@@ -783,11 +785,17 @@ static char *stmcpy(char *dest, char *end, const char *src)
 	return stmecpy(dest, end, src, src + strlen(src));
 }
 
+static char *nullterm(char *dest, size_t len)
+{
+	dest[len] = 0;
+	return dest;
+}
+
 /* like strcpy, but return error if string full */
 #define stfcpy(d,s) ((stmcpy(d,&d[sizeof(d)],s) == &d[sizeof(d)-1]) ? -1 : 0)
 /* like stfcpy, but outputs pointer to end null-terminator in 'e' */
 #define stfcpy_e(d,s,e) ((*(e) = stmcpy(d,&d[sizeof(d)],s), *(e) == &d[sizeof(d)-1]) ? -1 : 0)
-#define stredupa(s,e)  memcpy(alloca(e-s+1), s, e-s+1)
+#define stredupa(s,e)   nullterm(memcpy(alloca(e-s+1), s, e-s), e-s)
 #define strdupa(s,psz)  (*psz = strlen(s)+1, memcpy(alloca(*psz), s, *psz))
 
 static char *astredup(struct allocator *alloc, const char *src, const char *until)
@@ -866,60 +874,109 @@ static attr_format(3,4) int aaprintf(struct allocator *alloc,
 
 #ifdef _WIN32
 
-static int get_file_id(FILE *fp, struct file_id *out_id)
+typedef HANDLE osfile_t;
+typedef struct osmap {
+	HANDLE file;     /* file handle */
+	HANDLE map;      /* file mapping handle */
+	size_t size;     /* size of the mapping */
+} osmap_t;
+
+static void *map_file(const char *filename, char mode, osmap_t *ret_map, struct file_id *ret_id)
 {
+	DWORD access = GENERIC_READ, create = 0, prot, mapacc = FILE_MAP_READ;
 	BY_HANDLE_FILE_INFORMATION file_info;
+	HANDLE hFile, hMap;
+	void *ret;
 
-	if (!GetFileInformationByHandle(fileno(hFile), &file_info))
-		return -1;
-
-	out_id->dev_id = file_info.dwVolumeSerialNumber;
-	out_id->file_id = ((uint64_t)file_info.nFileIndexHigh << 32)
+	switch (mode) {
+	case 'r': prot = PAGE_READONLY; break;
+	case 'w': create = OPEN_ALWAYS; /* fall-through */
+	case 'c': access |= GENERIC_WRITE; prot = PAGE_READWRITE; mapacc |= FILE_MAP_WRITE; break;
+	default: return NULL;
+	}
+	hFile = CreateFile(filename, access, FILE_SHARE_READ | FILE_SHARE_WRITE,
+		NULL, create, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (hFile == INVALID_HANDLE_VALUE)
+		return NULL;
+	if (!GetFileInformationByHandle(hFile, &file_info))
+		goto err_file;
+	hMap = CreateFileMapping(hFile, NULL, prot,
+		file_info.nFileSizeHigh, file_info.nFileSizeLow, NULL);
+	if (hMap == NULL)
+		goto err_file;
+	ret = MapViewOfFile(hMap, mapacc, 0, 0, 0);
+	if (ret == NULL)
+		goto err_map;
+	ret_map->file = hFile;
+	ret_map->map = hMap;
+	ret_map->size = file_info.nFileSizeLow | ((uint64_t)file_info.nFileSizeHigh << 32);
+	ret_id->dev_id = file_info.dwVolumeSerialNumber;
+	ret_id->file_id = ((uint64_t)file_info.nFileIndexHigh << 32)
 			| ((uint64_t)file_info.nFileIndexLow);
-	out_id->mtime = ((uint64_t)file_info.ftLastWriteTime.dwHighDateTime << 32)
+	ret_id->mtime = ((uint64_t)file_info.ftLastWriteTime.dwHighDateTime << 32)
 			| ((uint64_t)file_info.ftLastWriteTime.dwLowDateTime);
-	return 0;
+	return ret;
+err_map:
+	CloseHandle(hMap);
+err_file:
+	CloseHandle(hFile);
+	return NULL;
 }
-
-static size_t file_size(FILE *fp)
+static void close_map(osmap_t *map, void *addr)
 {
-	uint32_t sizeLow, sizeHigh;
-
-	/* might fail on e.g. pipe, then use default buffer size */
-	sizeLow = GetFileSize(fileno(fp), &sizeHigh);
-	if (sizeLow == INVALID_FILE_SIZE && GetLastError() != NO_ERROR)
-		return STDIN_BUFSIZE;
-	return sizeLow | ((uint64_t)sizeHigh << 32);
+	UnmapViewOfFile(addr);
+	CloseHandle(map->map);
+	CloseHandle(map->file);
 }
 
 #else
+
+typedef int osfile_t;
+typedef struct {
+	int fd;                /* file descriptor mapped */
+	size_t size;           /* size of the mapping */
+} osmap_t;
 
 #ifdef __linux__
 #define st_mtimespec st_mtim
 #endif
 
-static int get_file_id(FILE *fp, struct file_id *out_id)
+static void *map_file(const char *filename, char mode, osmap_t *ret_map, struct file_id *ret_id)
 {
 	struct stat stat;
+	int fd, flags;
+	void *ret;
 
-	if (fstat(fileno(fp), &stat) < 0)
-		return -1;     /* LCOV_EXCL_LINE */
+	switch (mode) {
+	case 'c': flags = O_RDWR; break;                      /* LCOV_EXCL_LINE, unused */
+	case 'r': flags = O_RDONLY; break;
+	case 'w': flags = O_RDWR | O_CREAT | O_TRUNC; break;  /* LCOV_EXCL_LINE, unused */
+	default: return NULL;                                 /* LCOV_EXCL_LINE */
+	}
 
-	out_id->dev_id = stat.st_dev;
-	out_id->file_id = stat.st_ino;
-	out_id->mtime = stat.st_mtimespec.tv_sec * 1000000ull
-	                + stat.st_mtimespec.tv_nsec;
-	return 0;
+	if ((fd = open(filename, flags, 0666)) < 0)
+		return NULL;
+	if (fstat(fd, &stat) < 0 || !S_ISREG(stat.st_mode))
+		goto err_fd;     /* LCOV_EXCL_LINE */
+	ret = mmap(NULL, stat.st_size, PROT_READ, MAP_SHARED | MAP_POPULATE, fd, 0);
+	if (ret == MAP_FAILED)
+		goto err_fd;     /* LCOV_EXCL_LINE */
+
+	ret_map->fd = fd;
+	ret_map->size = stat.st_size;
+	ret_id->dev_id = stat.st_dev;
+	ret_id->file_id = stat.st_ino;
+	ret_id->mtime = stat.st_mtimespec.tv_sec * 1000000ull + stat.st_mtimespec.tv_nsec;
+	return ret;
+err_fd:                          /* LCOV_EXCL_LINE */
+	close(fd);               /* LCOV_EXCL_LINE */
+	return NULL;             /* LCOV_EXCL_LINE */
 }
 
-static size_t file_size(FILE *fp)
+static void close_map(osmap_t *map, void *addr)
 {
-	struct stat stat;
-
-	/* size unknown on e.g. pipe, then use default buffer size */
-	if (fstat(fileno(fp), &stat) < 0 || !S_ISREG(stat.st_mode))
-		return STDIN_BUFSIZE;     /* LCOV_EXCL_LINE */
-	return stat.st_size;
+	munmap(addr, map->size);
+	close(map->fd);
 }
 
 #endif
@@ -929,24 +986,6 @@ static int compare_file_ids(void *a, void *b)
 	struct file_id *file_id_a = a, *file_id_b = b;
 	return file_id_a->dev_id != file_id_b->dev_id
 		|| file_id_a->file_id != file_id_b->file_id;
-}
-
-static void *read_file_until(FILE *fp, size_t size)
-{
-	char *buffer = malloc(size+1);
-	if (buffer == NULL) {
-		fprintf(stderr, "No memory for file buffer\n");    /* LCOV_EXCL_LINE */
-		return NULL;                                       /* LCOV_EXCL_LINE */
-	}
-
-	size = fread(buffer, 1, size, fp);
-	buffer[size] = 0;
-	return buffer;
-}
-
-static void *read_file(FILE *fp)
-{
-	return read_file_until(fp, file_size(fp));
 }
 
 /*** dynamic array ***/
@@ -5204,26 +5243,25 @@ static void parse_function(struct parser *parser, char *next)
 	new_param_cb new_param;
 
 	thisfuncret = parser->pf.pos;
-	dblcolonsep = funcname = NULL, classname = next;
-	for (; classname > thisfuncret; classname--) {
-		if (isidchar(classname[-1]))
+	dblcolonsep = funcname = NULL, name = next;
+	for (; name > thisfuncret; name--) {
+		if (isidchar(name[-1]))
 			continue;
 		/* check for "::" or "::~" */
-		if (classname > thisfuncret + 1 && classname[-2] == ':' && classname[-1] == ':')
-			classname -= 2;
-		else if (classname > thisfuncret + 2 && classname[-3] == ':' &&
-				classname[-2] == ':' && classname[-1] == '~')
-			classname -= 3;
+		if (name > thisfuncret + 1 && name[-2] == ':' && name[-1] == ':')
+			name -= 2;
+		else if (name > thisfuncret + 2 && name[-3] == ':' &&
+				name[-2] == ':' && name[-1] == '~')
+			name -= 3;
 		else
 			break;
 
-		dblcolonsep = classname;
-		classname[0] = 0;
+		dblcolonsep = name;
 		/* main loop already parsed beyond to parenthesis */
-		funcname = classname + 2;
+		funcname = name + 2;
 	}
 
-	thisfuncretend = classname;
+	thisfuncretend = name;
 	is_constructor = num_constr_called = num_constr = 0;
 	funcnameend = next;
 	params = next + 1;  /* advance after '(' */
@@ -5231,13 +5269,15 @@ static void parse_function(struct parser *parser, char *next)
 
 	/* clear local variables, may add "this" as variable for class */
 	hash_clear(&parser->locals);
-	thispath = NULL;
+	thispath = classname = NULL;
 	thisclass = NULL;
 	globalfunc = NULL;
 	thisptr = unknown_typeptr;
 	new_param_types = NULL;
 	if (dblcolonsep) {
-		if ((thisclass = find_class(parser, classname)) != NULL) {
+		/* make a null-terminated copy */
+		classname = stredupa(name, dblcolonsep);
+		if ((thisclass = find_class_e(parser, name, dblcolonsep)) != NULL) {
 			flush(parser);
 			thisptr = to_anyptr(&thisclass->t, 1);
 			/* lookup method name */
@@ -5253,8 +5293,8 @@ static void parse_function(struct parser *parser, char *next)
 				/* constructor and destructor return deviates from user typed */
 				if (member->is_constructor || member->is_destructor) {
 					outputs(parser, member->rettypestr);
-					parser->pf.writepos = classname;
-				} else if (classname > thisfuncret) {
+					parser->pf.writepos = name;
+				} else if (name > thisfuncret) {
 					/* add "struct " etc. */
 					parse_type(parser, &parser->func_mem, thisclass,
 						thisfuncret, &rettype, print_type_insert);
@@ -5347,7 +5387,7 @@ static void parse_function(struct parser *parser, char *next)
 		fn->t.type = AT_FUNCTION;
 		fn->rettype = rettype;
 		immdecl = to_anyptr(&fn->t, 0);
-		if (!(globalfunc = add_global(parser, classname, funcnameend, immdecl)))
+		if (!(globalfunc = add_global(parser, name, funcnameend, immdecl)))
 			return;     /* LCOV_EXCL_LINE */
 		/* store parameter types */
 		new_param_types = &fn->params;
@@ -6880,12 +6920,12 @@ enum include_location {
 	SEARCH_ONLY_PATHS,
 };
 
-static FILE *locate_include_file(struct parser *parser, char *dir, char *nameend,
-		char *fullname, char **ret_newfilename_file)
+static void *locate_include_file(struct parser *parser, char *dir, char *nameend,
+		char *fullname, char **ret_newfilename_file, osmap_t *ret_map)
 {
 	char *p, *bufend = &parser->newfilename[sizeof(parser->newfilename)];
 	struct file_id *file_id;
-	FILE *fp_inc;
+	void *ret;
 
 	p = stmcpy(parser->pf.newfilename_file, bufend, dir);
 	if (dir[0] != 0 && *(p-1) != DIRSEP)
@@ -6895,24 +6935,21 @@ static FILE *locate_include_file(struct parser *parser, char *dir, char *nameend
 	if (p+1 == bufend)  /* nul-character before end, at end is overflow! */
 		return NULL;
 
-	fp_inc = fopen(fullname, "rb");
-	if (fp_inc == NULL)
+	file_id = pgenzalloc(sizeof(*file_id));
+	if (file_id == NULL)
+		return NULL;                    /* LCOV_EXCL_LINE */
+	ret = map_file(fullname, 'r', ret_map, file_id);
+	if (ret == NULL)
 		return NULL;
 
 	/* check if we have already seen/parsed this file */
-	file_id = pgenzalloc(sizeof(*file_id));
-	if (file_id == NULL)
-		goto err_fp;     /* LCOV_EXCL_LINE */
-	if (get_file_id(fp_inc, file_id) < 0)
-		goto err_fp;     /* LCOV_EXCL_LINE */
-	if (hash_insert(&parser->files_seen, &file_id->node,
-			uint64hash(file_id->file_id)))
-		goto err_fp;     /* LCOV_EXCL_LINE */
+	if (hash_insert(&parser->files_seen, &file_id->node, uint64hash(file_id->file_id)))
+		goto err_file;                  /* LCOV_EXCL_LINE */
 	parser->newfilename_end = p;
-	return fp_inc;
-err_fp:                          /* LCOV_EXCL_LINE */
-	fclose(fp_inc);          /* LCOV_EXCL_LINE */
-	return NULL;             /* LCOV_EXCL_LINE */
+	return ret;
+err_file:                                       /* LCOV_EXCL_LINE */
+	close_map(ret_map, ret);      /* LCOV_EXCL_LINE */
+	return NULL;                            /* LCOV_EXCL_LINE */
 }
 
 enum {
@@ -6920,13 +6957,13 @@ enum {
 	OUTPUT_FILE_SKIPPED = 1,
 };
 
-static int parse_source(struct parser *parser, char *filename, FILE *in, char *ext_out);
+static int parse_source(struct parser *parser, char *buffer, size_t size, char *ext_out);
 
 static int try_include_file(struct parser *parser, char *dir, char *nameend)
 {
-	FILE *fp_inc;
-	char *p, *fullname, *filename, *new_newfilename_file;
+	char *p, *data, *fullname, *filename, *new_newfilename_file;
 	struct parse_file save_parse_file;
+	osmap_t fd_map;
 	size_t namesize;
 	int parse_ret;
 
@@ -6935,8 +6972,8 @@ static int try_include_file(struct parser *parser, char *dir, char *nameend)
 		fullname = parser->pf.newfilename_file;
 	else
 		fullname = parser->pf.newfilename_path;
-	fp_inc = locate_include_file(parser, dir, nameend, fullname, &new_newfilename_file);
-	if (fp_inc == NULL)
+	data = locate_include_file(parser, dir, nameend, fullname, &new_newfilename_file, &fd_map);
+	if (data == NULL)
 		return -1;
 
 	/* make copy before overwriting parse_file, newfilename is reused later */
@@ -6952,9 +6989,11 @@ static int try_include_file(struct parser *parser, char *dir, char *nameend)
 	/* if path given then put it on stack */
 	if (dir[0] != 0)
 		parser->pf.newfilename_path = parser->pf.newfilename_file;
+	parser->pf.filename = filename;
 	parser->pf.newfilename_file = new_newfilename_file;
 	/* recursively parse! */
-	parse_ret = parse_source(parser, filename, fp_inc, parser->header_ext_out);
+	parse_ret = parse_source(parser, data, fd_map.size, parser->header_ext_out);
+	close_map(&fd_map, data);
 	if (parse_ret < 0)
 		return -1;    /* LCOV_EXCL_LINE */
 	/* restore parser state */
@@ -7141,24 +7180,18 @@ static void parse(struct parser *parser)
 /* parser->pf.out == NULL => parser->newfilename contains input filename, transform
  * this filename to output filename and read it into outbuffer
  * parser->pf.out != NULL => do not scan output file, output immediately (stdout) */
-static int parse_source_size(struct parser *parser, char *filename,
-		FILE *in, size_t size, char *ext_out)
+static int parse_source(struct parser *parser, char *buffer, size_t size, char *ext_out)
 {
-	char *buffer, *outfilename_file, *p;
+	char *outfilename_file, *p;
 	int prev_num_errors, new_errors, ret = -1;
 	size_t commonlen, outnamelen;
-	FILE *fp_dest;
-
-	/* read entire input file in one go to make scanning easier */
-	parser->pf.filename = filename;
-	buffer = read_file_until(in, size);
-	fclose(in);
-	if (buffer == NULL)
-		return -1;     /* LCOV_EXCL_LINE */
+	struct file_id dest_id;
+	osmap_t dest_map;
 
 	/* scan (previously generated) output file for comparison, if applicable */
 	parser->pf.lineno = 1;
 	parser->pf.linestart = buffer - 1;  /* 1-based column index in messages */
+	parser->pf.outbuffer = NULL;
 	if (parser->pf.out == NULL) {
 		/* input filename was written into newfilename, just need to
 		 * replace extension to generate output filename */
@@ -7166,7 +7199,7 @@ static int parse_source_size(struct parser *parser, char *filename,
 		parser->newfilename_end = replace_ext_temp(parser->newfilename,
 			parser->newfilename_end, bufend, ext_out);
 		if (parser->newfilename_end == NULL)
-			goto out_inbuf;     /* LCOV_EXCL_LINE */
+			return -1;     /* LCOV_EXCL_LINE */
 
 		/* newfilename includes temporary (pid) extension, make a copy
 		 * without it for outfilename, so we can reuse newfilename later */
@@ -7175,16 +7208,8 @@ static int parse_source_size(struct parser *parser, char *filename,
 			+ (parser->newfilename_end - parser->pf.newfilename_path);
 		*parser->pf.outfilename_end = 0;
 		/* open read-only, because if we want to modify, write temporary file later */
-		fp_dest = fopen(parser->pf.outfilename, "rb");
-		if (fp_dest) {
-			parser->pf.outbuffer = read_file(fp_dest);
-			parser->pf.outpos = parser->pf.outbuffer;
-			fclose(fp_dest);
-			if (parser->pf.outbuffer == NULL)
-				goto out_inbuf;     /* LCOV_EXCL_LINE */
-		} else {
-			parser->pf.outpos = NULL;
-		}
+		parser->pf.outbuffer = map_file(parser->pf.outfilename, 'r', &dest_map, &dest_id);
+		parser->pf.outpos = parser->pf.outbuffer;
 	}
 
 	/* prepare input buffer pointers for scanning */
@@ -7199,7 +7224,7 @@ static int parse_source_size(struct parser *parser, char *filename,
 	prev_num_errors = parser->num_errors;
 	parse(parser);
 	if (parser->memerror)
-		goto out_bufs;     /* LCOV_EXCL_LINE */
+		goto out_destmap;     /* LCOV_EXCL_LINE */
 	new_errors = parser->num_errors > prev_num_errors;
 	if (!new_errors)
 		print_class_impl(parser);  /* vmt(s), alloc, constr. */
@@ -7219,12 +7244,12 @@ static int parse_source_size(struct parser *parser, char *filename,
 				unlink(parser->pf.outfilename);
 			}
 			ret = OUTPUT_FILE_SKIPPED;
-			goto out_bufs;
+			goto out_destmap;
 		}
 		/* otherwise flush now, always output of main file */
 		flush(parser);
 		ret = OUTPUT_FILE_WRITTEN;
-		goto out_bufs;
+		goto out_destmap;
 	}
 	/* store output filename (1) for rename below (2) for caller #include "..." */
 	if (parser->pf.outfilename) {
@@ -7258,25 +7283,21 @@ static int parse_source_size(struct parser *parser, char *filename,
 	}
 
 	ret = OUTPUT_FILE_WRITTEN;
-out_bufs:
-	free(parser->pf.outbuffer);
-out_inbuf:
-	free(buffer);
+out_destmap:
+	if (parser->pf.outbuffer)
+		close_map(&dest_map, parser->pf.outbuffer);
 	return ret;
-}
-
-static int parse_source(struct parser *parser, char *filename, FILE *in, char *ext_out)
-{
-	return parse_source_size(parser, filename, in, file_size(in), ext_out);
 }
 
 static void parse_from_file(struct parser *parser, char *filename, char *ext_out)
 {
-	FILE *in;
+	struct file_id file_id;
+	osmap_t filemap;
 	char *strend;
+	void *data;
 
-	in = fopen(filename, "rb");
-	if (!in) {
+	data = map_file(filename, 'r', &filemap, &file_id);
+	if (data == NULL) {
 		fprintf(stderr, "cannot open file '%s'\n", filename);
 		return;
 	}
@@ -7286,16 +7307,27 @@ static void parse_from_file(struct parser *parser, char *filename, char *ext_out
 		return;
 	}
 
+	parser->pf.filename = filename;
 	parser->newfilename_end = strend;
-	if (parse_source(parser, filename, in, ext_out) < 0)
+	if (parse_source(parser, data, filemap.size, ext_out) < 0)
 		fprintf(stderr, "out of memory\n");
+	close_map(&filemap, data);
 }
+
+static char stdin_buffer[STDIN_BUFSIZE];
 
 static void parse_stdin(struct parser *parser)
 {
+	size_t size;
+
+	parser->pf.filename = "<stdin>";
 	parser->pf.out = stdout;
-	if (parse_source_size(parser, "<stdin>", stdin, STDIN_BUFSIZE,
-			parser->source_ext_out) < 0)
+	/* read entire input file in one go to make scanning easier */
+	size = fread(stdin_buffer, 1, STDIN_BUFSIZE, stdin);
+	if (size == 0)
+		return;     /* LCOV_EXCL_LINE */
+
+	if (parse_source(parser, stdin_buffer, size, parser->source_ext_out) < 0)
 		fprintf(stderr, "out of memory\n");
 }
 

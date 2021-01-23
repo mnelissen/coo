@@ -26,7 +26,11 @@ typedef struct hash {
 } hash_t;
 
 uint32_t uint32hash(uint32_t key);
+#if defined(_WIN64) || defined(__x86_64__) || defined(__ppc64__)
 uint64_t uint64hash(uint64_t key);
+#else
+uint32_t uint64hash(uint64_t key);
+#endif
 size_t strhash(const char *str);
 size_t memhash(const void *mem, size_t size);
 

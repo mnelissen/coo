@@ -2141,12 +2141,6 @@ static attr_format(6,7) struct insert *addinsert_format(struct parser *parser,
 		insert_continue, insert_format, va_args);
 }
 
-static void addinsert_templpar(struct parser *parser,
-		struct templpar *tptype, char *name, char *next)
-{
-	addinsert(parser, NULL, name, tptype->implstr, next, CONTINUE_AFTER);
-}
-
 static void add_type_insert(struct parser *parser, char *from, char *text, char *to)
 {
 	addinsert(parser, NULL, from, text, to, CONTINUE_AFTER);
@@ -5094,6 +5088,17 @@ static void check_conflict_param_member(struct parser *parser,
 		member->name, inheritmsg, inherittext);
 }
 
+static void check_assign_templpar(struct parser *parser, char *pos, anyptr target, anyptr expr)
+{
+	const struct anytype *target_at = typ(target), *expr_at = typ(expr);
+
+	if (!target_at || !expr_at || target_at->type != AT_TEMPLPAR)
+		return;
+	if (expr_at->type != AT_TEMPLPAR || expr_at->u.tp != target_at->u.tp)
+		pr_err(pos, "incompatible types, expect '%s', got '%s'",
+			target_at->u.tp->name, typstr(expr_at));
+}
+
 static void insertancestor(struct parser *parser, char *exprstart,
 		char *name, char *end, const struct anytype *target, anyptr expr)
 	/* assumes expr->type == AT_CLASS, AT_TEMPLINST */
@@ -5215,7 +5220,7 @@ static int is_dyncast_expr_sep(char *curr)
 
 static void parse_function(struct parser *parser, char *next)
 {
-	anyptr immdecl, expr, *p_expr, target, rettype, thisptr;
+	anyptr immdecl, expr, exprsrc, *p_expr, target, rettype, thisptr;
 	struct parenlvl_info *pareninfo, *parenprev, *parencast, *parenlvl0;
 	const struct anytype *decl;
 	struct anytype *newtype;
@@ -5533,12 +5538,6 @@ static void parse_function(struct parser *parser, char *next)
 					}
 				} else if (seqparen) {
 					/* this is a cast, like ((class_t*)x)->.. */
-					if (decl->type == AT_TEMPLPAR) {
-						/* cast to template parameter type
-						   in expression, not safe to replace here */
-						addinsert_templpar(parser,
-							typ(immdecl)->u.tp, name, next);
-					}
 					/* combine possible pointer dereference */
 					if (seqparen >= 2 && typ(parencast->exprdecl)->type
 							== AT_UNKNOWN) {
@@ -5940,7 +5939,11 @@ static void parse_function(struct parser *parser, char *next)
 			   where pointer to a membername's ancestor class is expected
 			   determine target and source classes to access ancestor of */
 			add_ptrlvl(&immdecl, ptrlvl(pareninfo->exprdecl));
-			expr = sel_class(pareninfo->exprdecl) ?: sel_class(immdecl);
+			/* exprdecl assigned means immdecl was casted */
+			exprsrc = pareninfo->exprdecl;
+			if (typ(exprsrc)->type == AT_UNKNOWN)
+				exprsrc = immdecl;
+			expr = sel_class(exprsrc);
 			target = sel_class(pareninfo->targetdecl);
 			if (expr && typ(expr)->u.class->refcounted) {
 				exprclass = typ(expr)->u.class;
@@ -5971,6 +5974,9 @@ static void parse_function(struct parser *parser, char *next)
 			if (target && expr && ptrlvl(target) <= 1)
 				insertancestor(parser, pareninfo->exprstart,
 						name, curr, typ(target), expr);
+			else
+				check_assign_templpar(parser, pareninfo->exprstart,
+					pareninfo->targetdecl, exprsrc);
 		}
 		if (parenprev == NULL && (*curr == ',' || *curr == ';')) {
 			if (initializer) {

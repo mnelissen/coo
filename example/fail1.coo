@@ -196,6 +196,11 @@ void Aerror::func(void)
 	/* class Aerror not declared */
 }
 
+void At::set_at(A *arg)
+{
+	at = arg;           /* cannot assign A* to template-type T */
+}
+
 void B::B()
 {
 	a_local.A_root();

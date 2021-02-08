@@ -76,6 +76,11 @@ void *B_set_b2(struct B *this, void *arg)
 	return arg;
 }
 
+static void B_cast_set_b2(struct B *this, struct A *arg)
+{
+	this->b2 = arg;
+}
+
 void C_set_b1_c1(struct C *this, void *arg)
 {
 	this->c1 = arg;
@@ -86,9 +91,9 @@ struct E *E_E(struct E *this, struct M *n_e1, struct M *n_e2)
 {
 	this->e1 = n_e1;
 	this->e2 = n_e2;
-#line 90 "good5.coo.c"
+#line 95 "good5.coo.c"
 	return this;
-#line 65 "good5.coo"
+#line 70 "good5.coo"
 }
 
 static void E_use_t(struct E *this);    /* prototype, body defined later after main as test */
@@ -115,14 +120,15 @@ int main(void)
 	struct N *p_n1;
 	struct F f;
 	struct L l1, l2;
-#line 89
+#line 94
 	E_E_zi(&f.E, &(&o1)->N.M, &(&o2)->N.M);
-#line 91
+#line 96
 	b_a = &c->B;
 	C_set_b1_c1(c, &l1);
 	B_set_b2(&c->B, &a1);
 	((struct A*)b_a->b2)->a = 2;
 	((struct L*)b_a->b1)->l = 3;
+	B_cast_set_b2(b_a, &a1);
 	b_a = &d->C.B;
 	C_set_b1_c1(&d->C, &l2);
 	B_set_b2(&d->C.B, &a2);
@@ -142,7 +148,7 @@ void E_use_t(struct E *this)
 	this->e2->m = 7;
 }
 
-#line 146 "good5.coo.c"
+#line 152 "good5.coo.c"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>

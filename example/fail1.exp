@@ -88,6 +88,7 @@
  error: return type is not allowed for destructor
  error: expected ';' or '{' after function definition
  error: class 'Aerror' not declared
+ error: incompatible types, expect 'T', got 'A'
  error: duplicate call to member a_local root constructor
  error: cannot find member in class 'An'
  error: cannot access static member An::static_an

@@ -52,6 +52,11 @@ U B::set_b2(U arg)
 	return arg;
 }
 
+void B::cast_set_b2(A *arg)
+{
+	b2 = (U)arg;
+}
+
 void C::set_b1_c1(T arg)
 {
 	c1 = arg;
@@ -93,6 +98,7 @@ int main(void)
 	c->set_b2(&a1);
 	b_a->b2->a = 2;
 	b_a->b1->l = 3;
+	b_a->cast_set_b2(&a1);
 	b_a = d;
 	d->set_b1_c1(&l2);
 	d->set_b2(&a2);

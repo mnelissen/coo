@@ -234,8 +234,8 @@ struct vmt {
 struct templpar {
 	struct anytype t;          /* this templpar as an anytype */
 	struct hash_entry node;    /* entry in class->templpars */
-	anyptr impl;               /* implementation, unknown => "void *" */
-	char *implstr;             /* representation string of impl */
+	anyptr stor;               /* storage type, unknown => "void *" */
+	char *storstr;             /* representation string of stor */
 	unsigned index;            /* this par's index in class declaration */
 	char name[];               /* declared name of template type */
 };
@@ -1207,7 +1207,7 @@ static struct anytype *duptype(struct allocator *alloc, const struct anytype *so
 	return newtype;
 }
 
-anyptr get_from_tpdecl(const struct anytype *any)
+anyptr get_tpstor(const struct anytype *any)
 {
 	switch (any->from_tp) {
 	case FT_NONE: return NULL;
@@ -1216,7 +1216,7 @@ anyptr get_from_tpdecl(const struct anytype *any)
 	}
 }
 
-void set_from_tpdecl(struct allocator *alloc, struct anytype *dest, anyptr decl)
+void set_tpstor(struct allocator *alloc, struct anytype *dest, anyptr decl)
 {
 	if (decl == NULL) {
 		dest->from_tp = FT_NONE;
@@ -1336,8 +1336,8 @@ static struct templpar *addtemplpar(struct parser *parser,
 
 	tp->t.type = AT_TEMPLPAR;
 	tp->t.u.tp = tp;
-	tp->implstr = "void *";
-	tp->impl = unknown_typeptr;
+	tp->storstr = "void *";
+	tp->stor = unknown_typeptr;
 	return tp;
 }
 
@@ -1353,7 +1353,7 @@ static struct class *to_class(const struct anytype *any)
 	if (any->type == AT_CLASS || any->type == AT_TEMPLINST)
 		return any->u.class;
 	if (any->type == AT_TEMPLPAR)
-		return to_class(typ(any->u.tp->impl));
+		return to_class(typ(any->u.tp->stor));
 	return NULL;
 }
 
@@ -1371,7 +1371,7 @@ static const struct dynarr *to_tiargs(const struct anytype *any)
 {
 	switch (any->type) {
 	case AT_TEMPLINST: return &any->args;
-	case AT_TEMPLPAR: return to_tiargs(typ(any->u.tp->impl));
+	case AT_TEMPLPAR: return to_tiargs(typ(any->u.tp->stor));
 	default: return NULL;
 	}
 }
@@ -1394,8 +1394,8 @@ static anyptr sel_class(anyptr any)
 	if (anytype->type == AT_CLASS || anytype->type == AT_TEMPLINST)
 		return any;
 	if (anytype->type == AT_TEMPLPAR)
-		if (to_class(typ(anytype->u.tp->impl)))
-			return anytype->u.tp->impl;
+		if (to_class(typ(anytype->u.tp->stor)))
+			return anytype->u.tp->stor;
 	return NULL;
 }
 
@@ -1591,7 +1591,7 @@ static char *parse_type(struct parser *parser, struct allocator *alloc,
 			if (*next == ' ')
 				next++;
 			if (new_insert)
-				new_insert(parser, pos, tp->implstr, next);
+				new_insert(parser, pos, tp->storstr, next);
 			anyptr = to_anyptr(&tp->t, 0);
 			break;
 		}
@@ -2499,9 +2499,9 @@ static char *parse_templargs(struct parser *parser, struct allocator *alloc,
 			argptr = to_anyptr(argtype, raw_ptrlvl(argptr));
 		}
 		prtp = parentclass->tparr[templ_map->num];
-		set_from_tpdecl(alloc, argtype, prtp->impl);
+		set_tpstor(alloc, argtype, prtp->stor);
 		templ_map->mem[templ_map->num++] = argptr;
-		prtclass = to_class(typ(prtp->impl));
+		prtclass = to_class(typ(prtp->stor));
 		if (prtclass) {
 			if ((argclass = to_class(argtype)) == NULL) {
 				pr_err(name, "parent template parameter expects class "
@@ -2553,7 +2553,7 @@ static int need_translate_tp(struct parser *parser, struct dynarr *templ_map, an
 	}
 	prtype = typ(templ_map->mem[anytype->u.tp->index]);
 	if (prtype->type == AT_TEMPLPAR) {
-		anyimpl = typ(anytype->u.tp->impl), primpl = typ(prtype->u.tp->impl);
+		anyimpl = typ(anytype->u.tp->stor), primpl = typ(prtype->u.tp->stor);
 		if (anyimpl->type != primpl->type)
 			return 1;
 		if (anyimpl->type == AT_UNKNOWN)
@@ -2568,16 +2568,19 @@ static anyptr translate_tp(struct allocator *alloc, const struct dynarr *templ_m
 {
 	const struct anytype *srctype = typ(src);
 	struct anytype *dest;
-	anyptr tpdecl = get_from_tpdecl(srctype);
+	anyptr srcstor = get_tpstor(srctype);
 	anyptr mapsrc = templ_map->mem[srctype->u.tp->index];
+	anyptr mapstor = get_tpstor(typ(mapsrc));
 
-	if (tpdecl == NULL)
-		tpdecl = srctype->u.tp->impl;
+	if (srcstor == NULL)
+		srcstor = srctype->u.tp->stor;
+	if (mapstor == srcstor)
+		return to_anyptr(typ(mapsrc), raw_ptrlvl(src) + raw_ptrlvl(mapsrc));
 	/* allocate unique copy to not alter parentmember's param type */
 	dest = duptype(alloc, typ(mapsrc));
 	if (dest == NULL)
 		return NULL;    /* LCOV_EXCL_LINE */
-	set_from_tpdecl(alloc, dest, tpdecl);
+	set_tpstor(alloc, dest, srcstor);
 	/* keep pointerlevel, replace with newly modified type */
 	return to_anyptr(dest, raw_ptrlvl(src) + raw_ptrlvl(mapsrc));
 }
@@ -3527,16 +3530,16 @@ static char *parse_templpars(struct parser *parser, struct class *class, char *n
 				goto nextpar;
 			}
 			next = parse_type(parser, &parser->global_mem,
-					class, implstr, &tp->impl, NULL);
-			if (typ(tp->impl)->type != AT_CLASS) {
+					class, implstr, &tp->stor, NULL);
+			if (typ(tp->stor)->type != AT_CLASS) {
 				pr_err(implstr, "expected a class type");
 				goto nextpar;
 			}
-			if (ptrlvl(tp->impl) != 1) {
+			if (ptrlvl(tp->stor) != 1) {
 				pr_err(implstr, "expected single pointer type");
 				goto nextpar;
 			}
-			psaprintf(&tp->implstr, "struct %s *", typ(tp->impl)->u.class->name);
+			psaprintf(&tp->storstr, "struct %s *", typ(tp->stor)->u.class->name);
 		}
 
 	  nextpar:
@@ -3935,7 +3938,7 @@ static struct class *parse_struct(struct parser *parser, char *pos_struct, char 
 					parser->pf.pos = membername;
 					flush(parser);
 					outwrite(parser, "*****",
-						ptrlvl(retbasetype->u.tp->impl));
+						ptrlvl(retbasetype->u.tp->stor));
 				}
 				rettype = to_anyptr(retbasetype, extra_pointerlevel);
 			}
@@ -4332,20 +4335,20 @@ static void cast_tp_expr(struct parser *parser, char *exprstart, char *exprend,
 {
 	struct class *tpclass, *class = to_class(expr);
 	struct ancestor *ancestor;
-	anyptr tpdecl;
+	anyptr tpstor;
 
 	if (!expr->from_tp)
 		return;
 
 	/* cast from template parameter declared type to implementation type */
-	tpdecl = get_from_tpdecl(expr);
+	tpstor = get_tpstor(expr);
 	/* inserts might not be consecutive, surround e.g. (this->)expr */
-	if (tpdecl == NULL || typ(tpdecl)->type == AT_UNKNOWN) {
+	if (tpstor == NULL || typ(tpstor)->type == AT_UNKNOWN) {
 		/* declared type is void *, so use direct cast */
 		addinsert_format(parser, NULL, exprstart, exprstart,
 			CONTINUE_BEFORE, "((struct %s*)", class->name);
 		addinsert(parser, NULL, exprend, ")", exprend, CONTINUE_AFTER);
-	} else if ((tpclass = to_class(typ(tpdecl))) == class) {
+	} else if ((tpclass = to_class(typ(tpstor))) == class) {
 		/* nothing to do, already the right class */
 	} else if ((ancestor = hasho_find(&class->ancestors, tpclass))) {
 		/* declared type is a class, let compiler calculate offset */
@@ -5105,7 +5108,7 @@ static void insertancestor(struct parser *parser, char *exprstart,
 {
 	struct ancestor *ancestor = NULL;
 	struct insert *insert_before;
-	const struct anytype *tpdecl;
+	const struct anytype *tpstor;
 	struct class *tpclass;
 	char *pre, *post;
 
@@ -5124,8 +5127,8 @@ static void insertancestor(struct parser *parser, char *exprstart,
 	   type of that template parameter, not the instantiated class of the template
 	   (which is a descendant thereof) because that's what the C code sees
 	   because descendent checks are enforced elsewhere, these are internal errors */
-	if ((tpdecl = typ(get_from_tpdecl(target))) != NULL && tpdecl->type != AT_UNKNOWN) {
-		if ((tpclass = to_class(tpdecl)) == NULL) {
+	if ((tpstor = typ(get_tpstor(target))) != NULL && tpstor->type != AT_UNKNOWN) {
+		if ((tpclass = to_class(tpstor)) == NULL) {
 			pr_err(exprstart, "(ierr) bound template parameter not a class");   /* LCOV_EXCL_LINE */
 		} else if (tpclass == typ(expr)->u.class) {
 			/* already correct class, nothing to insert */

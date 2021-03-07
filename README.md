@@ -468,12 +468,16 @@ struct X {
   int x;
 };
 
-struct Base<T> {
+struct X2 {
+  int x2;
+}
+
+struct Base<T:X*> {
   T a;
   Base(T init_a);
 };
 
-struct Derived<T:X*> : Base<T> {
+struct Derived<T:X2*> : Base<T> {
   T multiply(T x);
 };
 
@@ -484,14 +488,14 @@ Base::Base(T init_a)
 
 T Derived::multiply(T x)
 {
-  a->x *= x->x;
+  a->x2 *= x->x + x->x2;
   return x;
 }
 
 int main(void)
 {
-  X f = { 2 }, x = { 3 };
-  Derived<X*> d(&x);
+  X2 f = { { 2 }, 3 }, x = { { 3 }, 4 };
+  Derived<X2*> d(&x);
   d.multiply(&f);
   printf("%d\n", d.a->x);
 }
@@ -587,6 +591,58 @@ Explanation of class implementation variables:
 
 * freer: the class where the (virtual) destructor is declared to call/free an instance
 * destroyer: the class where the destructor is implemented
+
+### Templates
+
+To work with template types we need to remember their storage type, which is the
+required type by the original class definition for a particular template type name.
+In the following example the required type for T in A is Y, or a descendent of Y:
+
+``` cpp
+struct X {
+  int x;
+};
+
+struct Y {
+  int y;
+}
+
+struct X2 : X, Y {
+  int x2;
+};
+
+struct A<T:Y*> {
+  T a;
+};
+
+struct B<T:X2*> {
+  T b;
+};
+
+int func(void)
+{
+  A<X2*> va;
+  X2 x2;
+  va.a = &x2;
+  va.a->x = 3;
+}
+```
+
+Therefore in this example the storage type for field `a` is `Y*`. When A is
+specialized the user may choose a descendant of Y, like X2. Note that Y is not
+the primary base of Y, therefore `a` must not be typecasted to Y, but use a
+`container_of` macro to let the compiler determine the correct offset from Y to
+X2. This makes the assigment to `va.a->x` in the example non-trivial.
+
+Therefore whenever a class is specialized using a descendent type or a class
+inherits from another class specifying a descendent type as a required type, the
+original storage type is remember in a `struct tpmaptype`. A template parameter
+mapped type. Therefore the descendent classes may have more template parameters
+than they have declared, called ''mapped templpars''. They are inherited template
+parameters which need to remember their original storage type for purpose of
+fields, passing argument to functions, or returning from functions. But they are
+equal (assignment compatible) to the equivalent template parameter in the same
+class.
 
 ### String/memory pool
 

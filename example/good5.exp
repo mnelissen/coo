@@ -78,7 +78,7 @@ void *B_set_b2(struct B *this, void *arg)
 
 static void B_cast_set_b2(struct B *this, struct A *arg)
 {
-	this->b2 = arg;
+	this->b2 = (void *)arg;
 }
 
 void C_set_b1_c1(struct C *this, void *arg)

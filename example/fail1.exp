@@ -35,7 +35,7 @@
  error: refcounted class destructor must be virtual
  error: destructor must be virtual too
  error: class D must be refcounted because parent C is refcounted
- error: expected 1 template argument for class C, got 0
+ error: expected 1 template argument for class C
  error: cannot find parent class
  error: parent type cannot be pointer type
  error: cannot inherit from final class C4
@@ -60,8 +60,8 @@
  error: template argument must be a pointer type
  error: parent template parameter expects class 'A'
  warning: non-void root constructor may fail
- error: too many arguments, expect 1
- error: duplicate variable name c
+ error: too many template arguments, expect 1
+ warning: non-void root constructor may fail
  error: template parameter name expected
  error: expected '>' or ','
  error: 'An' is not a descendant of 'A'
